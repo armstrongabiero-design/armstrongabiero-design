@@ -1,34 +1,133 @@
-.App-logo {
-    height: 40vmin;
-    pointer-events: none;
+.fleet-card {
+  background: white;
+  border-radius: 12px;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.05);
+  padding: 1.5rem;
+  border: 1px solid #e2e8f0;
 }
 
-@media (prefers-reduced-motion: no-preference) {
-    .App-logo {
-        animation: App-logo-spin infinite 20s linear;
-    }
+.fleet-card:hover {
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.08);
 }
 
-.App-header {
-    background-color: #0f0f10;
-    min-height: 100vh;
-    display: flex;
-    flex-direction: column;
-    align-items: center;
-    justify-content: center;
-    font-size: calc(10px + 2vmin);
-    color: white;
+.stat-card {
+  background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+  color: white;
+  border-radius: 12px;
+  padding: 1.5rem;
+  box-shadow: 0 4px 12px rgba(102, 126, 234, 0.3);
 }
 
-.App-link {
-    color: #61dafb;
+.stat-card.green {
+  background: linear-gradient(135deg, #11998e 0%, #38ef7d 100%);
+  box-shadow: 0 4px 12px rgba(56, 239, 125, 0.3);
 }
 
-@keyframes App-logo-spin {
-    from {
-        transform: rotate(0deg);
-    }
-    to {
-        transform: rotate(360deg);
-    }
+.stat-card.orange {
+  background: linear-gradient(135deg, #f093fb 0%, #f5576c 100%);
+  box-shadow: 0 4px 12px rgba(245, 87, 108, 0.3);
+}
+
+.stat-card.blue {
+  background: linear-gradient(135deg, #4facfe 0%, #00f2fe 100%);
+  box-shadow: 0 4px 12px rgba(79, 172, 254, 0.3);
+}
+
+.country-badge {
+  display: inline-flex;
+  align-items: center;
+  padding: 0.25rem 0.75rem;
+  border-radius: 9999px;
+  font-size: 0.75rem;
+  font-weight: 600;
+}
+
+.country-badge.ghana {
+  background-color: #fef3c7;
+  color: #92400e;
+}
+
+.country-badge.liberia {
+  background-color: #dbeafe;
+  color: #1e40af;
+}
+
+.country-badge.sao-tome {
+  background-color: #dcfce7;
+  color: #166534;
+}
+
+.status-badge {
+  display: inline-flex;
+  align-items: center;
+  padding: 0.25rem 0.75rem;
+  border-radius: 9999px;
+  font-size: 0.75rem;
+  font-weight: 600;
+}
+
+.status-badge.active {
+  background-color: #d1fae5;
+  color: #065f46;
+}
+
+.status-badge.maintenance {
+  background-color: #fed7aa;
+  color: #9a3412;
+}
+
+.status-badge.inactive {
+  background-color: #e5e7eb;
+  color: #374151;
+}
+
+.btn-primary {
+  background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+  color: white;
+  padding: 0.625rem 1.25rem;
+  border-radius: 8px;
+  font-weight: 600;
+  border: none;
+  cursor: pointer;
+  box-shadow: 0 2px 8px rgba(102, 126, 234, 0.3);
+}
+
+.btn-primary:hover {
+  transform: translateY(-1px);
+  box-shadow: 0 4px 12px rgba(102, 126, 234, 0.4);
+}
+
+.table-container {
+  overflow-x: auto;
+  border-radius: 12px;
+  border: 1px solid #e2e8f0;
+}
+
+table {
+  width: 100%;
+  border-collapse: collapse;
+}
+
+table thead {
+  background-color: #f8fafc;
+}
+
+table th {
+  padding: 0.75rem 1rem;
+  text-align: left;
+  font-size: 0.875rem;
+  font-weight: 600;
+  color: #475569;
+  border-bottom: 1px solid #e2e8f0;
+}
+
+table td {
+  padding: 0.75rem 1rem;
+  font-size: 0.875rem;
+  color: #334155;
+  border-bottom: 1px solid #f1f5f9;
+}
+
+table tbody tr:hover {
+  background-color: #f8fafc;
 }
