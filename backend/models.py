@@ -1,0 +1,450 @@
+from pydantic import BaseModel, Field, ConfigDict
+from typing import Optional, List, Dict, Any
+from datetime import datetime
+from enum import Enum
+import uuid
+
+
+class CountryEnum(str, Enum):
+    GHANA = "GHANA"
+    LIBERIA = "LIBERIA"
+    SAO_TOME = "SAO_TOME"
+
+
+class CurrencyEnum(str, Enum):
+    GHS = "GHS"
+    LRD = "LRD"
+    USD = "USD"
+    STN = "STN"
+
+
+class VehicleStatus(str, Enum):
+    ACTIVE = "ACTIVE"
+    MAINTENANCE = "MAINTENANCE"
+    INACTIVE = "INACTIVE"
+    DISPOSED = "DISPOSED"
+
+
+class MaintenanceType(str, Enum):
+    SCHEDULED = "SCHEDULED"
+    UNSCHEDULED = "UNSCHEDULED"
+    PREDICTIVE = "PREDICTIVE"
+
+
+class WorkshopType(str, Enum):
+    INTERNAL = "INTERNAL"
+    EXTERNAL = "EXTERNAL"
+
+
+class DocumentType(str, Enum):
+    ROADWORTHY_CERT = "ROADWORTHY_CERT"
+    INSURANCE = "INSURANCE"
+    DRIVER_LICENSE = "DRIVER_LICENSE"
+    VEHICLE_REGISTRATION = "VEHICLE_REGISTRATION"
+    OTHER = "OTHER"
+
+
+class TransactionType(str, Enum):
+    PURCHASE = "PURCHASE"
+    USAGE = "USAGE"
+    TRANSFER = "TRANSFER"
+    ADJUSTMENT = "ADJUSTMENT"
+
+
+# Country Model
+class Country(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+    id: str = Field(default_factory=lambda: str(uuid.uuid4()))
+    name: CountryEnum
+    currency: CurrencyEnum
+    date_format: str = "DD/MM/YYYY"
+    tax_id_label: str
+    regulatory_body: str
+    created_at: datetime = Field(default_factory=datetime.utcnow)
+
+
+class CountryCreate(BaseModel):
+    name: CountryEnum
+    currency: CurrencyEnum
+    date_format: str = "DD/MM/YYYY"
+    tax_id_label: str
+    regulatory_body: str
+
+
+# Vehicle Model
+class Vehicle(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+    id: str = Field(default_factory=lambda: str(uuid.uuid4()))
+    country: CountryEnum
+    registration_number: str
+    make: str
+    model: str
+    year: int
+    vin: str
+    status: VehicleStatus = VehicleStatus.ACTIVE
+    odometer_reading: float = 0.0
+    acquisition_date: datetime
+    acquisition_cost: float
+    acquisition_currency: CurrencyEnum
+    acquisition_cost_usd: float
+    country_specific_fields: Dict[str, Any] = Field(default_factory=dict)
+    created_at: datetime = Field(default_factory=datetime.utcnow)
+    updated_at: datetime = Field(default_factory=datetime.utcnow)
+
+
+class VehicleCreate(BaseModel):
+    country: CountryEnum
+    registration_number: str
+    make: str
+    model: str
+    year: int
+    vin: str
+    status: VehicleStatus = VehicleStatus.ACTIVE
+    odometer_reading: float = 0.0
+    acquisition_date: datetime
+    acquisition_cost: float
+    acquisition_currency: CurrencyEnum
+    country_specific_fields: Dict[str, Any] = Field(default_factory=dict)
+
+
+class VehicleUpdate(BaseModel):
+    registration_number: Optional[str] = None
+    status: Optional[VehicleStatus] = None
+    odometer_reading: Optional[float] = None
+    country_specific_fields: Optional[Dict[str, Any]] = None
+
+
+# Driver Model
+class Driver(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+    id: str = Field(default_factory=lambda: str(uuid.uuid4()))
+    country: CountryEnum
+    first_name: str
+    last_name: str
+    license_number: str
+    license_expiry: datetime
+    phone: str
+    email: Optional[str] = None
+    safety_score: float = 100.0
+    total_incidents: int = 0
+    status: str = "ACTIVE"
+    created_at: datetime = Field(default_factory=datetime.utcnow)
+    updated_at: datetime = Field(default_factory=datetime.utcnow)
+
+
+class DriverCreate(BaseModel):
+    country: CountryEnum
+    first_name: str
+    last_name: str
+    license_number: str
+    license_expiry: datetime
+    phone: str
+    email: Optional[str] = None
+
+
+class DriverUpdate(BaseModel):
+    license_expiry: Optional[datetime] = None
+    phone: Optional[str] = None
+    email: Optional[str] = None
+    safety_score: Optional[float] = None
+    status: Optional[str] = None
+
+
+# Maintenance Record Model
+class MaintenanceRecord(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+    id: str = Field(default_factory=lambda: str(uuid.uuid4()))
+    vehicle_id: str
+    maintenance_type: MaintenanceType
+    description: str
+    scheduled_date: datetime
+    completed_date: Optional[datetime] = None
+    odometer_at_maintenance: float
+    cost: float
+    currency: CurrencyEnum
+    cost_usd: float
+    workshop_id: Optional[str] = None
+    parts_used: List[str] = Field(default_factory=list)
+    notes: Optional[str] = None
+    ai_predicted: bool = False
+    harshness_score: Optional[float] = None
+    created_at: datetime = Field(default_factory=datetime.utcnow)
+
+
+class MaintenanceRecordCreate(BaseModel):
+    vehicle_id: str
+    maintenance_type: MaintenanceType
+    description: str
+    scheduled_date: datetime
+    odometer_at_maintenance: float
+    cost: float
+    currency: CurrencyEnum
+    workshop_id: Optional[str] = None
+    notes: Optional[str] = None
+
+
+# Workshop Job Model
+class WorkshopJob(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+    id: str = Field(default_factory=lambda: str(uuid.uuid4()))
+    vehicle_id: str
+    workshop_type: WorkshopType
+    workshop_name: str
+    description: str
+    start_date: datetime
+    estimated_completion: datetime
+    actual_completion: Optional[datetime] = None
+    cost: float
+    currency: CurrencyEnum
+    cost_usd: float
+    status: str = "IN_PROGRESS"
+    created_at: datetime = Field(default_factory=datetime.utcnow)
+
+
+class WorkshopJobCreate(BaseModel):
+    vehicle_id: str
+    workshop_type: WorkshopType
+    workshop_name: str
+    description: str
+    start_date: datetime
+    estimated_completion: datetime
+    cost: float
+    currency: CurrencyEnum
+
+
+# Inventory Item Model
+class InventoryItem(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+    id: str = Field(default_factory=lambda: str(uuid.uuid4()))
+    name: str
+    sku: str
+    category: str
+    country: CountryEnum
+    location: str
+    quantity: int = 0
+    reorder_level: int = 10
+    unit_cost: float
+    currency: CurrencyEnum
+    unit_cost_usd: float
+    lead_time_days: int = 7
+    created_at: datetime = Field(default_factory=datetime.utcnow)
+    updated_at: datetime = Field(default_factory=datetime.utcnow)
+
+
+class InventoryItemCreate(BaseModel):
+    name: str
+    sku: str
+    category: str
+    country: CountryEnum
+    location: str
+    quantity: int = 0
+    reorder_level: int = 10
+    unit_cost: float
+    currency: CurrencyEnum
+    lead_time_days: int = 7
+
+
+# Inventory Transaction Model
+class InventoryTransaction(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+    id: str = Field(default_factory=lambda: str(uuid.uuid4()))
+    item_id: str
+    transaction_type: TransactionType
+    quantity: int
+    from_location: Optional[str] = None
+    to_location: Optional[str] = None
+    reference: Optional[str] = None
+    notes: Optional[str] = None
+    created_at: datetime = Field(default_factory=datetime.utcnow)
+
+
+class InventoryTransactionCreate(BaseModel):
+    item_id: str
+    transaction_type: TransactionType
+    quantity: int
+    from_location: Optional[str] = None
+    to_location: Optional[str] = None
+    reference: Optional[str] = None
+    notes: Optional[str] = None
+
+
+# Fuel Transaction Model
+class FuelTransaction(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+    id: str = Field(default_factory=lambda: str(uuid.uuid4()))
+    vehicle_id: str
+    driver_id: str
+    date: datetime
+    quantity_liters: float
+    cost: float
+    currency: CurrencyEnum
+    cost_usd: float
+    odometer_reading: float
+    fuel_efficiency: Optional[float] = None
+    location: str
+    anomaly_detected: bool = False
+    anomaly_reason: Optional[str] = None
+    created_at: datetime = Field(default_factory=datetime.utcnow)
+
+
+class FuelTransactionCreate(BaseModel):
+    vehicle_id: str
+    driver_id: str
+    date: datetime
+    quantity_liters: float
+    cost: float
+    currency: CurrencyEnum
+    odometer_reading: float
+    location: str
+
+
+# Expenditure Model
+class Expenditure(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+    id: str = Field(default_factory=lambda: str(uuid.uuid4()))
+    country: CountryEnum
+    category: str
+    description: str
+    amount: float
+    currency: CurrencyEnum
+    amount_usd: float
+    date: datetime
+    vehicle_id: Optional[str] = None
+    driver_id: Optional[str] = None
+    receipt_url: Optional[str] = None
+    approved: bool = False
+    created_at: datetime = Field(default_factory=datetime.utcnow)
+
+
+class ExpenditureCreate(BaseModel):
+    country: CountryEnum
+    category: str
+    description: str
+    amount: float
+    currency: CurrencyEnum
+    date: datetime
+    vehicle_id: Optional[str] = None
+    driver_id: Optional[str] = None
+    receipt_url: Optional[str] = None
+
+
+# Document Model
+class Document(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+    id: str = Field(default_factory=lambda: str(uuid.uuid4()))
+    country: CountryEnum
+    document_type: DocumentType
+    entity_id: str
+    entity_type: str
+    document_number: str
+    issue_date: datetime
+    expiry_date: datetime
+    file_url: str
+    ocr_processed: bool = False
+    ocr_data: Optional[Dict[str, Any]] = None
+    validated: bool = False
+    validation_notes: Optional[str] = None
+    created_at: datetime = Field(default_factory=datetime.utcnow)
+
+
+class DocumentCreate(BaseModel):
+    country: CountryEnum
+    document_type: DocumentType
+    entity_id: str
+    entity_type: str
+    document_number: str
+    issue_date: datetime
+    expiry_date: datetime
+    file_url: str
+
+
+# Asset Model
+class Asset(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+    id: str = Field(default_factory=lambda: str(uuid.uuid4()))
+    vehicle_id: str
+    acquisition_date: datetime
+    acquisition_cost: float
+    currency: CurrencyEnum
+    acquisition_cost_usd: float
+    current_value: float
+    current_value_usd: float
+    depreciation_rate: float = 0.15
+    disposal_date: Optional[datetime] = None
+    disposal_value: Optional[float] = None
+    predicted_resale_value: Optional[float] = None
+    created_at: datetime = Field(default_factory=datetime.utcnow)
+    updated_at: datetime = Field(default_factory=datetime.utcnow)
+
+
+class AssetCreate(BaseModel):
+    vehicle_id: str
+    acquisition_date: datetime
+    acquisition_cost: float
+    currency: CurrencyEnum
+    depreciation_rate: float = 0.15
+
+
+# Safety Incident Model
+class SafetyIncident(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+    id: str = Field(default_factory=lambda: str(uuid.uuid4()))
+    driver_id: str
+    vehicle_id: str
+    incident_date: datetime
+    incident_type: str
+    severity: str
+    description: str
+    location: str
+    cost: Optional[float] = None
+    currency: Optional[CurrencyEnum] = None
+    cost_usd: Optional[float] = None
+    created_at: datetime = Field(default_factory=datetime.utcnow)
+
+
+class SafetyIncidentCreate(BaseModel):
+    driver_id: str
+    vehicle_id: str
+    incident_date: datetime
+    incident_type: str
+    severity: str
+    description: str
+    location: str
+    cost: Optional[float] = None
+    currency: Optional[CurrencyEnum] = None
+
+
+# Exchange Rate Model
+class ExchangeRate(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+    id: str = Field(default_factory=lambda: str(uuid.uuid4()))
+    from_currency: CurrencyEnum
+    to_currency: CurrencyEnum = CurrencyEnum.USD
+    rate: float
+    date: datetime = Field(default_factory=datetime.utcnow)
+
+
+class ExchangeRateCreate(BaseModel):
+    from_currency: CurrencyEnum
+    to_currency: CurrencyEnum = CurrencyEnum.USD
+    rate: float
+
+
+# AI Prediction Model
+class AIPrediction(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+    id: str = Field(default_factory=lambda: str(uuid.uuid4()))
+    prediction_type: str
+    entity_id: str
+    entity_type: str
+    prediction_data: Dict[str, Any]
+    confidence_score: float
+    created_at: datetime = Field(default_factory=datetime.utcnow)
+
+
+class AIPredictionCreate(BaseModel):
+    prediction_type: str
+    entity_id: str
+    entity_type: str
+    prediction_data: Dict[str, Any]
+    confidence_score: float
