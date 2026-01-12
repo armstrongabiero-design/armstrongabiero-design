@@ -627,6 +627,9 @@ async def predict_asset_resale(asset_id: str):
     
     # Calculate age
     acquisition_date = datetime.fromisoformat(asset['acquisition_date']) if isinstance(asset['acquisition_date'], str) else asset['acquisition_date']
+    # Make both datetimes timezone-naive for comparison
+    if acquisition_date.tzinfo is not None:
+        acquisition_date = acquisition_date.replace(tzinfo=None)
     age_years = (datetime.utcnow() - acquisition_date).days / 365.25
     
     asset_data = {
