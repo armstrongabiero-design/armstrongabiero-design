@@ -760,6 +760,7 @@ async def get_dashboard_stats():
     active_vehicles = await db.vehicles.count_documents({"status": "ACTIVE"})
     total_drivers = await db.drivers.count_documents({})
     pending_maintenance = await db.maintenance_records.count_documents({"completed_date": None})
+    pending_requests = await db.maintenance_requests.count_documents({"status": "PENDING"})
     
     # Total fleet value
     assets = await db.assets.find({}, {"_id": 0, "current_value_usd": 1}).to_list(1000)
@@ -769,14 +770,279 @@ async def get_dashboard_stats():
     fuel_txns = await db.fuel_transactions.find({}, {"_id": 0, "cost_usd": 1}).to_list(1000)
     total_fuel_cost = sum(f.get('cost_usd', 0) for f in fuel_txns)
     
+    # Total maintenance cost in local currency (GHS) and USD
+    maintenance_records = await db.maintenance_records.find({}, {"_id": 0, "cost": 1, "currency": 1, "cost_usd": 1}).to_list(1000)
+    total_maintenance_cost_usd = sum(m.get('cost_usd', 0) for m in maintenance_records)
+    
+    # Convert to GHS using current rate
+    ghs_rate = currency_converter.get_rate(CurrencyEnum.USD, CurrencyEnum.GHS)
+    total_maintenance_cost_ghs = total_maintenance_cost_usd * ghs_rate
+    
     return {
         "total_vehicles": total_vehicles,
         "active_vehicles": active_vehicles,
         "total_drivers": total_drivers,
         "pending_maintenance": pending_maintenance,
+        "pending_requests": pending_requests,
         "total_fleet_value_usd": round(total_fleet_value, 2),
-        "total_fuel_cost_usd": round(total_fuel_cost, 2)
+        "total_fuel_cost_usd": round(total_fuel_cost, 2),
+        "total_maintenance_cost_usd": round(total_maintenance_cost_usd, 2),
+        "total_maintenance_cost_ghs": round(total_maintenance_cost_ghs, 2),
+        "ghs_exchange_rate": round(ghs_rate, 2)
     }
+
+
+# ============= FLEET MANAGER ROUTES =============
+@api_router.post("/fleet-managers", response_model=FleetManager)
+async def create_fleet_manager(input: FleetManagerCreate):
+    manager = FleetManager(**input.model_dump())
+    doc = manager.model_dump()
+    doc['created_at'] = doc['created_at'].isoformat()
+    await db.fleet_managers.insert_one(doc)
+    return manager
+
+
+@api_router.get("/fleet-managers", response_model=List[FleetManager])
+async def get_fleet_managers():
+    managers = await db.fleet_managers.find({}, {"_id": 0}).to_list(100)
+    for m in managers:
+        if isinstance(m.get('created_at'), str):
+            m['created_at'] = datetime.fromisoformat(m['created_at'])
+    return managers
+
+
+# ============= MAINTENANCE REQUEST ROUTES =============
+@api_router.post("/maintenance-requests", response_model=MaintenanceRequest)
+async def create_maintenance_request(input: MaintenanceRequestCreate):
+    request = MaintenanceRequest(**input.model_dump())
+    doc = request.model_dump()
+    
+    # Convert datetime fields
+    for field in ['created_at', 'updated_at', 'approved_at', 'rejected_at', 'completed_at']:
+        if doc.get(field):
+            doc[field] = doc[field].isoformat()
+    
+    await db.maintenance_requests.insert_one(doc)
+    
+    # Get vehicle and driver info for notification
+    vehicle = await db.vehicles.find_one({"id": input.vehicle_id}, {"_id": 0})
+    driver = await db.drivers.find_one({"id": input.driver_id}, {"_id": 0})
+    
+    # Send email notification to all fleet managers
+    managers = await db.fleet_managers.find({"is_active": True}, {"_id": 0}).to_list(100)
+    for manager in managers:
+        if manager.get('email'):
+            email_service.send_maintenance_request_notification(
+                manager['email'],
+                {
+                    'vehicle_registration': vehicle.get('registration_number', 'N/A') if vehicle else 'N/A',
+                    'driver_name': f"{driver.get('first_name', '')} {driver.get('last_name', '')}" if driver else 'N/A',
+                    'request_type': input.request_type,
+                    'priority': input.priority.value,
+                    'description': input.description
+                }
+            )
+    
+    return request
+
+
+@api_router.get("/maintenance-requests", response_model=List[MaintenanceRequest])
+async def get_maintenance_requests(status: Optional[str] = None):
+    query = {}
+    if status:
+        query['status'] = status
+    
+    requests = await db.maintenance_requests.find(query, {"_id": 0}).to_list(1000)
+    for r in requests:
+        for field in ['created_at', 'updated_at', 'approved_at', 'rejected_at', 'completed_at']:
+            if isinstance(r.get(field), str):
+                r[field] = datetime.fromisoformat(r[field])
+    return requests
+
+
+@api_router.get("/maintenance-requests/{request_id}", response_model=MaintenanceRequest)
+async def get_maintenance_request(request_id: str):
+    request = await db.maintenance_requests.find_one({"id": request_id}, {"_id": 0})
+    if not request:
+        raise HTTPException(status_code=404, detail="Request not found")
+    for field in ['created_at', 'updated_at', 'approved_at', 'rejected_at', 'completed_at']:
+        if isinstance(request.get(field), str):
+            request[field] = datetime.fromisoformat(request[field])
+    return request
+
+
+@api_router.post("/maintenance-requests/{request_id}/approve")
+async def approve_maintenance_request(request_id: str, approval: MaintenanceRequestApproval):
+    request = await db.maintenance_requests.find_one({"id": request_id}, {"_id": 0})
+    if not request:
+        raise HTTPException(status_code=404, detail="Request not found")
+    
+    if request['status'] != 'PENDING':
+        raise HTTPException(status_code=400, detail="Request is not pending")
+    
+    now = datetime.now(timezone.utc).isoformat()
+    
+    if approval.approved:
+        update = {
+            "status": "APPROVED",
+            "manager_id": approval.manager_id,
+            "approved_at": now,
+            "updated_at": now
+        }
+    else:
+        if not approval.rejection_reason:
+            raise HTTPException(status_code=400, detail="Rejection reason is required")
+        update = {
+            "status": "REJECTED",
+            "manager_id": approval.manager_id,
+            "rejection_reason": approval.rejection_reason,
+            "rejected_at": now,
+            "updated_at": now
+        }
+    
+    await db.maintenance_requests.update_one({"id": request_id}, {"$set": update})
+    
+    # Send notification to driver
+    driver = await db.drivers.find_one({"id": request['driver_id']}, {"_id": 0})
+    vehicle = await db.vehicles.find_one({"id": request['vehicle_id']}, {"_id": 0})
+    
+    if driver and driver.get('email'):
+        email_service.send_request_status_notification(
+            driver['email'],
+            {
+                'vehicle_registration': vehicle.get('registration_number', 'N/A') if vehicle else 'N/A',
+                'request_type': request.get('request_type', 'N/A')
+            },
+            "APPROVED" if approval.approved else "REJECTED",
+            approval.rejection_reason
+        )
+    
+    return {"status": "success", "message": f"Request {'approved' if approval.approved else 'rejected'}"}
+
+
+# ============= PRE-TRIP CHECKLIST ROUTES =============
+@api_router.post("/pre-trip-checklists", response_model=PreTripChecklist)
+async def create_pretrip_checklist(input: PreTripChecklistCreate):
+    # Check if checklist already exists for today
+    today = datetime.now(timezone.utc).date()
+    existing = await db.pretrip_checklists.find_one({
+        "driver_id": input.driver_id,
+        "vehicle_id": input.vehicle_id,
+        "date": {"$gte": datetime(today.year, today.month, today.day).isoformat()}
+    }, {"_id": 0})
+    
+    if existing:
+        raise HTTPException(status_code=400, detail="Checklist already completed for today")
+    
+    # Build checklist items
+    items = [
+        ChecklistItem(item_name="Engine Oil Level", status=input.engine_oil, notes=input.engine_oil_notes),
+        ChecklistItem(item_name="Tire Condition & Pressure", status=input.tires, notes=input.tires_notes),
+        ChecklistItem(item_name="Brake Functionality", status=input.brakes, notes=input.brakes_notes),
+        ChecklistItem(item_name="Lights (Headlights, Indicators, Brake)", status=input.lights, notes=input.lights_notes),
+        ChecklistItem(item_name="Fuel Level", status=input.fuel_level, notes=input.fuel_level_notes),
+        ChecklistItem(item_name="Mirrors & Wipers", status=input.mirrors_wipers, notes=input.mirrors_wipers_notes),
+        ChecklistItem(item_name="Cleanliness & Damage Check", status=input.cleanliness_damage, notes=input.cleanliness_damage_notes),
+    ]
+    
+    # Determine overall status
+    has_failed = any(item.status == ChecklistItemStatus.FAILED for item in items)
+    has_attention = any(item.status == ChecklistItemStatus.NEEDS_ATTENTION for item in items)
+    overall_status = "FAILED" if has_failed else ("ATTENTION_NEEDED" if has_attention else "PASSED")
+    
+    checklist = PreTripChecklist(
+        driver_id=input.driver_id,
+        vehicle_id=input.vehicle_id,
+        date=datetime.now(timezone.utc),
+        checklist_items=[item.model_dump() for item in items],
+        damage_photos=input.damage_photos,
+        overall_status=overall_status,
+        completed=True,
+        notes=input.additional_notes
+    )
+    
+    doc = checklist.model_dump()
+    doc['date'] = doc['date'].isoformat()
+    doc['created_at'] = doc['created_at'].isoformat()
+    
+    await db.pretrip_checklists.insert_one(doc)
+    return checklist
+
+
+@api_router.get("/pre-trip-checklists", response_model=List[PreTripChecklist])
+async def get_pretrip_checklists(driver_id: Optional[str] = None, vehicle_id: Optional[str] = None):
+    query = {}
+    if driver_id:
+        query['driver_id'] = driver_id
+    if vehicle_id:
+        query['vehicle_id'] = vehicle_id
+    
+    checklists = await db.pretrip_checklists.find(query, {"_id": 0}).sort("date", -1).to_list(100)
+    for c in checklists:
+        for field in ['date', 'created_at']:
+            if isinstance(c.get(field), str):
+                c[field] = datetime.fromisoformat(c[field])
+    return checklists
+
+
+@api_router.get("/pre-trip-checklists/today/{driver_id}/{vehicle_id}")
+async def check_today_checklist(driver_id: str, vehicle_id: str):
+    """Check if driver has completed today's checklist for the vehicle"""
+    today = datetime.now(timezone.utc).date()
+    start_of_day = datetime(today.year, today.month, today.day, tzinfo=timezone.utc)
+    
+    existing = await db.pretrip_checklists.find_one({
+        "driver_id": driver_id,
+        "vehicle_id": vehicle_id,
+        "date": {"$gte": start_of_day.isoformat()}
+    }, {"_id": 0})
+    
+    return {
+        "completed": existing is not None,
+        "checklist": existing,
+        "can_log_trips": existing is not None and existing.get('overall_status') != 'FAILED'
+    }
+
+
+@api_router.post("/pre-trip-checklists/upload-photo")
+async def upload_damage_photo(file: UploadFile = File(...)):
+    """Upload a damage photo and return the URL"""
+    # Read file content
+    content = await file.read()
+    
+    # For now, store as base64 in a simple format
+    # In production, this would upload to cloud storage (S3, GCS, etc.)
+    file_extension = file.filename.split('.')[-1] if file.filename else 'jpg'
+    photo_id = str(uuid.uuid4())
+    
+    # Store photo metadata in database
+    photo_doc = {
+        "id": photo_id,
+        "filename": file.filename,
+        "content_type": file.content_type,
+        "data": base64.b64encode(content).decode('utf-8'),
+        "created_at": datetime.now(timezone.utc).isoformat()
+    }
+    await db.damage_photos.insert_one(photo_doc)
+    
+    return {
+        "photo_id": photo_id,
+        "url": f"/api/damage-photos/{photo_id}",
+        "message": "Photo uploaded successfully"
+    }
+
+
+@api_router.get("/damage-photos/{photo_id}")
+async def get_damage_photo(photo_id: str):
+    """Get a damage photo by ID"""
+    from fastapi.responses import Response
+    
+    photo = await db.damage_photos.find_one({"id": photo_id}, {"_id": 0})
+    if not photo:
+        raise HTTPException(status_code=404, detail="Photo not found")
+    
+    content = base64.b64decode(photo['data'])
+    return Response(content=content, media_type=photo.get('content_type', 'image/jpeg'))
 
 
 # Root route
