@@ -1,12 +1,13 @@
 import React, { useEffect, useState } from 'react';
 import axios from 'axios';
-import { Plus, AlertCircle, Droplet } from 'lucide-react';
+import { Plus, AlertCircle, Droplet, AlertTriangle } from 'lucide-react';
 import { toast } from 'sonner';
 import { Button } from '../components/ui/button';
 import { Input } from '../components/ui/input';
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle, DialogTrigger } from '../components/ui/dialog';
 import { Label } from '../components/ui/label';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '../components/ui/select';
+import { Link } from 'react-router-dom';
 
 const BACKEND_URL = process.env.REACT_APP_BACKEND_URL;
 const API = `${BACKEND_URL}/api`;
@@ -17,6 +18,7 @@ const Fuel = () => {
   const [drivers, setDrivers] = useState([]);
   const [loading, setLoading] = useState(true);
   const [dialogOpen, setDialogOpen] = useState(false);
+  const [checklistStatus, setChecklistStatus] = useState(null);
 
   const [formData, setFormData] = useState({
     vehicle_id: '',
@@ -32,6 +34,13 @@ const Fuel = () => {
   useEffect(() => {
     fetchData();
   }, []);
+
+  // Check pre-trip checklist status when vehicle and driver change
+  useEffect(() => {
+    if (formData.vehicle_id && formData.driver_id) {
+      checkPreTripStatus();
+    }
+  }, [formData.vehicle_id, formData.driver_id]);
 
   const fetchData = async () => {
     try {
@@ -50,8 +59,24 @@ const Fuel = () => {
     }
   };
 
+  const checkPreTripStatus = async () => {
+    try {
+      const response = await axios.get(`${API}/pre-trip-checklists/today/${formData.driver_id}/${formData.vehicle_id}`);
+      setChecklistStatus(response.data);
+    } catch (error) {
+      setChecklistStatus(null);
+    }
+  };
+
   const handleSubmit = async (e) => {
     e.preventDefault();
+    
+    // Check if pre-trip checklist is completed
+    if (!checklistStatus?.can_log_trips) {
+      toast.error('Please complete the pre-trip checklist before logging fuel');
+      return;
+    }
+    
     try {
       await axios.post(`${API}/fuel`, {
         ...formData,
@@ -89,6 +114,23 @@ const Fuel = () => {
               <DialogTitle>Record Fuel Transaction</DialogTitle>
               <DialogDescription>Log a fuel purchase to track consumption and detect anomalies.</DialogDescription>
             </DialogHeader>
+            
+            {/* Pre-trip checklist warning */}
+            {formData.vehicle_id && formData.driver_id && !checklistStatus?.can_log_trips && (
+              <div className="bg-amber-50 border border-amber-200 rounded-lg p-3 mb-4">
+                <div className="flex items-start gap-2">
+                  <AlertTriangle className="text-amber-600 mt-0.5" size={18} />
+                  <div>
+                    <p className="font-semibold text-amber-800 text-sm">Pre-Trip Checklist Required</p>
+                    <p className="text-xs text-amber-700">Complete the checklist before logging fuel.</p>
+                    <Link to="/pre-trip-checklist" className="text-xs text-purple-600 underline mt-1 inline-block">
+                      Go to Pre-Trip Checklist →
+                    </Link>
+                  </div>
+                </div>
+              </div>
+            )}
+            
             <form onSubmit={handleSubmit} className="space-y-4">
               <div>
                 <Label>Vehicle</Label>
