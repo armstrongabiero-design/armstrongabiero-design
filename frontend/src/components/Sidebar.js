@@ -1,6 +1,6 @@
 import React from 'react';
 import { Link, useLocation } from 'react-router-dom';
-import { Truck, Users, Wrench, Package, Droplet, DollarSign, FileText, TrendingUp, AlertTriangle, Menu, X } from 'lucide-react';
+import { Truck, Users, Wrench, Package, Droplet, DollarSign, FileText, TrendingUp, AlertTriangle, Menu, X, ClipboardCheck, FileCheck } from 'lucide-react';
 
 const Sidebar = ({ open, setOpen }) => {
   const location = useLocation();
@@ -9,7 +9,9 @@ const Sidebar = ({ open, setOpen }) => {
     { path: '/', icon: TrendingUp, label: 'Dashboard' },
     { path: '/vehicles', icon: Truck, label: 'Vehicles' },
     { path: '/drivers', icon: Users, label: 'Drivers' },
+    { path: '/pre-trip-checklist', icon: ClipboardCheck, label: 'Pre-Trip Check' },
     { path: '/maintenance', icon: Wrench, label: 'Maintenance' },
+    { path: '/maintenance-requests', icon: FileCheck, label: 'Requests' },
     { path: '/inventory', icon: Package, label: 'Inventory' },
     { path: '/fuel', icon: Droplet, label: 'Fuel' },
     { path: '/expenditures', icon: DollarSign, label: 'Expenditures' },
@@ -40,7 +42,7 @@ const Sidebar = ({ open, setOpen }) => {
           <p className="text-xs text-slate-500 mt-1">Multi-Country Fleet Management</p>
         </div>
 
-        <nav className="p-4 space-y-1">
+        <nav className="p-4 space-y-1 overflow-y-auto max-h-[calc(100vh-100px)]">
           {menuItems.map((item) => {
             const Icon = item.icon;
             const isActive = location.pathname === item.path;
