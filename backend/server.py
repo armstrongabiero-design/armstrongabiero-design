@@ -24,10 +24,14 @@ from models import (
     SafetyIncident, SafetyIncidentCreate,
     ExchangeRate, ExchangeRateCreate,
     AIPrediction, AIPredictionCreate,
-    CurrencyEnum, DocumentType
+    CurrencyEnum, DocumentType,
+    MaintenanceRequest, MaintenanceRequestCreate, MaintenanceRequestApproval,
+    PreTripChecklist, PreTripChecklistCreate, ChecklistItem, ChecklistItemStatus,
+    FleetManager, FleetManagerCreate, RequestStatus, RequestPriority
 )
 from currency_utils import currency_converter
 from ai_services import ai_service
+from email_service import email_service
 
 
 ROOT_DIR = Path(__file__).parent
