@@ -1,6 +1,6 @@
 import React, { useEffect, useState } from 'react';
 import axios from 'axios';
-import { Truck, Users, Wrench, DollarSign, TrendingUp, AlertCircle } from 'lucide-react';
+import { Truck, Users, Wrench, DollarSign, TrendingUp, AlertCircle, ClipboardCheck, FileCheck } from 'lucide-react';
 import { toast } from 'sonner';
 
 const BACKEND_URL = process.env.REACT_APP_BACKEND_URL;
@@ -74,7 +74,7 @@ const Dashboard = () => {
             <div>
               <p className="text-white/80 text-sm font-medium">Pending Maintenance</p>
               <h3 className="text-4xl font-bold mt-2">{stats?.pending_maintenance || 0}</h3>
-              <p className="text-white/70 text-xs mt-1">Requires attention</p>
+              <p className="text-white/70 text-xs mt-1">{stats?.pending_requests || 0} awaiting approval</p>
             </div>
             <div className="bg-white/20 p-3 rounded-lg">
               <Wrench size={28} />
@@ -104,6 +104,19 @@ const Dashboard = () => {
             </div>
             <div className="bg-white/20 p-3 rounded-lg">
               <DollarSign size={28} />
+            </div>
+          </div>
+        </div>
+
+        <div className="stat-card green" data-testid="maintenance-cost-card">
+          <div className="flex items-start justify-between">
+            <div>
+              <p className="text-white/80 text-sm font-medium">Total Maintenance Cost</p>
+              <h3 className="text-4xl font-bold mt-2">GH₵{(stats?.total_maintenance_cost_ghs || 0).toLocaleString()}</h3>
+              <p className="text-white/70 text-xs mt-1">Rate: 1 USD = {stats?.ghs_exchange_rate || 15.5} GHS</p>
+            </div>
+            <div className="bg-white/20 p-3 rounded-lg">
+              <Wrench size={28} />
             </div>
           </div>
         </div>
