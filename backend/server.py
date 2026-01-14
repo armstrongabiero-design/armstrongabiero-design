@@ -1052,11 +1052,12 @@ async def get_damage_photo(photo_id: str):
 async def root():
     return {
         "message": "Fleet Management System API",
-        "version": "1.0.0",
+        "version": "2.0.0",
         "modules": [
             "Countries", "Vehicles", "Drivers", "Maintenance",
             "Workshops", "Inventory", "Fuel", "Expenditures",
-            "Documents", "Assets", "Safety", "Exchange Rates"
+            "Documents", "Assets", "Safety", "Exchange Rates",
+            "Maintenance Requests", "Pre-Trip Checklists", "Fleet Managers"
         ]
     }
 
