@@ -4,7 +4,7 @@ import { Plus, AlertCircle, Droplet } from 'lucide-react';
 import { toast } from 'sonner';
 import { Button } from '../components/ui/button';
 import { Input } from '../components/ui/input';
-import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from '../components/ui/dialog';
+import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle, DialogTrigger } from '../components/ui/dialog';
 import { Label } from '../components/ui/label';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '../components/ui/select';
 
@@ -87,6 +87,7 @@ const Fuel = () => {
           <DialogContent>
             <DialogHeader>
               <DialogTitle>Record Fuel Transaction</DialogTitle>
+              <DialogDescription>Log a fuel purchase to track consumption and detect anomalies.</DialogDescription>
             </DialogHeader>
             <form onSubmit={handleSubmit} className="space-y-4">
               <div>

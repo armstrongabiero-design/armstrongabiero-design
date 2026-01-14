@@ -4,7 +4,7 @@ import { Plus, Sparkles } from 'lucide-react';
 import { toast } from 'sonner';
 import { Button } from '../components/ui/button';
 import { Input } from '../components/ui/input';
-import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from '../components/ui/dialog';
+import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle, DialogTrigger } from '../components/ui/dialog';
 import { Label } from '../components/ui/label';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '../components/ui/select';
 import { Textarea } from '../components/ui/textarea';
@@ -107,6 +107,7 @@ const Maintenance = () => {
             <DialogContent>
               <DialogHeader>
                 <DialogTitle>AI Maintenance Prediction</DialogTitle>
+                <DialogDescription>Select a vehicle to analyze its maintenance needs using AI.</DialogDescription>
               </DialogHeader>
               <div className="space-y-4">
                 <div>
@@ -141,6 +142,7 @@ const Maintenance = () => {
             <DialogContent>
               <DialogHeader>
                 <DialogTitle>Add Maintenance Record</DialogTitle>
+                <DialogDescription>Record a new maintenance entry for a vehicle.</DialogDescription>
               </DialogHeader>
               <form onSubmit={handleSubmit} className="space-y-4">
                 <div>

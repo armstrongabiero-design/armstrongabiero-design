@@ -4,7 +4,7 @@ import { Plus, TrendingUp, Sparkles } from 'lucide-react';
 import { toast } from 'sonner';
 import { Button } from '../components/ui/button';
 import { Input } from '../components/ui/input';
-import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from '../components/ui/dialog';
+import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle, DialogTrigger } from '../components/ui/dialog';
 import { Label } from '../components/ui/label';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '../components/ui/select';
 
@@ -104,6 +104,7 @@ const Assets = () => {
             <DialogContent>
               <DialogHeader>
                 <DialogTitle>AI Resale Value Prediction</DialogTitle>
+                <DialogDescription>Select an asset to predict its market resale value using AI.</DialogDescription>
               </DialogHeader>
               <div className="space-y-4">
                 <div>
@@ -141,6 +142,7 @@ const Assets = () => {
             <DialogContent>
               <DialogHeader>
                 <DialogTitle>Add Asset</DialogTitle>
+                <DialogDescription>Register a new vehicle asset to track its lifecycle and value.</DialogDescription>
               </DialogHeader>
               <form onSubmit={handleSubmit} className="space-y-4">
                 <div>

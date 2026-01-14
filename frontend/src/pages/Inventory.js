@@ -4,7 +4,7 @@ import { Plus, Package, AlertTriangle } from 'lucide-react';
 import { toast } from 'sonner';
 import { Button } from '../components/ui/button';
 import { Input } from '../components/ui/input';
-import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from '../components/ui/dialog';
+import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle, DialogTrigger } from '../components/ui/dialog';
 import { Label } from '../components/ui/label';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '../components/ui/select';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '../components/ui/tabs';
@@ -111,6 +111,7 @@ const Inventory = () => {
             <DialogContent>
               <DialogHeader>
                 <DialogTitle>Record Transaction</DialogTitle>
+                <DialogDescription>Log an inventory transaction (purchase, usage, transfer, or adjustment).</DialogDescription>
               </DialogHeader>
               <form onSubmit={handleTransactionSubmit} className="space-y-4">
                 <div>
@@ -168,6 +169,7 @@ const Inventory = () => {
             <DialogContent>
               <DialogHeader>
                 <DialogTitle>Add Inventory Item</DialogTitle>
+                <DialogDescription>Add a new part or supply to track in inventory.</DialogDescription>
               </DialogHeader>
               <form onSubmit={handleSubmit} className="space-y-4">
                 <div className="grid grid-cols-2 gap-4">
