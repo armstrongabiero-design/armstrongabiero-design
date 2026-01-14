@@ -11,6 +11,8 @@ import Expenditures from './pages/Expenditures';
 import Documents from './pages/Documents';
 import Assets from './pages/Assets';
 import Safety from './pages/Safety';
+import MaintenanceRequests from './pages/MaintenanceRequests';
+import PreTripChecklist from './pages/PreTripChecklist';
 import Sidebar from './components/Sidebar';
 import { Toaster } from './components/ui/sonner';
 
@@ -28,6 +30,8 @@ function App() {
               <Route path="/vehicles" element={<Vehicles />} />
               <Route path="/drivers" element={<Drivers />} />
               <Route path="/maintenance" element={<Maintenance />} />
+              <Route path="/maintenance-requests" element={<MaintenanceRequests />} />
+              <Route path="/pre-trip-checklist" element={<PreTripChecklist />} />
               <Route path="/inventory" element={<Inventory />} />
               <Route path="/fuel" element={<Fuel />} />
               <Route path="/expenditures" element={<Expenditures />} />
