@@ -72,9 +72,9 @@ const Login = () => {
             <div className="bg-purple-600 p-3 rounded-xl">
               <Truck className="text-white" size={32} />
             </div>
-            <h1 className="text-3xl font-bold text-white">Fleet<span className="text-purple-400">Hub</span></h1>
+            <h1 className="text-3xl font-bold text-white">GTI <span className="text-purple-400">FLEET</span></h1>
           </div>
-          <p className="text-slate-400">Multi-Country Fleet Management System</p>
+          <p className="text-slate-400">GTI Fleet Solutions</p>
           <p className="text-slate-500 text-sm mt-1">Ghana • Liberia • São Tomé</p>
         </div>
 

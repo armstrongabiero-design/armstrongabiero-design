@@ -59,8 +59,8 @@ const Sidebar = ({ open, setOpen }) => {
         }`}
       >
         <div className="p-6 border-b border-slate-200">
-          <h1 className="text-2xl font-bold text-slate-800">Fleet<span className="text-purple-600">Hub</span></h1>
-          <p className="text-xs text-slate-500 mt-1">Multi-Country Fleet Management</p>
+          <h1 className="text-2xl font-bold text-slate-800">GTI <span className="text-purple-600">FLEET</span></h1>
+          <p className="text-xs text-slate-500 mt-1">GTI Fleet Solutions</p>
         </div>
 
         {/* User Info */}
