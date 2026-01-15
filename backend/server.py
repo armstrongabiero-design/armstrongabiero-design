@@ -1,4 +1,4 @@
-from fastapi import FastAPI, APIRouter, HTTPException, UploadFile, File
+from fastapi import FastAPI, APIRouter, HTTPException, UploadFile, File, Depends, Query
 from fastapi.responses import Response
 from dotenv import load_dotenv
 from starlette.middleware.cors import CORSMiddleware
@@ -7,7 +7,7 @@ import os
 import logging
 from pathlib import Path
 from typing import List, Optional
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 import base64
 import uuid
 
@@ -29,11 +29,22 @@ from models import (
     CurrencyEnum, DocumentType,
     MaintenanceRequest, MaintenanceRequestCreate, MaintenanceRequestApproval,
     PreTripChecklist, PreTripChecklistCreate, ChecklistItem, ChecklistItemStatus,
-    FleetManager, FleetManagerCreate, RequestStatus, RequestPriority
+    FleetManager, FleetManagerCreate, RequestStatus, RequestPriority,
+    User, UserCreate, UserLogin, UserUpdate, UserRole, Token,
+    Tire, TireCreate, TireRotation, TireRotationCreate, TirePosition, TireStatus,
+    LogbookEntry, LogbookEntryCreate,
+    Vendor, VendorCreate, VendorCategory,
+    VehicleLocation, VehicleLocationCreate,
+    Alert, AlertType, AlertSeverity,
+    TCORecord, ComplianceCheck, ComplianceStatus, ExpenseCategory
 )
 from currency_utils import currency_converter
 from ai_services import ai_service
 from email_service import email_service
+from auth_service import (
+    get_password_hash, verify_password, create_access_token,
+    get_current_user, require_role, require_group_manager, require_manager
+)
 
 
 ROOT_DIR = Path(__file__).parent
