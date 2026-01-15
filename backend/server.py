@@ -1955,6 +1955,134 @@ async def get_utilization_report(country: Optional[str] = None, period_days: int
     }
 
 
+# ============= EMAIL REPORT ROUTES =============
+@api_router.post("/reports/send-daily")
+async def send_daily_report(current_user: dict = Depends(require_group_manager())):
+    """Send daily fleet report to Group Fleet Manager"""
+    from datetime import date
+    
+    # Get dashboard stats
+    stats = await get_dashboard_stats()
+    
+    # Get alerts
+    alerts_data = await get_dashboard_alerts()
+    
+    # Get compliance
+    compliance_data = await get_compliance_status()
+    
+    # Get pending users
+    pending_users = await db.users.count_documents({"is_approved": False})
+    
+    # Prepare report data
+    report_data = {
+        "date": date.today().strftime("%B %d, %Y"),
+        "total_vehicles": stats.get('total_vehicles', 0),
+        "active_vehicles": stats.get('active_vehicles', 0),
+        "total_drivers": stats.get('total_drivers', 0),
+        "pending_maintenance": stats.get('pending_maintenance', 0),
+        "pending_requests": stats.get('pending_requests', 0),
+        "pending_users": pending_users,
+        "alert_count": alerts_data.get('total_count', 0),
+        "alerts": alerts_data.get('alerts', [])[:10],
+        "compliance": compliance_data.get('summary', {}),
+        "maintenance_cost_ghs": stats.get('total_maintenance_cost_ghs', 0),
+        "fuel_cost_usd": stats.get('total_fuel_cost_usd', 0),
+        "ghs_rate": stats.get('ghs_exchange_rate', 12.0),
+    }
+    
+    # Get Group Fleet Manager email
+    user = await db.users.find_one({"id": current_user['id']}, {"_id": 0, "email": 1})
+    if user and user.get('email'):
+        success = email_service.send_daily_fleet_report(user['email'], report_data)
+        if success:
+            return {"status": "success", "message": f"Daily report sent to {user['email']}"}
+        else:
+            return {"status": "info", "message": "Email service not configured. Report generated but not sent."}
+    
+    return {"status": "error", "message": "User email not found"}
+
+
+@api_router.post("/reports/send-weekly")
+async def send_weekly_report(current_user: dict = Depends(require_group_manager())):
+    """Send weekly summary report to Group Fleet Manager"""
+    from datetime import date, timedelta as td
+    
+    # Calculate week dates
+    today = date.today()
+    week_start = today - td(days=today.weekday())
+    week_end = week_start + td(days=6)
+    
+    # Get stats for the week
+    start_date = week_start.isoformat()
+    
+    # Count trips
+    trips = await db.driver_logbook.count_documents({"date": {"$gte": start_date}})
+    
+    # Total distance
+    logbook_entries = await db.driver_logbook.find(
+        {"date": {"$gte": start_date}},
+        {"_id": 0, "distance_km": 1, "speed_limit_violations": 1}
+    ).to_list(1000)
+    total_distance = sum(e.get('distance_km', 0) for e in logbook_entries)
+    speed_violations = sum(e.get('speed_limit_violations', 0) for e in logbook_entries)
+    
+    # Maintenance completed
+    maintenance_completed = await db.maintenance_records.count_documents({
+        "completed_date": {"$gte": start_date}
+    })
+    
+    # Checklists
+    checklists = await db.pretrip_checklists.count_documents({"date": {"$gte": start_date}})
+    
+    # Costs
+    fuel_txns = await db.fuel_transactions.find(
+        {"date": {"$gte": start_date}},
+        {"_id": 0, "cost_usd": 1}
+    ).to_list(1000)
+    fuel_cost_usd = sum(f.get('cost_usd', 0) for f in fuel_txns)
+    ghs_rate = 12.0
+    
+    maintenance_records = await db.maintenance_records.find(
+        {"date": {"$gte": start_date}},
+        {"_id": 0, "cost_usd": 1}
+    ).to_list(1000)
+    maintenance_cost_usd = sum(m.get('cost_usd', 0) for m in maintenance_records)
+    
+    # Utilization
+    utilization_data = await get_utilization_report(period_days=7)
+    
+    # Driver safety scores
+    drivers = await db.drivers.find({}, {"_id": 0, "safety_score": 1}).to_list(1000)
+    avg_safety = sum(d.get('safety_score', 80) for d in drivers) / len(drivers) if drivers else 80
+    
+    report_data = {
+        "week_start": week_start.strftime("%B %d, %Y"),
+        "week_end": week_end.strftime("%B %d, %Y"),
+        "generated_date": today.strftime("%B %d, %Y"),
+        "trips_completed": trips,
+        "distance_km": total_distance,
+        "maintenance_completed": maintenance_completed,
+        "fuel_cost_ghs": round(fuel_cost_usd * ghs_rate, 2),
+        "maintenance_cost_ghs": round(maintenance_cost_usd * ghs_rate, 2),
+        "total_cost_ghs": round((fuel_cost_usd + maintenance_cost_usd) * ghs_rate, 2),
+        "avg_utilization": utilization_data.get('fleet_avg_utilization', 0),
+        "speed_violations": speed_violations,
+        "checklists_completed": checklists,
+        "avg_safety_score": round(avg_safety, 0),
+    }
+    
+    # Get Group Fleet Manager email
+    user = await db.users.find_one({"id": current_user['id']}, {"_id": 0, "email": 1})
+    if user and user.get('email'):
+        success = email_service.send_weekly_summary_report(user['email'], report_data)
+        if success:
+            return {"status": "success", "message": f"Weekly report sent to {user['email']}"}
+        else:
+            return {"status": "info", "message": "Email service not configured. Report generated but not sent.", "report_data": report_data}
+    
+    return {"status": "error", "message": "User email not found"}
+
+
 # Include the router in the main app
 app.include_router(api_router)
 
