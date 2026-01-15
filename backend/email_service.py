@@ -70,7 +70,7 @@ class EmailService:
                         <td style="padding: 10px;">{request_data.get('description', 'N/A')}</td>
                     </tr>
                 </table>
-                <p style="color: #6b7280; font-size: 14px;">Please log in to FleetHub to approve or reject this request.</p>
+                <p style="color: #6b7280; font-size: 14px;">Please log in to GTI Fleet Solutions to approve or reject this request.</p>
             </div>
         </body>
         </html>
