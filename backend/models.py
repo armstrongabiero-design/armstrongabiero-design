@@ -1,4 +1,4 @@
-from pydantic import BaseModel, Field, ConfigDict
+from pydantic import BaseModel, Field, ConfigDict, EmailStr
 from typing import Optional, List, Dict, Any
 from datetime import datetime, timezone
 from enum import Enum
@@ -16,6 +16,12 @@ class CurrencyEnum(str, Enum):
     LRD = "LRD"
     USD = "USD"
     STN = "STN"
+
+
+class UserRole(str, Enum):
+    GROUP_FLEET_MANAGER = "GROUP_FLEET_MANAGER"
+    COUNTRY_FLEET_MANAGER = "COUNTRY_FLEET_MANAGER"
+    DRIVER = "DRIVER"
 
 
 class VehicleStatus(str, Enum):
@@ -49,6 +55,85 @@ class TransactionType(str, Enum):
     USAGE = "USAGE"
     TRANSFER = "TRANSFER"
     ADJUSTMENT = "ADJUSTMENT"
+
+
+class TirePosition(str, Enum):
+    FRONT_LEFT = "FRONT_LEFT"
+    FRONT_RIGHT = "FRONT_RIGHT"
+    REAR_LEFT = "REAR_LEFT"
+    REAR_RIGHT = "REAR_RIGHT"
+    SPARE = "SPARE"
+
+
+class TireStatus(str, Enum):
+    IN_USE = "IN_USE"
+    SPARE = "SPARE"
+    REPLACED = "REPLACED"
+    DISPOSED = "DISPOSED"
+
+
+class VendorCategory(str, Enum):
+    FUEL = "FUEL"
+    PARTS = "PARTS"
+    TIRES = "TIRES"
+    MAINTENANCE = "MAINTENANCE"
+    INSURANCE = "INSURANCE"
+    OTHER = "OTHER"
+
+
+class ExpenseCategory(str, Enum):
+    FUEL = "FUEL"
+    MAINTENANCE = "MAINTENANCE"
+    TIRES = "TIRES"
+    INSURANCE = "INSURANCE"
+    LICENSE_FEES = "LICENSE_FEES"
+    TOLLS = "TOLLS"
+    PARKING = "PARKING"
+    FINES = "FINES"
+    OTHER = "OTHER"
+
+
+# ============= USER/AUTH MODELS =============
+class User(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+    id: str = Field(default_factory=lambda: str(uuid.uuid4()))
+    email: str
+    hashed_password: str
+    full_name: str
+    role: UserRole
+    country: Optional[CountryEnum] = None  # None for Group Fleet Manager (sees all)
+    is_active: bool = True
+    is_approved: bool = False  # Must be approved by Group Fleet Manager
+    driver_id: Optional[str] = None  # Link to driver profile if role is DRIVER
+    created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+    last_login: Optional[datetime] = None
+
+
+class UserCreate(BaseModel):
+    email: str
+    password: str
+    full_name: str
+    role: UserRole
+    country: Optional[CountryEnum] = None
+    driver_id: Optional[str] = None
+
+
+class UserLogin(BaseModel):
+    email: str
+    password: str
+
+
+class UserUpdate(BaseModel):
+    full_name: Optional[str] = None
+    is_active: Optional[bool] = None
+    is_approved: Optional[bool] = None
+    country: Optional[CountryEnum] = None
+
+
+class Token(BaseModel):
+    access_token: str
+    token_type: str
+    user: Dict[str, Any]
 
 
 # Country Model
