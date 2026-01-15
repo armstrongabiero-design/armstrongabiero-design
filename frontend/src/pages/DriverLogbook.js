@@ -121,12 +121,12 @@ const DriverLogbook = () => {
           <p className="text-slate-600 mt-1">Digital trip logs and driver performance tracking</p>
         </div>
         <div className="flex gap-2 flex-wrap">
-          <Select value={selectedDriver} onValueChange={setSelectedDriver}>
+          <Select value={selectedDriver || "ALL"} onValueChange={(v) => setSelectedDriver(v === "ALL" ? "" : v)}>
             <SelectTrigger className="w-48">
               <SelectValue placeholder="All Drivers" />
             </SelectTrigger>
             <SelectContent>
-              <SelectItem value="">All Drivers</SelectItem>
+              <SelectItem value="ALL">All Drivers</SelectItem>
               {drivers.map(d => (
                 <SelectItem key={d.id} value={d.id}>{d.first_name} {d.last_name}</SelectItem>
               ))}
