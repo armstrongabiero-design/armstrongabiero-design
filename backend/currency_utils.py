@@ -6,14 +6,14 @@ from models import CurrencyEnum
 
 # Fallback rates (updated December 2025)
 FALLBACK_RATES_TO_USD = {
-    CurrencyEnum.GHS: 0.0645,  # 1 GHS = 0.0645 USD (15.5 GHS = 1 USD)
+    CurrencyEnum.GHS: 0.0833,  # 1 GHS = 0.0833 USD (12 GHS = 1 USD)
     CurrencyEnum.LRD: 0.0053,  # 1 LRD = 0.0053 USD (190 LRD = 1 USD)
     CurrencyEnum.STN: 0.0408,  # 1 STN = 0.0408 USD (24.5 STN = 1 USD)
     CurrencyEnum.USD: 1.0,
 }
 
 FALLBACK_RATES_FROM_USD = {
-    CurrencyEnum.GHS: 15.5,   # 1 USD = 15.5 GHS
+    CurrencyEnum.GHS: 12.0,   # 1 USD = 12 GHS
     CurrencyEnum.LRD: 190.0,  # 1 USD = 190 LRD
     CurrencyEnum.STN: 24.5,   # 1 USD = 24.5 STN
     CurrencyEnum.USD: 1.0,
