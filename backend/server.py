@@ -1299,23 +1299,6 @@ async def get_damage_photo(photo_id: str):
     return Response(content=content, media_type=photo.get('content_type', 'image/jpeg'))
 
 
-# Root route
-@api_router.get("/")
-async def root():
-    return {
-        "message": "Fleet Management System API",
-        "version": "3.0.0",
-        "modules": [
-            "Authentication", "Countries", "Vehicles", "Drivers", "Maintenance",
-            "Workshops", "Inventory", "Fuel", "Expenditures",
-            "Documents", "Assets", "Safety", "Exchange Rates",
-            "Maintenance Requests", "Pre-Trip Checklists", "Fleet Managers",
-            "Tires", "Driver Logbook", "Vendors", "Vehicle Locations",
-            "Alerts", "TCO Reports", "Compliance"
-        ]
-    }
-
-
 # ============= AUTHENTICATION ROUTES =============
 @api_router.post("/auth/register", response_model=Token)
 async def register_user(input: UserCreate):
