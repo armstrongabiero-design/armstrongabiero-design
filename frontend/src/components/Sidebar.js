@@ -90,7 +90,16 @@ const Sidebar = ({ open, setOpen }) => {
 
         <nav className="flex-1 p-4 space-y-1 overflow-y-auto">
           {menuItems.map((item, index) => {
+            // Skip items that require Group Manager if user is not one
+            if (item.requireGroupManager && (!isGroupManager || !isGroupManager())) {
+              return null;
+            }
+            
             if (item.divider) {
+              // Skip divider if it requires Group Manager
+              if (item.requireGroupManager && (!isGroupManager || !isGroupManager())) {
+                return null;
+              }
               return (
                 <div key={index} className="pt-4 pb-2">
                   <p className="text-xs font-semibold text-slate-400 uppercase tracking-wider px-4">
