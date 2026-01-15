@@ -1,4 +1,5 @@
 import React, { useState } from 'react';
+import { useNavigate } from 'react-router-dom';
 import { useAuth } from '../contexts/AuthContext';
 import { toast } from 'sonner';
 import { Button } from '../components/ui/button';
@@ -9,7 +10,8 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from '../components/ui/tabs'
 import { Truck, Shield, Users } from 'lucide-react';
 
 const Login = () => {
-  const { login, register } = useAuth();
+  const navigate = useNavigate();
+  const { login, register, isAuthenticated } = useAuth();
   const [activeTab, setActiveTab] = useState('login');
   const [loading, setLoading] = useState(false);
 
@@ -22,12 +24,20 @@ const Login = () => {
     country: 'GHANA',
   });
 
+  // Redirect if already authenticated
+  React.useEffect(() => {
+    if (isAuthenticated) {
+      navigate('/', { replace: true });
+    }
+  }, [isAuthenticated, navigate]);
+
   const handleLogin = async (e) => {
     e.preventDefault();
     setLoading(true);
     try {
       await login(loginData.email, loginData.password);
       toast.success('Login successful!');
+      navigate('/', { replace: true });
     } catch (error) {
       toast.error(error.response?.data?.detail || 'Login failed');
     } finally {
@@ -42,6 +52,7 @@ const Login = () => {
       const user = await register(registerData);
       if (user.is_approved) {
         toast.success('Registration successful!');
+        navigate('/', { replace: true });
       } else {
         toast.success('Registration submitted! Waiting for Group Fleet Manager approval.');
       }
