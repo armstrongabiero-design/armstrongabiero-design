@@ -652,3 +652,279 @@ class FleetManagerCreate(BaseModel):
     email: str
     phone: str
     country: CountryEnum
+
+
+# ============= TIRE MANAGEMENT MODELS =============
+class Tire(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+    id: str = Field(default_factory=lambda: str(uuid.uuid4()))
+    serial_number: str
+    brand: str
+    model: str
+    size: str  # e.g., "265/70R17"
+    vehicle_id: Optional[str] = None
+    position: Optional[TirePosition] = None
+    status: TireStatus = TireStatus.SPARE
+    country: CountryEnum
+    purchase_date: datetime
+    purchase_cost: float
+    currency: CurrencyEnum
+    mileage_at_install: Optional[float] = None
+    current_mileage: Optional[float] = None
+    max_mileage: float = 80000  # Expected tire life in km
+    tread_depth_mm: Optional[float] = None  # Current tread depth
+    min_tread_depth: float = 1.6  # Minimum legal tread depth
+    last_rotation_date: Optional[datetime] = None
+    next_rotation_due: Optional[datetime] = None
+    rotation_interval_km: float = 10000
+    notes: Optional[str] = None
+    created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+    updated_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+
+
+class TireCreate(BaseModel):
+    serial_number: str
+    brand: str
+    model: str
+    size: str
+    vehicle_id: Optional[str] = None
+    position: Optional[TirePosition] = None
+    country: CountryEnum
+    purchase_date: datetime
+    purchase_cost: float
+    currency: CurrencyEnum
+    mileage_at_install: Optional[float] = None
+    tread_depth_mm: Optional[float] = None
+    notes: Optional[str] = None
+
+
+class TireRotation(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+    id: str = Field(default_factory=lambda: str(uuid.uuid4()))
+    vehicle_id: str
+    rotation_date: datetime
+    odometer_reading: float
+    rotations: List[Dict[str, str]]  # [{"tire_id": "xxx", "from_position": "FL", "to_position": "RR"}]
+    performed_by: str
+    notes: Optional[str] = None
+    created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+
+
+class TireRotationCreate(BaseModel):
+    vehicle_id: str
+    rotation_date: datetime
+    odometer_reading: float
+    rotations: List[Dict[str, str]]
+    performed_by: str
+    notes: Optional[str] = None
+
+
+# ============= DRIVER LOGBOOK MODELS =============
+class LogbookEntry(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+    id: str = Field(default_factory=lambda: str(uuid.uuid4()))
+    driver_id: str
+    vehicle_id: str
+    country: CountryEnum
+    date: datetime
+    start_time: datetime
+    end_time: Optional[datetime] = None
+    start_location: str
+    end_location: Optional[str] = None
+    start_odometer: float
+    end_odometer: Optional[float] = None
+    distance_km: Optional[float] = None
+    purpose: str
+    fuel_used_liters: Optional[float] = None
+    average_speed_kmh: Optional[float] = None
+    max_speed_kmh: Optional[float] = None
+    speed_limit_violations: int = 0
+    harsh_braking_events: int = 0
+    harsh_acceleration_events: int = 0
+    idle_time_minutes: int = 0
+    notes: Optional[str] = None
+    synced: bool = True  # For offline mode
+    created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+
+
+class LogbookEntryCreate(BaseModel):
+    driver_id: str
+    vehicle_id: str
+    country: CountryEnum
+    date: datetime
+    start_time: datetime
+    end_time: Optional[datetime] = None
+    start_location: str
+    end_location: Optional[str] = None
+    start_odometer: float
+    end_odometer: Optional[float] = None
+    purpose: str
+    fuel_used_liters: Optional[float] = None
+    average_speed_kmh: Optional[float] = None
+    max_speed_kmh: Optional[float] = None
+    speed_limit_violations: int = 0
+    harsh_braking_events: int = 0
+    harsh_acceleration_events: int = 0
+    idle_time_minutes: int = 0
+    notes: Optional[str] = None
+
+
+# ============= VENDOR MANAGEMENT MODELS =============
+class Vendor(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+    id: str = Field(default_factory=lambda: str(uuid.uuid4()))
+    name: str
+    category: VendorCategory
+    country: CountryEnum
+    address: str
+    city: str
+    contact_person: str
+    phone: str
+    email: Optional[str] = None
+    tax_id: Optional[str] = None
+    payment_terms: str = "NET30"  # e.g., "NET30", "COD", "NET60"
+    is_preferred: bool = False
+    is_active: bool = True
+    rating: Optional[float] = None  # 1-5 stars
+    total_transactions: int = 0
+    total_spent: float = 0
+    currency: CurrencyEnum
+    notes: Optional[str] = None
+    created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+    updated_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+
+
+class VendorCreate(BaseModel):
+    name: str
+    category: VendorCategory
+    country: CountryEnum
+    address: str
+    city: str
+    contact_person: str
+    phone: str
+    email: Optional[str] = None
+    tax_id: Optional[str] = None
+    payment_terms: str = "NET30"
+    is_preferred: bool = False
+    currency: CurrencyEnum
+    notes: Optional[str] = None
+
+
+# ============= VEHICLE LOCATION MODELS =============
+class VehicleLocation(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+    id: str = Field(default_factory=lambda: str(uuid.uuid4()))
+    vehicle_id: str
+    latitude: float
+    longitude: float
+    address: Optional[str] = None
+    city: Optional[str] = None
+    country: CountryEnum
+    speed_kmh: Optional[float] = None
+    heading: Optional[float] = None  # Direction in degrees
+    source: str = "GPS"  # "GPS" or "MANUAL"
+    timestamp: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+    driver_id: Optional[str] = None
+
+
+class VehicleLocationCreate(BaseModel):
+    vehicle_id: str
+    latitude: float
+    longitude: float
+    address: Optional[str] = None
+    city: Optional[str] = None
+    country: CountryEnum
+    speed_kmh: Optional[float] = None
+    heading: Optional[float] = None
+    source: str = "MANUAL"
+    driver_id: Optional[str] = None
+
+
+# ============= ALERT/NOTIFICATION MODELS =============
+class AlertType(str, Enum):
+    DOCUMENT_EXPIRY = "DOCUMENT_EXPIRY"
+    MAINTENANCE_DUE = "MAINTENANCE_DUE"
+    TIRE_ROTATION_DUE = "TIRE_ROTATION_DUE"
+    TIRE_REPLACEMENT_DUE = "TIRE_REPLACEMENT_DUE"
+    LOW_STOCK = "LOW_STOCK"
+    FUEL_ANOMALY = "FUEL_ANOMALY"
+    SPEEDING = "SPEEDING"
+    COMPLIANCE_WARNING = "COMPLIANCE_WARNING"
+    INSPECTION_DUE = "INSPECTION_DUE"
+
+
+class AlertSeverity(str, Enum):
+    INFO = "INFO"
+    WARNING = "WARNING"
+    CRITICAL = "CRITICAL"
+
+
+class Alert(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+    id: str = Field(default_factory=lambda: str(uuid.uuid4()))
+    alert_type: AlertType
+    severity: AlertSeverity
+    title: str
+    message: str
+    entity_type: str  # "vehicle", "driver", "document", "tire", etc.
+    entity_id: str
+    country: CountryEnum
+    is_read: bool = False
+    is_resolved: bool = False
+    resolved_at: Optional[datetime] = None
+    resolved_by: Optional[str] = None
+    created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+
+
+# ============= TCO (Total Cost of Ownership) MODELS =============
+class TCORecord(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+    vehicle_id: str
+    period_start: datetime
+    period_end: datetime
+    
+    # Costs
+    fuel_cost: float = 0
+    maintenance_cost: float = 0
+    tire_cost: float = 0
+    insurance_cost: float = 0
+    license_fees: float = 0
+    depreciation: float = 0
+    other_costs: float = 0
+    total_cost: float = 0
+    
+    # Utilization
+    total_distance_km: float = 0
+    total_trips: int = 0
+    total_hours: float = 0
+    utilization_rate: float = 0  # % of time vehicle was in use
+    
+    # Calculated metrics
+    cost_per_km: float = 0
+    cost_per_trip: float = 0
+    
+    currency: CurrencyEnum
+    country: CountryEnum
+
+
+# ============= COMPLIANCE MODELS =============
+class ComplianceStatus(str, Enum):
+    COMPLIANT = "COMPLIANT"
+    WARNING = "WARNING"  # Near expiry (within 30 days)
+    NON_COMPLIANT = "NON_COMPLIANT"  # Expired or missing
+
+
+class ComplianceCheck(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+    id: str = Field(default_factory=lambda: str(uuid.uuid4()))
+    entity_type: str  # "vehicle" or "driver"
+    entity_id: str
+    country: CountryEnum
+    check_type: str  # "roadworthy", "insurance", "license", etc.
+    status: ComplianceStatus
+    expiry_date: Optional[datetime] = None
+    days_until_expiry: Optional[int] = None
+    document_id: Optional[str] = None
+    notes: Optional[str] = None
+    last_checked: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+
