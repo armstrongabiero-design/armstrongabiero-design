@@ -45,10 +45,21 @@ const ProtectedRoute = ({ children }) => {
 // Main App Layout
 const AppLayout = () => {
   const [sidebarOpen, setSidebarOpen] = useState(true);
-  const { isAuthenticated, user } = useAuth();
+  const { isAuthenticated, user, loading } = useAuth();
+  const location = window.location.pathname;
 
+  // Show loading while checking auth
+  if (loading) {
+    return (
+      <div className="flex items-center justify-center h-screen bg-slate-50">
+        <div className="text-lg text-slate-600">Loading...</div>
+      </div>
+    );
+  }
+
+  // Redirect to login if not authenticated
   if (!isAuthenticated) {
-    return <Login />;
+    return <Navigate to="/login" replace />;
   }
 
   // Check if user is approved
