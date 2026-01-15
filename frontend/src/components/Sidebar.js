@@ -3,7 +3,7 @@ import { Link, useLocation, useNavigate } from 'react-router-dom';
 import { 
   Truck, Users, Wrench, Package, Droplet, DollarSign, FileText, 
   TrendingUp, AlertTriangle, Menu, X, ClipboardCheck, FileCheck,
-  MapPin, Book, CircleDot, Building, BarChart3, LogOut, Shield
+  MapPin, Book, CircleDot, Building, BarChart3, LogOut, Shield, UserCog
 } from 'lucide-react';
 import { useAuth } from '../contexts/AuthContext';
 
@@ -39,6 +39,8 @@ const Sidebar = ({ open, setOpen }) => {
     { path: '/safety', icon: AlertTriangle, label: 'Safety' },
     { divider: true, label: 'Analytics' },
     { path: '/reports', icon: BarChart3, label: 'Reports & TCO' },
+    { divider: true, label: 'Admin', requireGroupManager: true },
+    { path: '/users', icon: UserCog, label: 'User Management', requireGroupManager: true },
   ];
 
   return (

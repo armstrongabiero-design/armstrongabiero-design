@@ -20,6 +20,7 @@ import DriverLogbook from './pages/DriverLogbook';
 import VendorManagement from './pages/VendorManagement';
 import Reports from './pages/Reports';
 import Login from './pages/Login';
+import UserManagement from './pages/UserManagement';
 import Sidebar from './components/Sidebar';
 import { Toaster } from './components/ui/sonner';
 
@@ -102,6 +103,7 @@ const AppLayout = () => {
           <Route path="/safety" element={<Safety />} />
           <Route path="/vendors" element={<VendorManagement />} />
           <Route path="/reports" element={<Reports />} />
+          <Route path="/users" element={<UserManagement />} />
         </Routes>
       </main>
     </div>
