@@ -75,12 +75,12 @@ const Dashboard = () => {
         
         {/* Country Filter (Group Manager only) */}
         {isGroupManager && isGroupManager() && (
-          <Select value={selectedCountry} onValueChange={setSelectedCountry}>
+          <Select value={selectedCountry || "ALL"} onValueChange={(v) => setSelectedCountry(v === "ALL" ? "" : v)}>
             <SelectTrigger className="w-48" data-testid="country-filter">
               <SelectValue placeholder="All Countries" />
             </SelectTrigger>
             <SelectContent>
-              <SelectItem value="">All Countries (Group View)</SelectItem>
+              <SelectItem value="ALL">All Countries (Group View)</SelectItem>
               <SelectItem value="GHANA">Ghana 🇬🇭</SelectItem>
               <SelectItem value="LIBERIA">Liberia 🇱🇷</SelectItem>
               <SelectItem value="SAO_TOME">São Tomé 🇸🇹</SelectItem>
