@@ -162,10 +162,10 @@ const TireManagement = () => {
                 <div className="grid grid-cols-2 gap-4">
                   <div>
                     <Label>Vehicle (optional)</Label>
-                    <Select value={formData.vehicle_id} onValueChange={(value) => setFormData({...formData, vehicle_id: value})}>
+                    <Select value={formData.vehicle_id || "NONE"} onValueChange={(value) => setFormData({...formData, vehicle_id: value === "NONE" ? "" : value})}>
                       <SelectTrigger><SelectValue placeholder="Select vehicle" /></SelectTrigger>
                       <SelectContent>
-                        <SelectItem value="">None (Spare)</SelectItem>
+                        <SelectItem value="NONE">None (Spare)</SelectItem>
                         {vehicles.map(v => (
                           <SelectItem key={v.id} value={v.id}>{v.registration_number}</SelectItem>
                         ))}
