@@ -11,7 +11,7 @@ logger = logging.getLogger(__name__)
 class EmailService:
     def __init__(self):
         self.api_key = os.environ.get('SENDGRID_API_KEY')
-        self.sender_email = os.environ.get('SENDER_EMAIL', 'noreply@fleethub.com')
+        self.sender_email = os.environ.get('SENDER_EMAIL', 'noreply@gtifleet.com')
         self.enabled = bool(self.api_key)
         if not self.enabled:
             logger.warning("SendGrid API key not configured. Email notifications disabled.")
@@ -44,7 +44,7 @@ class EmailService:
         <html>
         <body style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
             <div style="background: linear-gradient(135deg, #6366f1, #8b5cf6); color: white; padding: 20px; border-radius: 8px 8px 0 0;">
-                <h2 style="margin: 0;">FleetHub - Maintenance Request</h2>
+                <h2 style="margin: 0;">GTI Fleet Solutions - Maintenance Request</h2>
             </div>
             <div style="padding: 20px; border: 1px solid #e5e7eb; border-top: none; border-radius: 0 0 8px 8px;">
                 <p><strong>A new maintenance request requires your approval:</strong></p>
@@ -96,7 +96,7 @@ class EmailService:
         <html>
         <body style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
             <div style="background: linear-gradient(135deg, #6366f1, #8b5cf6); color: white; padding: 20px; border-radius: 8px 8px 0 0;">
-                <h2 style="margin: 0;">FleetHub - Request Update</h2>
+                <h2 style="margin: 0;">GTI Fleet Solutions - Request Update</h2>
             </div>
             <div style="padding: 20px; border: 1px solid #e5e7eb; border-top: none; border-radius: 0 0 8px 8px;">
                 <div style="text-align: center; padding: 20px;">
@@ -128,7 +128,7 @@ class EmailService:
         <html>
         <body style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
             <div style="background: linear-gradient(135deg, #6366f1, #8b5cf6); color: white; padding: 20px; border-radius: 8px 8px 0 0;">
-                <h2 style="margin: 0;">FleetHub - Daily Reminder</h2>
+                <h2 style="margin: 0;">GTI Fleet Solutions - Daily Reminder</h2>
             </div>
             <div style="padding: 20px; border: 1px solid #e5e7eb; border-top: none; border-radius: 0 0 8px 8px;">
                 <p>Good morning, <strong>{driver_name}</strong>!</p>
@@ -161,7 +161,7 @@ class EmailService:
         <html>
         <body style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
             <div style="background: linear-gradient(135deg, #f59e0b, #ef4444); color: white; padding: 20px; border-radius: 8px 8px 0 0;">
-                <h2 style="margin: 0;">FleetHub - Document Alert</h2>
+                <h2 style="margin: 0;">GTI Fleet Solutions - Document Alert</h2>
             </div>
             <div style="padding: 20px; border: 1px solid #e5e7eb; border-top: none; border-radius: 0 0 8px 8px;">
                 <div style="text-align: center; padding: 20px;">
@@ -207,7 +207,7 @@ class EmailService:
         <html>
         <body style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
             <div style="background: linear-gradient(135deg, #f59e0b, #ef4444); color: white; padding: 20px; border-radius: 8px 8px 0 0;">
-                <h2 style="margin: 0;">FleetHub - Inventory Alert</h2>
+                <h2 style="margin: 0;">GTI Fleet Solutions - Inventory Alert</h2>
             </div>
             <div style="padding: 20px; border: 1px solid #e5e7eb; border-top: none; border-radius: 0 0 8px 8px;">
                 <p>The following items are below their reorder levels:</p>
