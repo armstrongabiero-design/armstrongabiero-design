@@ -766,6 +766,23 @@ async def get_exchange_rate_history(currency: str, days: int = 30):
     return rates
 
 
+# ============= ROOT ROUTE =============
+@api_router.get("/")
+async def root():
+    return {
+        "message": "Fleet Management System API",
+        "version": "3.0.0",
+        "modules": [
+            "Authentication", "Countries", "Vehicles", "Drivers", "Maintenance",
+            "Workshops", "Inventory", "Fuel", "Expenditures",
+            "Documents", "Assets", "Safety", "Exchange Rates",
+            "Maintenance Requests", "Pre-Trip Checklists", "Fleet Managers",
+            "Tires", "Driver Logbook", "Vendors", "Vehicle Locations",
+            "Alerts", "TCO Reports", "Compliance"
+        ]
+    }
+
+
 # ============= DASHBOARD/ANALYTICS ROUTES =============
 
 # Helper function to get country filter for queries
