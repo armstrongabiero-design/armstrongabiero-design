@@ -112,23 +112,23 @@ const VendorManagement = () => {
           <p className="text-slate-600 mt-1">Manage suppliers and service providers</p>
         </div>
         <div className="flex gap-2 flex-wrap">
-          <Select value={selectedCategory} onValueChange={setSelectedCategory}>
+          <Select value={selectedCategory || "ALL"} onValueChange={(v) => setSelectedCategory(v === "ALL" ? "" : v)}>
             <SelectTrigger className="w-40">
               <SelectValue placeholder="All Categories" />
             </SelectTrigger>
             <SelectContent>
-              <SelectItem value="">All Categories</SelectItem>
+              <SelectItem value="ALL">All Categories</SelectItem>
               {CATEGORIES.map(c => (
                 <SelectItem key={c.value} value={c.value}>{c.label}</SelectItem>
               ))}
             </SelectContent>
           </Select>
-          <Select value={selectedCountry} onValueChange={setSelectedCountry}>
+          <Select value={selectedCountry || "ALL"} onValueChange={(v) => setSelectedCountry(v === "ALL" ? "" : v)}>
             <SelectTrigger className="w-36">
               <SelectValue placeholder="All Countries" />
             </SelectTrigger>
             <SelectContent>
-              <SelectItem value="">All Countries</SelectItem>
+              <SelectItem value="ALL">All Countries</SelectItem>
               <SelectItem value="GHANA">Ghana</SelectItem>
               <SelectItem value="LIBERIA">Liberia</SelectItem>
               <SelectItem value="SAO_TOME">São Tomé</SelectItem>
