@@ -770,7 +770,7 @@ async def get_exchange_rate_history(currency: str, days: int = 30):
 @api_router.get("/")
 async def root():
     return {
-        "message": "Fleet Management System API",
+        "message": "GTI Fleet Solutions API",
         "version": "3.0.0",
         "modules": [
             "Authentication", "Countries", "Vehicles", "Drivers", "Maintenance",
