@@ -1063,14 +1063,160 @@ async def get_damage_photo(photo_id: str):
 async def root():
     return {
         "message": "Fleet Management System API",
-        "version": "2.0.0",
+        "version": "3.0.0",
         "modules": [
-            "Countries", "Vehicles", "Drivers", "Maintenance",
+            "Authentication", "Countries", "Vehicles", "Drivers", "Maintenance",
             "Workshops", "Inventory", "Fuel", "Expenditures",
             "Documents", "Assets", "Safety", "Exchange Rates",
-            "Maintenance Requests", "Pre-Trip Checklists", "Fleet Managers"
+            "Maintenance Requests", "Pre-Trip Checklists", "Fleet Managers",
+            "Tires", "Driver Logbook", "Vendors", "Vehicle Locations",
+            "Alerts", "TCO Reports", "Compliance"
         ]
     }
+
+
+# ============= AUTHENTICATION ROUTES =============
+@api_router.post("/auth/register", response_model=Token)
+async def register_user(input: UserCreate):
+    """Register a new user"""
+    # Check if email already exists
+    existing = await db.users.find_one({"email": input.email})
+    if existing:
+        raise HTTPException(status_code=400, detail="Email already registered")
+    
+    # Create user
+    user = User(
+        email=input.email,
+        hashed_password=get_password_hash(input.password),
+        full_name=input.full_name,
+        role=input.role,
+        country=input.country,
+        driver_id=input.driver_id,
+        is_approved=input.role == UserRole.GROUP_FLEET_MANAGER  # Auto-approve group managers
+    )
+    
+    doc = user.model_dump()
+    doc['created_at'] = doc['created_at'].isoformat()
+    if doc.get('last_login'):
+        doc['last_login'] = doc['last_login'].isoformat()
+    
+    await db.users.insert_one(doc)
+    
+    # Create token
+    access_token = create_access_token(
+        data={
+            "sub": user.id,
+            "email": user.email,
+            "role": user.role.value,
+            "country": user.country.value if user.country else None,
+            "full_name": user.full_name
+        }
+    )
+    
+    return Token(
+        access_token=access_token,
+        token_type="bearer",
+        user={
+            "id": user.id,
+            "email": user.email,
+            "full_name": user.full_name,
+            "role": user.role.value,
+            "country": user.country.value if user.country else None,
+            "is_approved": user.is_approved
+        }
+    )
+
+
+@api_router.post("/auth/login", response_model=Token)
+async def login(input: UserLogin):
+    """Login and get access token"""
+    user = await db.users.find_one({"email": input.email}, {"_id": 0})
+    if not user:
+        raise HTTPException(status_code=401, detail="Invalid email or password")
+    
+    if not verify_password(input.password, user['hashed_password']):
+        raise HTTPException(status_code=401, detail="Invalid email or password")
+    
+    if not user.get('is_active', True):
+        raise HTTPException(status_code=403, detail="Account is deactivated")
+    
+    if not user.get('is_approved', False):
+        raise HTTPException(status_code=403, detail="Account pending approval by Group Fleet Manager")
+    
+    # Update last login
+    await db.users.update_one(
+        {"id": user['id']},
+        {"$set": {"last_login": datetime.now(timezone.utc).isoformat()}}
+    )
+    
+    # Create token
+    access_token = create_access_token(
+        data={
+            "sub": user['id'],
+            "email": user['email'],
+            "role": user['role'],
+            "country": user.get('country'),
+            "full_name": user['full_name']
+        }
+    )
+    
+    return Token(
+        access_token=access_token,
+        token_type="bearer",
+        user={
+            "id": user['id'],
+            "email": user['email'],
+            "full_name": user['full_name'],
+            "role": user['role'],
+            "country": user.get('country'),
+            "is_approved": user.get('is_approved', False)
+        }
+    )
+
+
+@api_router.get("/auth/me")
+async def get_current_user_info(current_user: dict = Depends(get_current_user)):
+    """Get current user info"""
+    user = await db.users.find_one({"id": current_user['id']}, {"_id": 0, "hashed_password": 0})
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+    return user
+
+
+@api_router.get("/auth/users")
+async def get_all_users(current_user: dict = Depends(require_group_manager())):
+    """Get all users (Group Fleet Manager only)"""
+    users = await db.users.find({}, {"_id": 0, "hashed_password": 0}).to_list(1000)
+    for u in users:
+        for field in ['created_at', 'last_login']:
+            if isinstance(u.get(field), str):
+                u[field] = datetime.fromisoformat(u[field])
+    return users
+
+
+@api_router.put("/auth/users/{user_id}/approve")
+async def approve_user(user_id: str, current_user: dict = Depends(require_group_manager())):
+    """Approve a user (Group Fleet Manager only)"""
+    result = await db.users.update_one(
+        {"id": user_id},
+        {"$set": {"is_approved": True}}
+    )
+    if result.modified_count == 0:
+        raise HTTPException(status_code=404, detail="User not found")
+    return {"status": "success", "message": "User approved"}
+
+
+@api_router.put("/auth/users/{user_id}")
+async def update_user(user_id: str, input: UserUpdate, current_user: dict = Depends(require_group_manager())):
+    """Update a user (Group Fleet Manager only)"""
+    update_data = {k: v for k, v in input.model_dump().items() if v is not None}
+    if not update_data:
+        raise HTTPException(status_code=400, detail="No data to update")
+    
+    result = await db.users.update_one({"id": user_id}, {"$set": update_data})
+    if result.modified_count == 0:
+        raise HTTPException(status_code=404, detail="User not found")
+    return {"status": "success", "message": "User updated"}
 
 
 # Include the router in the main app
