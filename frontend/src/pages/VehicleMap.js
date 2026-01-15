@@ -100,12 +100,12 @@ const VehicleMap = () => {
           <p className="text-slate-600 mt-1">Real-time vehicle locations across all countries</p>
         </div>
         <div className="flex gap-2 flex-wrap">
-          <Select value={selectedCountry} onValueChange={setSelectedCountry}>
+          <Select value={selectedCountry || "ALL"} onValueChange={(v) => setSelectedCountry(v === "ALL" ? "" : v)}>
             <SelectTrigger className="w-40">
               <SelectValue placeholder="All Countries" />
             </SelectTrigger>
             <SelectContent>
-              <SelectItem value="">All Countries</SelectItem>
+              <SelectItem value="ALL">All Countries</SelectItem>
               <SelectItem value="GHANA">Ghana ({countByCountry.GHANA})</SelectItem>
               <SelectItem value="LIBERIA">Liberia ({countByCountry.LIBERIA})</SelectItem>
               <SelectItem value="SAO_TOME">São Tomé ({countByCountry.SAO_TOME})</SelectItem>
