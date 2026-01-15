@@ -1460,6 +1460,501 @@ async def update_user(user_id: str, input: UserUpdate, current_user: dict = Depe
     return {"status": "success", "message": "User updated"}
 
 
+# ============= TIRE MANAGEMENT ROUTES =============
+@api_router.post("/tires", response_model=Tire)
+async def create_tire(input: TireCreate):
+    """Create a new tire"""
+    tire = Tire(**input.model_dump())
+    doc = tire.model_dump()
+    
+    for field in ['purchase_date', 'last_rotation_date', 'next_rotation_due', 'created_at', 'updated_at']:
+        if doc.get(field):
+            doc[field] = doc[field].isoformat()
+    
+    await db.tires.insert_one(doc)
+    return tire
+
+
+@api_router.get("/tires")
+async def get_tires(country: Optional[str] = None, vehicle_id: Optional[str] = None, status: Optional[str] = None):
+    """Get all tires with optional filters"""
+    query = {}
+    if country:
+        query['country'] = country
+    if vehicle_id:
+        query['vehicle_id'] = vehicle_id
+    if status:
+        query['status'] = status
+    
+    tires = await db.tires.find(query, {"_id": 0}).to_list(1000)
+    for t in tires:
+        for field in ['purchase_date', 'last_rotation_date', 'next_rotation_due', 'created_at', 'updated_at']:
+            if isinstance(t.get(field), str):
+                t[field] = datetime.fromisoformat(t[field])
+    return tires
+
+
+@api_router.get("/tires/{tire_id}")
+async def get_tire(tire_id: str):
+    """Get a single tire"""
+    tire = await db.tires.find_one({"id": tire_id}, {"_id": 0})
+    if not tire:
+        raise HTTPException(status_code=404, detail="Tire not found")
+    return tire
+
+
+@api_router.put("/tires/{tire_id}")
+async def update_tire(tire_id: str, update_data: dict):
+    """Update a tire"""
+    update_data['updated_at'] = datetime.now(timezone.utc).isoformat()
+    result = await db.tires.update_one({"id": tire_id}, {"$set": update_data})
+    if result.modified_count == 0:
+        raise HTTPException(status_code=404, detail="Tire not found")
+    return {"status": "success"}
+
+
+@api_router.post("/tires/rotations", response_model=TireRotation)
+async def record_tire_rotation(input: TireRotationCreate):
+    """Record a tire rotation"""
+    rotation = TireRotation(**input.model_dump())
+    doc = rotation.model_dump()
+    
+    for field in ['rotation_date', 'created_at']:
+        if doc.get(field):
+            doc[field] = doc[field].isoformat()
+    
+    await db.tire_rotations.insert_one(doc)
+    
+    # Update tire positions and next rotation dates
+    for rot in input.rotations:
+        next_rotation = datetime.now(timezone.utc) + timedelta(days=90)  # 3 months
+        await db.tires.update_one(
+            {"id": rot['tire_id']},
+            {"$set": {
+                "position": rot['to_position'],
+                "last_rotation_date": datetime.now(timezone.utc).isoformat(),
+                "next_rotation_due": next_rotation.isoformat(),
+                "updated_at": datetime.now(timezone.utc).isoformat()
+            }}
+        )
+    
+    return rotation
+
+
+@api_router.get("/tires/rotations/history")
+async def get_tire_rotation_history(vehicle_id: Optional[str] = None):
+    """Get tire rotation history"""
+    query = {}
+    if vehicle_id:
+        query['vehicle_id'] = vehicle_id
+    
+    rotations = await db.tire_rotations.find(query, {"_id": 0}).sort("rotation_date", -1).to_list(100)
+    return rotations
+
+
+# ============= DRIVER LOGBOOK ROUTES =============
+@api_router.post("/logbook", response_model=LogbookEntry)
+async def create_logbook_entry(input: LogbookEntryCreate):
+    """Create a new logbook entry"""
+    entry = LogbookEntry(**input.model_dump())
+    
+    # Calculate distance if not provided
+    if input.end_odometer and not entry.distance_km:
+        entry.distance_km = input.end_odometer - input.start_odometer
+    
+    doc = entry.model_dump()
+    for field in ['date', 'start_time', 'end_time', 'created_at']:
+        if doc.get(field):
+            doc[field] = doc[field].isoformat()
+    
+    await db.driver_logbook.insert_one(doc)
+    return entry
+
+
+@api_router.get("/logbook")
+async def get_logbook_entries(
+    driver_id: Optional[str] = None,
+    vehicle_id: Optional[str] = None,
+    country: Optional[str] = None,
+    start_date: Optional[str] = None,
+    end_date: Optional[str] = None
+):
+    """Get logbook entries with filters"""
+    query = {}
+    if driver_id:
+        query['driver_id'] = driver_id
+    if vehicle_id:
+        query['vehicle_id'] = vehicle_id
+    if country:
+        query['country'] = country
+    if start_date:
+        query['date'] = {"$gte": start_date}
+    if end_date:
+        if 'date' in query:
+            query['date']['$lte'] = end_date
+        else:
+            query['date'] = {"$lte": end_date}
+    
+    entries = await db.driver_logbook.find(query, {"_id": 0}).sort("date", -1).to_list(1000)
+    for e in entries:
+        for field in ['date', 'start_time', 'end_time', 'created_at']:
+            if isinstance(e.get(field), str):
+                e[field] = datetime.fromisoformat(e[field])
+    return entries
+
+
+@api_router.get("/logbook/summary/{driver_id}")
+async def get_driver_logbook_summary(driver_id: str, period_days: int = 30):
+    """Get driver logbook summary"""
+    start_date = (datetime.now(timezone.utc) - timedelta(days=period_days)).isoformat()
+    
+    entries = await db.driver_logbook.find(
+        {"driver_id": driver_id, "date": {"$gte": start_date}},
+        {"_id": 0}
+    ).to_list(1000)
+    
+    total_distance = sum(e.get('distance_km', 0) for e in entries)
+    total_trips = len(entries)
+    total_violations = sum(e.get('speed_limit_violations', 0) for e in entries)
+    total_fuel = sum(e.get('fuel_used_liters', 0) for e in entries)
+    
+    return {
+        "driver_id": driver_id,
+        "period_days": period_days,
+        "total_trips": total_trips,
+        "total_distance_km": round(total_distance, 2),
+        "total_fuel_liters": round(total_fuel, 2),
+        "avg_fuel_efficiency": round(total_distance / total_fuel, 2) if total_fuel > 0 else 0,
+        "speed_violations": total_violations,
+        "harsh_braking_events": sum(e.get('harsh_braking_events', 0) for e in entries),
+        "harsh_acceleration_events": sum(e.get('harsh_acceleration_events', 0) for e in entries)
+    }
+
+
+# ============= VENDOR MANAGEMENT ROUTES =============
+@api_router.post("/vendors", response_model=Vendor)
+async def create_vendor(input: VendorCreate):
+    """Create a new vendor"""
+    vendor = Vendor(**input.model_dump())
+    doc = vendor.model_dump()
+    
+    for field in ['created_at', 'updated_at']:
+        if doc.get(field):
+            doc[field] = doc[field].isoformat()
+    
+    await db.vendors.insert_one(doc)
+    return vendor
+
+
+@api_router.get("/vendors")
+async def get_vendors(country: Optional[str] = None, category: Optional[str] = None):
+    """Get all vendors with optional filters"""
+    query = {}
+    if country:
+        query['country'] = country
+    if category:
+        query['category'] = category
+    
+    vendors = await db.vendors.find(query, {"_id": 0}).to_list(1000)
+    for v in vendors:
+        for field in ['created_at', 'updated_at']:
+            if isinstance(v.get(field), str):
+                v[field] = datetime.fromisoformat(v[field])
+    return vendors
+
+
+@api_router.get("/vendors/{vendor_id}")
+async def get_vendor(vendor_id: str):
+    """Get a single vendor"""
+    vendor = await db.vendors.find_one({"id": vendor_id}, {"_id": 0})
+    if not vendor:
+        raise HTTPException(status_code=404, detail="Vendor not found")
+    return vendor
+
+
+@api_router.put("/vendors/{vendor_id}")
+async def update_vendor(vendor_id: str, update_data: dict):
+    """Update a vendor"""
+    update_data['updated_at'] = datetime.now(timezone.utc).isoformat()
+    result = await db.vendors.update_one({"id": vendor_id}, {"$set": update_data})
+    if result.modified_count == 0:
+        raise HTTPException(status_code=404, detail="Vendor not found")
+    return {"status": "success"}
+
+
+# ============= VEHICLE LOCATION ROUTES =============
+@api_router.post("/vehicle-locations", response_model=VehicleLocation)
+async def create_vehicle_location(input: VehicleLocationCreate):
+    """Update vehicle location (GPS or Manual)"""
+    location = VehicleLocation(**input.model_dump())
+    doc = location.model_dump()
+    doc['timestamp'] = doc['timestamp'].isoformat()
+    
+    await db.vehicle_locations.insert_one(doc)
+    
+    # Update vehicle's last known location
+    await db.vehicles.update_one(
+        {"id": input.vehicle_id},
+        {"$set": {
+            "last_location": {
+                "latitude": input.latitude,
+                "longitude": input.longitude,
+                "address": input.address,
+                "timestamp": doc['timestamp']
+            }
+        }}
+    )
+    
+    return location
+
+
+@api_router.get("/vehicle-locations")
+async def get_vehicle_locations(country: Optional[str] = None):
+    """Get latest location for all vehicles"""
+    query = {}
+    if country:
+        query['country'] = country
+    
+    # Get vehicles with their last locations
+    vehicles = await db.vehicles.find(query, {"_id": 0}).to_list(1000)
+    locations = []
+    
+    for vehicle in vehicles:
+        last_loc = vehicle.get('last_location')
+        if last_loc:
+            locations.append({
+                "vehicle_id": vehicle['id'],
+                "registration_number": vehicle.get('registration_number'),
+                "make": vehicle.get('make'),
+                "model": vehicle.get('model'),
+                "country": vehicle.get('country'),
+                "status": vehicle.get('status'),
+                **last_loc
+            })
+    
+    return locations
+
+
+@api_router.get("/vehicle-locations/{vehicle_id}/history")
+async def get_vehicle_location_history(vehicle_id: str, hours: int = 24):
+    """Get location history for a vehicle"""
+    since = (datetime.now(timezone.utc) - timedelta(hours=hours)).isoformat()
+    
+    locations = await db.vehicle_locations.find(
+        {"vehicle_id": vehicle_id, "timestamp": {"$gte": since}},
+        {"_id": 0}
+    ).sort("timestamp", -1).to_list(1000)
+    
+    return locations
+
+
+# ============= TCO (TOTAL COST OF OWNERSHIP) ROUTES =============
+@api_router.get("/tco/vehicle/{vehicle_id}")
+async def get_vehicle_tco(vehicle_id: str, period_days: int = 365):
+    """Calculate TCO for a specific vehicle"""
+    start_date = (datetime.now(timezone.utc) - timedelta(days=period_days)).isoformat()
+    
+    vehicle = await db.vehicles.find_one({"id": vehicle_id}, {"_id": 0})
+    if not vehicle:
+        raise HTTPException(status_code=404, detail="Vehicle not found")
+    
+    # Fuel costs
+    fuel_txns = await db.fuel_transactions.find(
+        {"vehicle_id": vehicle_id, "date": {"$gte": start_date}},
+        {"_id": 0, "cost_usd": 1, "quantity_liters": 1}
+    ).to_list(1000)
+    fuel_cost = sum(f.get('cost_usd', 0) for f in fuel_txns)
+    total_fuel = sum(f.get('quantity_liters', 0) for f in fuel_txns)
+    
+    # Maintenance costs
+    maintenance = await db.maintenance_records.find(
+        {"vehicle_id": vehicle_id, "date": {"$gte": start_date}},
+        {"_id": 0, "cost_usd": 1}
+    ).to_list(1000)
+    maintenance_cost = sum(m.get('cost_usd', 0) for m in maintenance)
+    
+    # Tire costs
+    tires = await db.tires.find(
+        {"vehicle_id": vehicle_id},
+        {"_id": 0, "purchase_cost": 1, "currency": 1}
+    ).to_list(100)
+    tire_cost = sum(t.get('purchase_cost', 0) * 0.065 for t in tires)  # Convert to USD approx
+    
+    # Distance from logbook
+    logbook = await db.driver_logbook.find(
+        {"vehicle_id": vehicle_id, "date": {"$gte": start_date}},
+        {"_id": 0, "distance_km": 1}
+    ).to_list(1000)
+    total_distance = sum(e.get('distance_km', 0) for e in logbook)
+    
+    # Calculate totals
+    total_cost = fuel_cost + maintenance_cost + tire_cost
+    cost_per_km = total_cost / total_distance if total_distance > 0 else 0
+    
+    return {
+        "vehicle_id": vehicle_id,
+        "registration_number": vehicle.get('registration_number'),
+        "period_days": period_days,
+        "costs": {
+            "fuel": round(fuel_cost, 2),
+            "maintenance": round(maintenance_cost, 2),
+            "tires": round(tire_cost, 2),
+            "total": round(total_cost, 2)
+        },
+        "utilization": {
+            "total_distance_km": round(total_distance, 2),
+            "total_trips": len(logbook),
+            "total_fuel_liters": round(total_fuel, 2),
+            "fuel_efficiency_km_per_liter": round(total_distance / total_fuel, 2) if total_fuel > 0 else 0
+        },
+        "metrics": {
+            "cost_per_km_usd": round(cost_per_km, 4),
+            "cost_per_day_usd": round(total_cost / period_days, 2)
+        },
+        "currency": "USD"
+    }
+
+
+@api_router.get("/tco/fleet")
+async def get_fleet_tco(country: Optional[str] = None, period_days: int = 365):
+    """Calculate TCO for entire fleet"""
+    country_filter = {"country": country} if country else {}
+    vehicles = await db.vehicles.find(country_filter, {"_id": 0, "id": 1}).to_list(1000)
+    
+    fleet_tco = {
+        "fuel": 0,
+        "maintenance": 0,
+        "tires": 0,
+        "total": 0
+    }
+    total_distance = 0
+    
+    for v in vehicles:
+        try:
+            tco = await get_vehicle_tco(v['id'], period_days)
+            fleet_tco['fuel'] += tco['costs']['fuel']
+            fleet_tco['maintenance'] += tco['costs']['maintenance']
+            fleet_tco['tires'] += tco['costs']['tires']
+            fleet_tco['total'] += tco['costs']['total']
+            total_distance += tco['utilization']['total_distance_km']
+        except:
+            pass
+    
+    return {
+        "period_days": period_days,
+        "country": country,
+        "vehicle_count": len(vehicles),
+        "costs": {k: round(v, 2) for k, v in fleet_tco.items()},
+        "total_distance_km": round(total_distance, 2),
+        "cost_per_km_usd": round(fleet_tco['total'] / total_distance, 4) if total_distance > 0 else 0,
+        "currency": "USD"
+    }
+
+
+@api_router.get("/reports/expense-breakdown")
+async def get_expense_breakdown(country: Optional[str] = None, period_days: int = 30):
+    """Get expense breakdown by category"""
+    start_date = (datetime.now(timezone.utc) - timedelta(days=period_days)).isoformat()
+    country_filter = {"country": country} if country else {}
+    
+    # Get all expenditures
+    expenditures = await db.expenditures.find(
+        {**country_filter, "date": {"$gte": start_date}},
+        {"_id": 0}
+    ).to_list(1000)
+    
+    # Group by category
+    breakdown = {}
+    for exp in expenditures:
+        category = exp.get('category', 'OTHER')
+        if category not in breakdown:
+            breakdown[category] = {"count": 0, "total_usd": 0}
+        breakdown[category]['count'] += 1
+        breakdown[category]['total_usd'] += exp.get('amount_usd', 0)
+    
+    # Add fuel
+    fuel_txns = await db.fuel_transactions.find(
+        {**country_filter, "date": {"$gte": start_date}},
+        {"_id": 0, "cost_usd": 1}
+    ).to_list(1000)
+    breakdown['FUEL'] = {
+        "count": len(fuel_txns),
+        "total_usd": round(sum(f.get('cost_usd', 0) for f in fuel_txns), 2)
+    }
+    
+    # Add maintenance
+    maintenance = await db.maintenance_records.find(
+        {**country_filter, "date": {"$gte": start_date}},
+        {"_id": 0, "cost_usd": 1}
+    ).to_list(1000)
+    breakdown['MAINTENANCE'] = {
+        "count": len(maintenance),
+        "total_usd": round(sum(m.get('cost_usd', 0) for m in maintenance), 2)
+    }
+    
+    # Round values
+    for k, v in breakdown.items():
+        v['total_usd'] = round(v['total_usd'], 2)
+    
+    total = sum(v['total_usd'] for v in breakdown.values())
+    
+    return {
+        "period_days": period_days,
+        "country": country,
+        "breakdown": breakdown,
+        "total_usd": round(total, 2)
+    }
+
+
+@api_router.get("/reports/utilization")
+async def get_utilization_report(country: Optional[str] = None, period_days: int = 30):
+    """Get fleet utilization report"""
+    start_date = (datetime.now(timezone.utc) - timedelta(days=period_days)).isoformat()
+    country_filter = {"country": country} if country else {}
+    
+    vehicles = await db.vehicles.find(country_filter, {"_id": 0}).to_list(1000)
+    utilization_data = []
+    
+    for vehicle in vehicles:
+        logbook = await db.driver_logbook.find(
+            {"vehicle_id": vehicle['id'], "date": {"$gte": start_date}},
+            {"_id": 0}
+        ).to_list(1000)
+        
+        total_distance = sum(e.get('distance_km', 0) for e in logbook)
+        total_hours = sum(e.get('total_hours', 0) for e in logbook)
+        trip_count = len(logbook)
+        
+        # Calculate utilization rate (assuming 8 hours/day max usage)
+        max_hours = period_days * 8
+        utilization_rate = (total_hours / max_hours * 100) if max_hours > 0 else 0
+        
+        utilization_data.append({
+            "vehicle_id": vehicle['id'],
+            "registration_number": vehicle.get('registration_number'),
+            "country": vehicle.get('country'),
+            "status": vehicle.get('status'),
+            "trip_count": trip_count,
+            "total_distance_km": round(total_distance, 2),
+            "total_hours": round(total_hours, 2),
+            "utilization_rate": round(utilization_rate, 1)
+        })
+    
+    # Sort by utilization rate descending
+    utilization_data.sort(key=lambda x: x['utilization_rate'], reverse=True)
+    
+    return {
+        "period_days": period_days,
+        "country": country,
+        "vehicle_count": len(vehicles),
+        "vehicles": utilization_data,
+        "fleet_avg_utilization": round(
+            sum(v['utilization_rate'] for v in utilization_data) / len(utilization_data) if utilization_data else 0,
+            1
+        )
+    }
+
+
 # Include the router in the main app
 app.include_router(api_router)
 
