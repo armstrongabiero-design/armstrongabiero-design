@@ -100,23 +100,23 @@ const Reports = () => {
               <SelectItem value="365">Last Year</SelectItem>
             </SelectContent>
           </Select>
-          <Select value={selectedCountry} onValueChange={setSelectedCountry}>
+          <Select value={selectedCountry || "ALL"} onValueChange={(v) => setSelectedCountry(v === "ALL" ? "" : v)}>
             <SelectTrigger className="w-36">
               <SelectValue placeholder="All Countries" />
             </SelectTrigger>
             <SelectContent>
-              <SelectItem value="">All Countries</SelectItem>
+              <SelectItem value="ALL">All Countries</SelectItem>
               <SelectItem value="GHANA">Ghana</SelectItem>
               <SelectItem value="LIBERIA">Liberia</SelectItem>
               <SelectItem value="SAO_TOME">São Tomé</SelectItem>
             </SelectContent>
           </Select>
-          <Select value={selectedVehicle} onValueChange={setSelectedVehicle}>
+          <Select value={selectedVehicle || "FLEET"} onValueChange={(v) => setSelectedVehicle(v === "FLEET" ? "" : v)}>
             <SelectTrigger className="w-48">
               <SelectValue placeholder="Fleet Overview" />
             </SelectTrigger>
             <SelectContent>
-              <SelectItem value="">Fleet Overview</SelectItem>
+              <SelectItem value="FLEET">Fleet Overview</SelectItem>
               {vehicles.map(v => (
                 <SelectItem key={v.id} value={v.id}>{v.registration_number}</SelectItem>
               ))}
