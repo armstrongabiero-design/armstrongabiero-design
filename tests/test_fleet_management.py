@@ -631,9 +631,11 @@ class TestTCOReports:
         
         # Verify expected fields based on actual API response
         assert "costs" in data
-        assert "cost_per_km_usd" in data
+        assert "metrics" in data
+        assert "cost_per_km_usd" in data.get("metrics", {})
         
-        print(f"✓ Vehicle TCO: ${data['costs'].get('total', 0)} total, ${data['cost_per_km_usd']}/km")
+        cost_per_km = data.get("metrics", {}).get("cost_per_km_usd", 0)
+        print(f"✓ Vehicle TCO: ${data['costs'].get('total', 0)} total, ${cost_per_km}/km")
     
     def test_get_fleet_tco(self):
         """Get TCO for entire fleet"""
