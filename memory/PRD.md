@@ -176,10 +176,14 @@ AI-native Fleet Management System designed for GTI operations globally (with foc
   - Add to `/app/backend/.env` as `SENDGRID_API_KEY=your_key`
 
 ## Future/Backlog Tasks
+- [ ] Add graphs/charts to dashboards (charting library)
+- [ ] Complete UI for empty modules: TireManagement, VendorManagement, Reports/TCO, Vehicle Map
+- [ ] Implement User Approval UI in UserManagement.js page
+- [ ] Implement Maintenance Approval UI for managers
+- [ ] Refactor backend monolith (server.py, models.py → modular structure)
 - [ ] Offline Mode (PWA with sync)
 - [ ] Native Mobile App (separate project)
 - [ ] GPS device integration
-- [ ] Advanced analytics charts
 - [ ] PDF report export
 
 ## Files Reference
