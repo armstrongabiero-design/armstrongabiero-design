@@ -51,7 +51,7 @@ const ProtectedRoute = ({ children }) => {
 // Main App Layout
 const AppLayout = () => {
   const [sidebarOpen, setSidebarOpen] = useState(true);
-  const { isAuthenticated, user, loading } = useAuth();
+  const { isAuthenticated, user, loading, logout } = useAuth();
   const location = window.location.pathname;
 
   // Show loading while checking auth
