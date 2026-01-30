@@ -68,19 +68,33 @@ const AppLayout = () => {
     return <Navigate to="/login" replace />;
   }
 
-  // Check if user is approved
+  // Check if user is approved - redirect to login with message
   if (!user?.is_approved && user?.role !== 'GROUP_FLEET_MANAGER') {
     return (
-      <div className="min-h-screen bg-slate-50 flex items-center justify-center p-4">
-        <div className="bg-white rounded-xl shadow-lg p-8 max-w-md text-center">
+      <div className="min-h-screen bg-gradient-to-br from-slate-900 via-purple-900 to-slate-900 flex items-center justify-center p-4">
+        <div className="bg-white rounded-2xl shadow-2xl p-8 max-w-md text-center">
           <div className="text-6xl mb-4">⏳</div>
           <h2 className="text-2xl font-bold text-slate-800 mb-2">Account Pending Approval</h2>
           <p className="text-slate-600 mb-4">
-            Your account is awaiting approval from the Group Fleet Manager. You'll be notified once approved.
+            Your account is awaiting approval from a manager. You'll be notified via email once approved.
           </p>
-          <p className="text-sm text-slate-500">
-            Logged in as: {user?.email}
-          </p>
+          <div className="bg-slate-50 rounded-lg p-4 mb-6">
+            <p className="text-sm text-slate-500">
+              Logged in as: <span className="font-medium text-slate-700">{user?.email}</span>
+            </p>
+            <p className="text-sm text-slate-500">
+              Role: <span className="font-medium text-slate-700">{user?.role?.replace(/_/g, ' ')}</span>
+            </p>
+          </div>
+          <Button 
+            onClick={() => {
+              logout();
+              window.location.href = '/login';
+            }}
+            className="w-full"
+          >
+            Back to Sign In
+          </Button>
         </div>
       </div>
     );
