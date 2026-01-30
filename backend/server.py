@@ -36,7 +36,8 @@ from models import (
     Vendor, VendorCreate, VendorCategory,
     VehicleLocation, VehicleLocationCreate,
     Alert, AlertType, AlertSeverity,
-    TCORecord, ComplianceCheck, ComplianceStatus, ExpenseCategory
+    TCORecord, ComplianceCheck, ComplianceStatus, ExpenseCategory,
+    ForgotPasswordRequest, ResetPasswordRequest, PasswordResetToken
 )
 from currency_utils import currency_converter
 from ai_services import ai_service
