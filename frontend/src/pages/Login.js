@@ -1,20 +1,26 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { useNavigate, Link } from 'react-router-dom';
 import { useAuth } from '../contexts/AuthContext';
 import { toast } from 'sonner';
+import axios from 'axios';
 import { Button } from '../components/ui/button';
 import { Input } from '../components/ui/input';
 import { Label } from '../components/ui/label';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '../components/ui/select';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '../components/ui/tabs';
-import { Truck, Shield, Users } from 'lucide-react';
+import { Truck, Shield, Users, UserCog, User, Search } from 'lucide-react';
 import PasswordInput from '../components/PasswordInput';
+
+const BACKEND_URL = process.env.REACT_APP_BACKEND_URL;
+const API = `${BACKEND_URL}/api`;
 
 const Login = () => {
   const navigate = useNavigate();
   const { login, register, isAuthenticated } = useAuth();
   const [activeTab, setActiveTab] = useState('login');
   const [loading, setLoading] = useState(false);
+  const [countries, setCountries] = useState([]);
+  const [countrySearch, setCountrySearch] = useState('');
 
   const [loginData, setLoginData] = useState({ email: '', password: '' });
   const [registerData, setRegisterData] = useState({
@@ -22,16 +28,39 @@ const Login = () => {
     password: '',
     confirmPassword: '',
     full_name: '',
-    role: 'DRIVER',
-    country: 'GHANA',
+    role: 'USER',
+    country: '',
   });
 
+  // Fetch countries list
+  useEffect(() => {
+    const fetchCountries = async () => {
+      try {
+        const response = await axios.get(`${API}/countries/list`);
+        setCountries(response.data.countries || []);
+      } catch (error) {
+        console.error('Failed to fetch countries:', error);
+        // Fallback countries
+        setCountries([
+          { code: 'GH', name: 'Ghana' },
+          { code: 'LR', name: 'Liberia' },
+          { code: 'ST', name: 'São Tomé and Príncipe' },
+        ]);
+      }
+    };
+    fetchCountries();
+  }, []);
+
   // Redirect if already authenticated
-  React.useEffect(() => {
+  useEffect(() => {
     if (isAuthenticated) {
       navigate('/', { replace: true });
     }
   }, [isAuthenticated, navigate]);
+
+  const filteredCountries = countries.filter(c => 
+    c.name.toLowerCase().includes(countrySearch.toLowerCase())
+  );
 
   const handleLogin = async (e) => {
     e.preventDefault();
@@ -50,7 +79,6 @@ const Login = () => {
   const handleRegister = async (e) => {
     e.preventDefault();
     
-    // Validate passwords match
     if (registerData.password !== registerData.confirmPassword) {
       toast.error('Passwords do not match');
       return;
@@ -58,6 +86,11 @@ const Login = () => {
     
     if (registerData.password.length < 6) {
       toast.error('Password must be at least 6 characters');
+      return;
+    }
+
+    if (registerData.role !== 'GROUP_FLEET_MANAGER' && !registerData.country) {
+      toast.error('Please select a country');
       return;
     }
     
@@ -69,12 +102,46 @@ const Login = () => {
         toast.success('Registration successful!');
         navigate('/', { replace: true });
       } else {
-        toast.success('Registration submitted! Waiting for Group Fleet Manager approval.');
+        toast.success('Registration submitted! Waiting for manager approval.');
       }
     } catch (error) {
       toast.error(error.response?.data?.detail || 'Registration failed');
     } finally {
       setLoading(false);
+    }
+  };
+
+  const getRoleDescription = (role) => {
+    switch (role) {
+      case 'GROUP_FLEET_MANAGER':
+        return 'Full system access, approves all users';
+      case 'FLEET_MANAGER':
+        return 'Country management, approves officers & below';
+      case 'FLEET_OFFICER':
+        return 'Fuel entry & driver operations';
+      case 'DRIVER':
+        return 'Personal logbook, pre-trip checks, requests';
+      case 'USER':
+        return 'Basic access, personal reports';
+      default:
+        return '';
+    }
+  };
+
+  const getRoleIcon = (role) => {
+    switch (role) {
+      case 'GROUP_FLEET_MANAGER':
+        return <Shield size={16} className="text-purple-600" />;
+      case 'FLEET_MANAGER':
+        return <Users size={16} className="text-blue-600" />;
+      case 'FLEET_OFFICER':
+        return <UserCog size={16} className="text-indigo-600" />;
+      case 'DRIVER':
+        return <Truck size={16} className="text-green-600" />;
+      case 'USER':
+        return <User size={16} className="text-slate-600" />;
+      default:
+        return null;
     }
   };
 
@@ -90,11 +157,10 @@ const Login = () => {
             <h1 className="text-3xl font-bold text-white">GTI <span className="text-purple-400">FLEET</span></h1>
           </div>
           <p className="text-slate-400">GTI Fleet Solutions</p>
-          <p className="text-slate-500 text-sm mt-1">Ghana • Liberia • São Tomé</p>
         </div>
 
         {/* Auth Card */}
-        <div className="bg-white rounded-2xl shadow-2xl p-8">
+        <div className="bg-white rounded-2xl shadow-2xl p-8 max-h-[80vh] overflow-y-auto">
           <Tabs value={activeTab} onValueChange={setActiveTab}>
             <TabsList className="grid w-full grid-cols-2 mb-6">
               <TabsTrigger value="login">Sign In</TabsTrigger>
@@ -183,54 +249,89 @@ const Login = () => {
                 </div>
                 <div>
                   <Label>Role</Label>
-                  <Select value={registerData.role} onValueChange={(value) => setRegisterData({ ...registerData, role: value })}>
+                  <Select 
+                    value={registerData.role} 
+                    onValueChange={(value) => setRegisterData({ ...registerData, role: value })}
+                  >
                     <SelectTrigger data-testid="register-role">
-                      <SelectValue />
+                      <SelectValue placeholder="Select your role" />
                     </SelectTrigger>
                     <SelectContent>
                       <SelectItem value="GROUP_FLEET_MANAGER">
                         <div className="flex items-center gap-2">
-                          <Shield size={16} className="text-purple-600" />
-                          Group Fleet Manager (GTI Office)
+                          {getRoleIcon('GROUP_FLEET_MANAGER')}
+                          <span>Group Fleet Manager</span>
                         </div>
                       </SelectItem>
-                      <SelectItem value="COUNTRY_FLEET_MANAGER">
+                      <SelectItem value="FLEET_MANAGER">
                         <div className="flex items-center gap-2">
-                          <Users size={16} className="text-blue-600" />
-                          Country Fleet Manager
+                          {getRoleIcon('FLEET_MANAGER')}
+                          <span>Fleet Manager</span>
+                        </div>
+                      </SelectItem>
+                      <SelectItem value="FLEET_OFFICER">
+                        <div className="flex items-center gap-2">
+                          {getRoleIcon('FLEET_OFFICER')}
+                          <span>Fleet Officer</span>
                         </div>
                       </SelectItem>
                       <SelectItem value="DRIVER">
                         <div className="flex items-center gap-2">
-                          <Truck size={16} className="text-green-600" />
-                          Driver
+                          {getRoleIcon('DRIVER')}
+                          <span>Driver</span>
+                        </div>
+                      </SelectItem>
+                      <SelectItem value="USER">
+                        <div className="flex items-center gap-2">
+                          {getRoleIcon('USER')}
+                          <span>User</span>
                         </div>
                       </SelectItem>
                     </SelectContent>
                   </Select>
+                  <p className="text-xs text-slate-500 mt-1">{getRoleDescription(registerData.role)}</p>
                 </div>
+                
                 {registerData.role !== 'GROUP_FLEET_MANAGER' && (
                   <div>
                     <Label>Country</Label>
-                    <Select value={registerData.country} onValueChange={(value) => setRegisterData({ ...registerData, country: value })}>
-                      <SelectTrigger data-testid="register-country">
-                        <SelectValue />
-                      </SelectTrigger>
-                      <SelectContent>
-                        <SelectItem value="GHANA">Ghana 🇬🇭</SelectItem>
-                        <SelectItem value="LIBERIA">Liberia 🇱🇷</SelectItem>
-                        <SelectItem value="SAO_TOME">São Tomé 🇸🇹</SelectItem>
-                      </SelectContent>
-                    </Select>
+                    <div className="relative">
+                      <div className="relative mb-2">
+                        <Search className="absolute left-3 top-1/2 transform -translate-y-1/2 text-slate-400" size={16} />
+                        <Input
+                          type="text"
+                          placeholder="Search countries..."
+                          value={countrySearch}
+                          onChange={(e) => setCountrySearch(e.target.value)}
+                          className="pl-9"
+                        />
+                      </div>
+                      <Select 
+                        value={registerData.country} 
+                        onValueChange={(value) => setRegisterData({ ...registerData, country: value })}
+                      >
+                        <SelectTrigger data-testid="register-country">
+                          <SelectValue placeholder="Select country" />
+                        </SelectTrigger>
+                        <SelectContent className="max-h-[200px]">
+                          {filteredCountries.map((country) => (
+                            <SelectItem key={country.code} value={country.name}>
+                              {country.name}
+                            </SelectItem>
+                          ))}
+                        </SelectContent>
+                      </Select>
+                    </div>
                   </div>
                 )}
+                
                 <Button type="submit" className="w-full" disabled={loading} data-testid="register-btn">
                   {loading ? 'Registering...' : 'Register'}
                 </Button>
                 <p className="text-xs text-slate-500 text-center">
                   {registerData.role === 'GROUP_FLEET_MANAGER' 
                     ? 'Group Fleet Manager accounts are auto-approved.' 
-                    : 'Your account will need approval from the Group Fleet Manager.'}
+                    : 'Your account will need approval from a manager.'}
                 </p>
               </form>
             </TabsContent>
@@ -239,7 +340,7 @@ const Login = () => {
 
         {/* Demo Credentials */}
         <div className="mt-6 text-center">
-          <p className="text-slate-400 text-sm">Demo: Create a Group Fleet Manager account to get started</p>
+          <p className="text-slate-400 text-sm">Create a Group Fleet Manager account to get started</p>
         </div>
       </div>
     </div>
