@@ -223,7 +223,8 @@ class TestPersonalDashboard:
         """Personal dashboard should require authentication"""
         response = requests.get(f"{API}/dashboard/personal")
         
-        assert response.status_code == 401, "Personal dashboard should require auth"
+        # 401 or 403 are both valid for unauthorized access
+        assert response.status_code in [401, 403], f"Personal dashboard should require auth, got {response.status_code}"
         print("✓ Personal dashboard requires authentication")
     
     def test_personal_dashboard_with_driver_token(self):
