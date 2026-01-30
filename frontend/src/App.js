@@ -17,6 +17,7 @@ import PreTripChecklist from './pages/PreTripChecklist';
 import TireManagement from './pages/TireManagement';
 import VehicleMap from './pages/VehicleMap';
 import DriverLogbook from './pages/DriverLogbook';
+import DrivingMetrics from './pages/DrivingMetrics';
 import VendorManagement from './pages/VendorManagement';
 import Reports from './pages/Reports';
 import Login from './pages/Login';
