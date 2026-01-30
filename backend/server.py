@@ -953,6 +953,72 @@ async def get_dashboard_stats(country: Optional[str] = None):
     }
 
 
+@api_router.get("/dashboard/personal")
+async def get_personal_dashboard(current_user: dict = Depends(get_current_user)):
+    """Get personalized dashboard stats for drivers/users"""
+    user_id = current_user['id']
+    driver_id = current_user.get('driver_id') or user_id
+    
+    # Get user's logbook entries (last 30 days)
+    from_date = (datetime.now(timezone.utc) - timedelta(days=30)).isoformat()
+    logbook_entries = await db.driver_logbook.find(
+        {"driver_id": driver_id, "date": {"$gte": from_date}},
+        {"_id": 0}
+    ).to_list(100)
+    
+    total_trips = len(logbook_entries)
+    total_distance = sum(e.get('distance_km', 0) for e in logbook_entries)
+    total_fuel = sum(e.get('fuel_used_liters', 0) for e in logbook_entries)
+    
+    # Get user's maintenance requests
+    my_requests = await db.maintenance_requests.find(
+        {"driver_id": driver_id},
+        {"_id": 0}
+    ).sort("created_at", -1).to_list(50)
+    
+    pending_requests = len([r for r in my_requests if r.get('status') == 'PENDING'])
+    approved_requests = len([r for r in my_requests if r.get('status') == 'APPROVED'])
+    
+    # Get today's pre-trip checklist status
+    today = datetime.now(timezone.utc).date()
+    start_of_day = datetime(today.year, today.month, today.day, tzinfo=timezone.utc)
+    today_checklist = await db.pretrip_checklists.find_one(
+        {"driver_id": driver_id, "date": {"$gte": start_of_day.isoformat()}},
+        {"_id": 0}
+    )
+    
+    # Get assigned vehicle info
+    assigned_vehicle = None
+    if current_user.get('driver_id'):
+        driver = await db.drivers.find_one({"id": current_user['driver_id']}, {"_id": 0})
+        if driver and driver.get('assigned_vehicle_id'):
+            assigned_vehicle = await db.vehicles.find_one(
+                {"id": driver['assigned_vehicle_id']},
+                {"_id": 0, "registration_number": 1, "make": 1, "model": 1, "status": 1}
+            )
+    
+    # Speed violations count
+    speed_violations = sum(e.get('speed_limit_violations', 0) for e in logbook_entries)
+    
+    return {
+        "user_id": user_id,
+        "driver_id": driver_id,
+        "period_days": 30,
+        "total_trips": total_trips,
+        "total_distance_km": round(total_distance, 2),
+        "total_fuel_liters": round(total_fuel, 2),
+        "avg_fuel_efficiency": round(total_distance / total_fuel, 2) if total_fuel > 0 else 0,
+        "pending_requests": pending_requests,
+        "approved_requests": approved_requests,
+        "total_requests": len(my_requests),
+        "recent_requests": my_requests[:5],
+        "today_checklist_completed": today_checklist is not None,
+        "today_checklist_status": today_checklist.get('overall_status') if today_checklist else None,
+        "assigned_vehicle": assigned_vehicle,
+        "speed_violations": speed_violations
+    }
+
+
 @api_router.get("/dashboard/alerts")
 async def get_dashboard_alerts(country: Optional[str] = None):
     """Get all active alerts for the dashboard"""
