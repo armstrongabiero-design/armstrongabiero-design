@@ -1,12 +1,12 @@
 # GTI Fleet Solutions - Product Requirements Document
 
 ## Overview
-AI-native Fleet Management System designed for GTI operations in Ghana, Liberia, and São Tomé and Príncipe (STP).
+AI-native Fleet Management System designed for GTI operations globally (with focus on Ghana, Liberia, and São Tomé and Príncipe).
 
 ## Brand
 - **Name:** GTI Fleet Solutions
 - **Tagline:** Multi-Country Fleet Management
-- **Operations:** Ghana 🇬🇭 • Liberia 🇱🇷 • São Tomé 🇸🇹
+- **Operations:** Global (100+ countries supported)
 
 ## Tech Stack
 - **Backend:** FastAPI (Python)
@@ -14,38 +14,57 @@ AI-native Fleet Management System designed for GTI operations in Ghana, Liberia,
 - **Database:** MongoDB
 - **AI/ML:** OpenAI GPT-5.2 (Predictive Maintenance), OpenAI Vision (OCR)
 - **Authentication:** JWT-based role authentication
-- **Email:** SendGrid (configured, needs API key)
+- **Email:** Resend (configured with domain: alerts.jrfleetsolutions.com)
 
-## User Roles & Access Control
-| Role | Access Level | Approval |
-|------|-------------|----------|
-| Group Fleet Manager | All countries, all features, user management | Auto-approved |
-| Country Fleet Manager | Own country only | Requires Group Manager approval |
-| Driver | Own trips/checklists | Requires Group Manager approval |
+## User Roles & Access Control (Updated Dec 2025)
+| Role | Access Level | Approval | Features |
+|------|-------------|----------|----------|
+| Group Fleet Manager | All countries, all features | Auto-approved | Full system admin, approves all users |
+| Fleet Manager | Country-level management | Requires Group Manager approval | Can approve Fleet Officers and below within country |
+| Fleet Officer | Country-level operations | Requires Manager approval | Fuel entry for drivers in their country |
+| Driver | Personal data only | Requires Manager approval | Pre-Trip Check, Logbook, Requests, Personal Reports |
+| User | Personal data only | Requires Manager approval | Same as Driver |
 
 ## Core Modules (All Implemented ✅)
 
 ### 1. Authentication & User Management
-- Role-based login (email/password)
+- Role-based login (email/password) with 5 roles
 - User registration with approval workflow
 - Group Fleet Manager controls all user access
 - Session management with JWT tokens
 - **Forgot Password / Reset Password** - Email-based password recovery (Dec 2025)
 - **Password Visibility Toggle** - Show/hide password for all password fields (Dec 2025)
 - **Confirm Password** - Registration form now requires password confirmation (Dec 2025)
+- **Country Selection** - 100+ countries with search functionality (Dec 2025)
 
-### 2. Dashboard with Alerts
+### 2. Dashboard with Role-Based Views (Updated Dec 2025)
+**Manager Dashboard:**
 - Fleet statistics by country
-- Compliance status indicators (Compliant/Warning/Non-Compliant)
-- Active alerts: Document expiry, fuel anomalies, speeding, low stock
+- Compliance status indicators
+- Active alerts
 - Multi-country filter for Group Manager
 
-### 3. Vehicle Management
-- Vehicle registration across 3 countries
+**Driver/User Personal Dashboard:**
+- Personal activity stats (trips, distance, fuel efficiency)
+- Quick actions (Pre-Trip Check, Logbook, New Request, Metrics)
+- Assigned vehicle info
+- Recent requests status
+- Pre-trip checklist status banner
+
+### 3. Driving Metrics (New - Dec 2025)
+- Separated from Driver Logbook as standalone page
+- GPS/Telematics performance data
+- Period selector (7/30/90 days)
+- Metrics: Distance, Trips, Fuel Efficiency, Fuel Used
+- Safety Metrics: Speed Violations, Harsh Braking, Harsh Acceleration
+- Overall Driving Score with rating
+
+### 4. Vehicle Management
+- Vehicle registration across all countries
 - Status tracking (Active/Maintenance/Inactive)
 - Location tracking (GPS + Manual backup)
 
-### 4. Driver Management
+### 5. Driver Management
 - Driver profiles by country
 - Safety scoring system
 - License and document tracking
