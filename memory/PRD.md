@@ -149,10 +149,14 @@ AI-native Fleet Management System designed for GTI operations globally (with foc
 
 ## Key API Endpoints
 - `/api/auth/*` - Authentication
-- `/api/dashboard/*` - Stats, alerts, compliance
+- `/api/dashboard/stats` - Fleet-wide statistics
+- `/api/dashboard/staff` - Country-scoped dashboard for Fleet Managers/Officers (NEW Jan 2026)
+- `/api/dashboard/personal` - Personal dashboard for Drivers/Users
+- `/api/dashboard/alerts` - Active alerts
+- `/api/dashboard/compliance` - Compliance summary
 - `/api/vehicles/` - Vehicle CRUD
 - `/api/drivers/` - Driver CRUD
-- `/api/maintenance-requests/` - Request workflow
+- `/api/maintenance-requests/` - Request workflow (with submitted_by tracking)
 - `/api/pre-trip-checklists/` - Daily inspections
 - `/api/tires/` - Tire management
 - `/api/logbook/` - Driver trips
