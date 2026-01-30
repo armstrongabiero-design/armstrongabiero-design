@@ -30,6 +30,9 @@ AI-native Fleet Management System designed for GTI operations in Ghana, Liberia,
 - User registration with approval workflow
 - Group Fleet Manager controls all user access
 - Session management with JWT tokens
+- **Forgot Password / Reset Password** - Email-based password recovery (Dec 2025)
+- **Password Visibility Toggle** - Show/hide password for all password fields (Dec 2025)
+- **Confirm Password** - Registration form now requires password confirmation (Dec 2025)
 
 ### 2. Dashboard with Alerts
 - Fleet statistics by country
