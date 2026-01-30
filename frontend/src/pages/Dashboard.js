@@ -519,29 +519,29 @@ const StaffDashboard = ({ user, token, isGroupManager }) => {
             <div>
               <div className="flex justify-between mb-1">
                 <span className="text-sm text-slate-600">Overall Compliance</span>
-                <span className="text-sm font-semibold">{compliance?.compliance_rate || 0}%</span>
+                <span className="text-sm font-semibold">{compliance?.summary?.compliance_rate || 0}%</span>
               </div>
               <div className="w-full bg-slate-200 rounded-full h-2.5">
                 <div 
                   className={`h-2.5 rounded-full ${
-                    (compliance?.compliance_rate || 0) >= 80 ? 'bg-green-500' :
-                    (compliance?.compliance_rate || 0) >= 60 ? 'bg-amber-500' : 'bg-red-500'
+                    (compliance?.summary?.compliance_rate || 0) >= 80 ? 'bg-green-500' :
+                    (compliance?.summary?.compliance_rate || 0) >= 60 ? 'bg-amber-500' : 'bg-red-500'
                   }`}
-                  style={{ width: `${compliance?.compliance_rate || 0}%` }}
+                  style={{ width: `${compliance?.summary?.compliance_rate || 0}%` }}
                 />
               </div>
             </div>
             <div className="grid grid-cols-2 gap-4 mt-4">
               <div className="bg-green-50 rounded-lg p-3 text-center">
-                <p className="text-2xl font-bold text-green-700">{compliance?.valid_documents || 0}</p>
-                <p className="text-xs text-green-600">Valid Documents</p>
+                <p className="text-2xl font-bold text-green-700">{compliance?.summary?.compliant || 0}</p>
+                <p className="text-xs text-green-600">Compliant</p>
               </div>
               <div className="bg-red-50 rounded-lg p-3 text-center">
-                <p className="text-2xl font-bold text-red-700">{compliance?.expired_documents || 0}</p>
-                <p className="text-xs text-red-600">Expired</p>
+                <p className="text-2xl font-bold text-red-700">{compliance?.summary?.non_compliant || 0}</p>
+                <p className="text-xs text-red-600">Non-Compliant</p>
               </div>
               <div className="bg-amber-50 rounded-lg p-3 text-center">
-                <p className="text-2xl font-bold text-amber-700">{compliance?.expiring_soon || 0}</p>
+                <p className="text-2xl font-bold text-amber-700">{compliance?.summary?.warning || 0}</p>
                 <p className="text-xs text-amber-600">Expiring Soon</p>
               </div>
               <div className="bg-blue-50 rounded-lg p-3 text-center">
