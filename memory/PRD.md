@@ -37,12 +37,15 @@ AI-native Fleet Management System designed for GTI operations globally (with foc
 - **Confirm Password** - Registration form now requires password confirmation (Dec 2025)
 - **Country Selection** - 100+ countries with search functionality (Dec 2025)
 
-### 2. Dashboard with Role-Based Views (Updated Dec 2025)
-**Manager Dashboard:**
+### 2. Dashboard with Role-Based Views (Updated Jan 2026)
+**Manager Dashboard (Staff):**
 - Fleet statistics by country
-- Compliance status indicators
-- Active alerts
-- Multi-country filter for Group Manager
+- Country-scoped data for Fleet Managers/Officers (only see their country)
+- Group Fleet Manager sees all countries with filter dropdown
+- Compliance status indicators (compliant, non-compliant, expiring soon)
+- Active alerts with severity levels
+- Pending user approvals with inline Approve button
+- Pending maintenance requests summary
 
 **Driver/User Personal Dashboard:**
 - Personal activity stats (trips, distance, fuel efficiency)
@@ -50,6 +53,7 @@ AI-native Fleet Management System designed for GTI operations globally (with foc
 - Assigned vehicle info
 - Recent requests status
 - Pre-trip checklist status banner
+- Safety score display
 
 ### 3. Driving Metrics (New - Dec 2025)
 - Separated from Driver Logbook as standalone page
