@@ -8,7 +8,7 @@ import { Input } from '../components/ui/input';
 import { Label } from '../components/ui/label';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '../components/ui/select';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '../components/ui/tabs';
-import { Truck, Shield, Users, UserCog, User, Search } from 'lucide-react';
+import { Truck, Users, UserCog, User, Search } from 'lucide-react';
 import PasswordInput from '../components/PasswordInput';
 
 const BACKEND_URL = process.env.REACT_APP_BACKEND_URL;
@@ -40,7 +40,6 @@ const Login = () => {
         setCountries(response.data.countries || []);
       } catch (error) {
         console.error('Failed to fetch countries:', error);
-        // Fallback countries
         setCountries([
           { code: 'GH', name: 'Ghana' },
           { code: 'LR', name: 'Liberia' },
@@ -89,7 +88,7 @@ const Login = () => {
       return;
     }
 
-    if (registerData.role !== 'GROUP_FLEET_MANAGER' && !registerData.country) {
+    if (!registerData.country) {
       toast.error('Please select a country');
       return;
     }
@@ -97,13 +96,18 @@ const Login = () => {
     setLoading(true);
     try {
       const { confirmPassword, ...dataToSend } = registerData;
-      const user = await register(dataToSend);
-      if (user.is_approved) {
-        toast.success('Registration successful!');
-        navigate('/', { replace: true });
-      } else {
-        toast.success('Registration submitted! Waiting for manager approval.');
-      }
+      await register(dataToSend);
+      toast.success('Registration submitted! Waiting for manager approval.');
+      // Stay on login page - user needs approval
+      setActiveTab('login');
+      setRegisterData({
+        email: '',
+        password: '',
+        confirmPassword: '',
+        full_name: '',
+        role: 'USER',
+        country: '',
+      });
     } catch (error) {
       toast.error(error.response?.data?.detail || 'Registration failed');
     } finally {
@@ -113,8 +117,6 @@ const Login = () => {
 
   const getRoleDescription = (role) => {
     switch (role) {
-      case 'GROUP_FLEET_MANAGER':
-        return 'Full system access, approves all users';
       case 'FLEET_MANAGER':
         return 'Country management, approves officers & below';
       case 'FLEET_OFFICER':
@@ -130,8 +132,6 @@ const Login = () => {
 
   const getRoleIcon = (role) => {
     switch (role) {
-      case 'GROUP_FLEET_MANAGER':
-        return <Shield size={16} className="text-purple-600" />;
       case 'FLEET_MANAGER':
         return <Users size={16} className="text-blue-600" />;
       case 'FLEET_OFFICER':
@@ -257,12 +257,6 @@ const Login = () => {
                       <SelectValue placeholder="Select your role" />
                     </SelectTrigger>
                     <SelectContent>
-                      <SelectItem value="GROUP_FLEET_MANAGER">
-                        <div className="flex items-center gap-2">
-                          {getRoleIcon('GROUP_FLEET_MANAGER')}
-                          <span>Group Fleet Manager</span>
-                        </div>
-                      </SelectItem>
                       <SelectItem value="FLEET_MANAGER">
                         <div className="flex items-center gap-2">
                           {getRoleIcon('FLEET_MANAGER')}
@@ -292,55 +286,56 @@ const Login = () => {
                   <p className="text-xs text-slate-500 mt-1">{getRoleDescription(registerData.role)}</p>
                 </div>
                 
-                {registerData.role !== 'GROUP_FLEET_MANAGER' && (
-                  <div>
-                    <Label>Country</Label>
-                    <div className="relative">
-                      <div className="relative mb-2">
-                        <Search className="absolute left-3 top-1/2 transform -translate-y-1/2 text-slate-400" size={16} />
-                        <Input
-                          type="text"
-                          placeholder="Search countries..."
-                          value={countrySearch}
-                          onChange={(e) => setCountrySearch(e.target.value)}
-                          className="pl-9"
-                        />
-                      </div>
-                      <Select 
-                        value={registerData.country} 
-                        onValueChange={(value) => setRegisterData({ ...registerData, country: value })}
-                      >
-                        <SelectTrigger data-testid="register-country">
-                          <SelectValue placeholder="Select country" />
-                        </SelectTrigger>
-                        <SelectContent className="max-h-[200px]">
-                          {filteredCountries.map((country) => (
-                            <SelectItem key={country.code} value={country.name}>
-                              {country.name}
-                            </SelectItem>
-                          ))}
-                        </SelectContent>
-                      </Select>
+                <div>
+                  <Label>Country</Label>
+                  <div className="relative">
+                    <div className="relative mb-2">
+                      <Search className="absolute left-3 top-1/2 transform -translate-y-1/2 text-slate-400" size={16} />
+                      <Input
+                        type="text"
+                        placeholder="Search countries..."
+                        value={countrySearch}
+                        onChange={(e) => setCountrySearch(e.target.value)}
+                        className="pl-9"
+                      />
                     </div>
+                    <Select 
+                      value={registerData.country} 
+                      onValueChange={(value) => setRegisterData({ ...registerData, country: value })}
+                    >
+                      <SelectTrigger data-testid="register-country">
+                        <SelectValue placeholder="Select country" />
+                      </SelectTrigger>
+                      <SelectContent className="max-h-[200px]">
+                        {filteredCountries.map((country) => (
+                          <SelectItem key={country.code} value={country.name}>
+                            {country.name}
+                          </SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
                   </div>
-                )}
+                </div>
                 
                 <Button type="submit" className="w-full" disabled={loading} data-testid="register-btn">
                   {loading ? 'Registering...' : 'Register'}
                 </Button>
                 <p className="text-xs text-slate-500 text-center">
-                  {registerData.role === 'GROUP_FLEET_MANAGER' 
-                    ? 'Group Fleet Manager accounts are auto-approved.' 
-                    : 'Your account will need approval from a manager.'}
+                  Your account will need approval from a manager.
                 </p>
               </form>
             </TabsContent>
           </Tabs>
         </div>
 
-        {/* Demo Credentials */}
+        {/* Admin link */}
         <div className="mt-6 text-center">
-          <p className="text-slate-400 text-sm">Create a Group Fleet Manager account to get started</p>
+          <Link 
+            to="/admin-register" 
+            className="text-slate-400 text-sm hover:text-purple-400 transition-colors"
+          >
+            Group Fleet Manager Registration →
+          </Link>
         </div>
       </div>
     </div>
