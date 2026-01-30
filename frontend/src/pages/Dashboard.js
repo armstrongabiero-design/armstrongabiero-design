@@ -1,7 +1,7 @@
 import React, { useEffect, useState } from 'react';
 import axios from 'axios';
 import { Truck, Users, Wrench, DollarSign, TrendingUp, AlertCircle, AlertTriangle, 
-  CheckCircle, XCircle, Clock, Bell, ClipboardCheck, Book, FileCheck, Gauge, Activity, Shield } from 'lucide-react';
+  CheckCircle, XCircle, Clock, Bell, ClipboardCheck, Book, FileCheck, Gauge, Activity, Shield, UserPlus } from 'lucide-react';
 import { toast } from 'sonner';
 import { useAuth } from '../contexts/AuthContext';
 import { Link } from 'react-router-dom';
@@ -51,7 +51,6 @@ const PersonalDashboard = ({ user, token }) => {
     );
   }
 
-  // Calculate safety score based on violations
   const safetyScore = Math.max(0, 100 - (stats?.speed_violations || 0) * 10);
   const getSafetyColor = (score) => {
     if (score >= 80) return { bg: 'bg-green-500', text: 'text-green-600', light: 'bg-green-100' };
@@ -84,14 +83,6 @@ const PersonalDashboard = ({ user, token }) => {
             <p className="text-slate-500 text-sm">out of 100</p>
           </div>
         </div>
-        {stats?.speed_violations > 0 && (
-          <div className="mt-4 pt-4 border-t border-slate-200">
-            <p className="text-sm text-slate-600">
-              <AlertTriangle className="inline mr-2 text-yellow-500" size={16} />
-              {stats.speed_violations} speed violation{stats.speed_violations > 1 ? 's' : ''} recorded this period
-            </p>
-          </div>
-        )}
       </div>
 
       {/* Quick Actions */}
@@ -99,9 +90,7 @@ const PersonalDashboard = ({ user, token }) => {
         <h2 className="text-xl font-semibold mb-4">Quick Actions</h2>
         <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
           <Link to="/pre-trip-checklist">
-            <div className={`bg-white/10 hover:bg-white/20 rounded-lg p-4 text-center transition-all ${
-              !stats?.today_checklist_completed ? 'ring-2 ring-yellow-400' : ''
-            }`}>
+            <div className={`bg-white/10 hover:bg-white/20 rounded-lg p-4 text-center transition-all ${!stats?.today_checklist_completed ? 'ring-2 ring-yellow-400' : ''}`}>
               <ClipboardCheck size={28} className="mx-auto mb-2" />
               <p className="text-sm font-medium">Pre-Trip Check</p>
               {!stats?.today_checklist_completed && (
@@ -133,40 +122,29 @@ const PersonalDashboard = ({ user, token }) => {
       {/* Stats Cards */}
       <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6 mb-8">
         <div className="bg-white rounded-xl shadow-sm border border-slate-200 p-6">
-          <div className="flex items-center gap-3 mb-3">
-            <div className="bg-blue-100 p-3 rounded-lg">
-              <Activity className="text-blue-600" size={24} />
-            </div>
+          <div className="bg-blue-100 p-3 rounded-lg w-fit mb-3">
+            <Activity className="text-blue-600" size={24} />
           </div>
           <h3 className="text-slate-500 text-sm">Total Trips (30 days)</h3>
           <p className="text-3xl font-bold text-slate-800 mt-1">{stats?.total_trips || 0}</p>
         </div>
-
         <div className="bg-white rounded-xl shadow-sm border border-slate-200 p-6">
-          <div className="flex items-center gap-3 mb-3">
-            <div className="bg-green-100 p-3 rounded-lg">
-              <TrendingUp className="text-green-600" size={24} />
-            </div>
+          <div className="bg-green-100 p-3 rounded-lg w-fit mb-3">
+            <TrendingUp className="text-green-600" size={24} />
           </div>
           <h3 className="text-slate-500 text-sm">Distance Covered</h3>
           <p className="text-3xl font-bold text-slate-800 mt-1">{(stats?.total_distance_km || 0).toLocaleString()} km</p>
         </div>
-
         <div className="bg-white rounded-xl shadow-sm border border-slate-200 p-6">
-          <div className="flex items-center gap-3 mb-3">
-            <div className="bg-orange-100 p-3 rounded-lg">
-              <Clock className="text-orange-600" size={24} />
-            </div>
+          <div className="bg-orange-100 p-3 rounded-lg w-fit mb-3">
+            <Clock className="text-orange-600" size={24} />
           </div>
           <h3 className="text-slate-500 text-sm">Pending Requests</h3>
           <p className="text-3xl font-bold text-slate-800 mt-1">{stats?.pending_requests || 0}</p>
         </div>
-
         <div className="bg-white rounded-xl shadow-sm border border-slate-200 p-6">
-          <div className="flex items-center gap-3 mb-3">
-            <div className="bg-purple-100 p-3 rounded-lg">
-              <Gauge className="text-purple-600" size={24} />
-            </div>
+          <div className="bg-purple-100 p-3 rounded-lg w-fit mb-3">
+            <Gauge className="text-purple-600" size={24} />
           </div>
           <h3 className="text-slate-500 text-sm">Fuel Efficiency</h3>
           <p className="text-3xl font-bold text-slate-800 mt-1">{stats?.avg_fuel_efficiency || 0} km/L</p>
@@ -175,7 +153,6 @@ const PersonalDashboard = ({ user, token }) => {
 
       {/* Vehicle Info & Recent Requests */}
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-        {/* Assigned Vehicle */}
         <div className="bg-white rounded-xl shadow-sm border border-slate-200 p-6">
           <h3 className="text-lg font-semibold text-slate-800 mb-4 flex items-center gap-2">
             <Truck size={20} className="text-purple-600" />
@@ -185,13 +162,6 @@ const PersonalDashboard = ({ user, token }) => {
             <div className="bg-slate-50 rounded-lg p-4">
               <p className="text-xl font-bold text-slate-800">{stats.assigned_vehicle.registration_number}</p>
               <p className="text-slate-600">{stats.assigned_vehicle.make} {stats.assigned_vehicle.model}</p>
-              <div className="flex items-center gap-2 mt-2">
-                <span className={`px-2 py-1 rounded-full text-xs font-medium ${
-                  stats.assigned_vehicle.status === 'ACTIVE' ? 'bg-green-100 text-green-800' : 'bg-yellow-100 text-yellow-800'
-                }`}>
-                  {stats.assigned_vehicle.status}
-                </span>
-              </div>
             </div>
           ) : (
             <div className="text-center py-8 text-slate-500">
@@ -200,8 +170,6 @@ const PersonalDashboard = ({ user, token }) => {
             </div>
           )}
         </div>
-
-        {/* Recent Requests */}
         <div className="bg-white rounded-xl shadow-sm border border-slate-200 p-6">
           <h3 className="text-lg font-semibold text-slate-800 mb-4 flex items-center gap-2">
             <FileCheck size={20} className="text-purple-600" />
@@ -217,11 +185,8 @@ const PersonalDashboard = ({ user, token }) => {
                   </div>
                   <span className={`px-2 py-1 rounded-full text-xs font-medium ${
                     request.status === 'APPROVED' ? 'bg-green-100 text-green-800' :
-                    request.status === 'DENIED' ? 'bg-red-100 text-red-800' :
-                    'bg-yellow-100 text-yellow-800'
-                  }`}>
-                    {request.status}
-                  </span>
+                    request.status === 'DENIED' ? 'bg-red-100 text-red-800' : 'bg-yellow-100 text-yellow-800'
+                  }`}>{request.status}</span>
                 </div>
               ))}
             </div>
@@ -229,20 +194,13 @@ const PersonalDashboard = ({ user, token }) => {
             <div className="text-center py-8 text-slate-500">
               <FileCheck size={32} className="mx-auto mb-2 opacity-50" />
               <p>No requests yet</p>
-              <Link to="/maintenance-requests">
-                <Button variant="outline" size="sm" className="mt-2">Create Request</Button>
-              </Link>
             </div>
           )}
         </div>
       </div>
 
-      {/* Today's Checklist Status */}
-      <div className={`mt-6 p-4 rounded-lg border ${
-        stats?.today_checklist_completed 
-          ? 'bg-green-50 border-green-200' 
-          : 'bg-yellow-50 border-yellow-200'
-      }`}>
+      {/* Checklist Status */}
+      <div className={`mt-6 p-4 rounded-lg border ${stats?.today_checklist_completed ? 'bg-green-50 border-green-200' : 'bg-yellow-50 border-yellow-200'}`}>
         <div className="flex items-center gap-3">
           {stats?.today_checklist_completed ? (
             <>
@@ -270,27 +228,30 @@ const PersonalDashboard = ({ user, token }) => {
   );
 };
 
-// Manager Dashboard (Original)
-const ManagerDashboard = ({ user, isGroupManager }) => {
+// Staff Dashboard for Fleet Managers and Fleet Officers
+const StaffDashboard = ({ user, token, isGroupManager }) => {
   const [stats, setStats] = useState(null);
   const [alerts, setAlerts] = useState(null);
   const [compliance, setCompliance] = useState(null);
   const [loading, setLoading] = useState(true);
-  const [selectedCountry, setSelectedCountry] = useState(user?.country || '');
+  const [selectedCountry, setSelectedCountry] = useState('');
 
   useEffect(() => {
     fetchDashboardData();
-  }, [selectedCountry]);
+  }, [selectedCountry, token]);
 
   const fetchDashboardData = async () => {
     try {
+      const headers = { Authorization: `Bearer ${token}` };
       const countryParam = selectedCountry ? `?country=${selectedCountry}` : '';
-      const [statsRes, alertsRes, complianceRes] = await Promise.all([
-        axios.get(`${API}/dashboard/stats${countryParam}`),
+      
+      const [staffRes, alertsRes, complianceRes] = await Promise.all([
+        axios.get(`${API}/dashboard/staff`, { headers }),
         axios.get(`${API}/dashboard/alerts${countryParam}`),
         axios.get(`${API}/dashboard/compliance${countryParam}`),
       ]);
-      setStats(statsRes.data);
+      
+      setStats(staffRes.data);
       setAlerts(alertsRes.data);
       setCompliance(complianceRes.data);
     } catch (error) {
@@ -298,6 +259,18 @@ const ManagerDashboard = ({ user, isGroupManager }) => {
       console.error(error);
     } finally {
       setLoading(false);
+    }
+  };
+
+  const handleApproveUser = async (userId) => {
+    try {
+      await axios.put(`${API}/auth/users/${userId}/approve`, {}, {
+        headers: { Authorization: `Bearer ${token}` }
+      });
+      toast.success('User approved!');
+      fetchDashboardData();
+    } catch (error) {
+      toast.error(error.response?.data?.detail || 'Failed to approve user');
     }
   };
 
@@ -325,13 +298,29 @@ const ManagerDashboard = ({ user, isGroupManager }) => {
     );
   }
 
+  const getRoleDisplay = (role) => {
+    const roles = {
+      'GROUP_FLEET_MANAGER': 'Group Manager',
+      'FLEET_MANAGER': 'Fleet Manager',
+      'FLEET_OFFICER': 'Fleet Officer',
+      'DRIVER': 'Driver',
+      'USER': 'User'
+    };
+    return roles[role] || role;
+  };
+
   return (
-    <div className="p-6 lg:p-8" data-testid="manager-dashboard">
+    <div className="p-6 lg:p-8" data-testid="staff-dashboard">
       <div className="flex flex-col lg:flex-row lg:items-center lg:justify-between mb-8 gap-4">
         <div>
           <h1 className="text-3xl lg:text-4xl font-bold text-slate-800">Fleet Dashboard</h1>
           <p className="text-slate-600 mt-2">
             {user ? `Welcome, ${user.full_name}` : 'Monitor your fleet operations'}
+            {stats?.user_country && stats?.user_role !== 'GROUP_FLEET_MANAGER' && (
+              <span className="ml-2 px-2 py-1 bg-purple-100 text-purple-700 text-sm rounded-full">
+                {stats.user_country}
+              </span>
+            )}
           </p>
         </div>
         
@@ -342,22 +331,67 @@ const ManagerDashboard = ({ user, isGroupManager }) => {
               <SelectValue placeholder="All Countries" />
             </SelectTrigger>
             <SelectContent>
-              <SelectItem value="ALL">All Countries (Group View)</SelectItem>
+              <SelectItem value="ALL">All Countries</SelectItem>
               <SelectItem value="Ghana">Ghana</SelectItem>
               <SelectItem value="Liberia">Liberia</SelectItem>
-              <SelectItem value="São Tomé and Príncipe">São Tomé and Príncipe</SelectItem>
+              <SelectItem value="São Tomé and Príncipe">São Tomé</SelectItem>
             </SelectContent>
           </Select>
         )}
       </div>
 
-      {/* Alerts Banner */}
+      {/* Pending Users Alert */}
+      {stats?.pending_users_count > 0 && (
+        <div className="bg-purple-50 border border-purple-200 rounded-lg p-4 mb-6">
+          <div className="flex items-start gap-3">
+            <UserPlus className="text-purple-600 mt-0.5" size={20} />
+            <div className="flex-1">
+              <p className="font-semibold text-purple-800">{stats.pending_users_count} Pending Account{stats.pending_users_count > 1 ? 's' : ''}</p>
+              <p className="text-sm text-purple-700 mb-3">User registrations awaiting your approval</p>
+              <div className="space-y-2">
+                {stats.pending_users?.slice(0, 5).map((pendingUser) => (
+                  <div key={pendingUser.id} className="flex items-center justify-between bg-white p-3 rounded-lg">
+                    <div>
+                      <p className="font-medium text-slate-800">{pendingUser.full_name}</p>
+                      <p className="text-sm text-slate-500">{pendingUser.email} • {getRoleDisplay(pendingUser.role)} • {pendingUser.country}</p>
+                    </div>
+                    <Button size="sm" onClick={() => handleApproveUser(pendingUser.id)}>
+                      Approve
+                    </Button>
+                  </div>
+                ))}
+              </div>
+              {stats.pending_users_count > 5 && (
+                <Link to="/users" className="text-purple-700 text-sm mt-2 inline-block hover:underline">
+                  View all {stats.pending_users_count} pending users →
+                </Link>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Pending Requests Alert */}
+      {stats?.pending_requests_count > 0 && (
+        <div className="bg-amber-50 border border-amber-200 rounded-lg p-4 mb-6 flex items-start gap-3">
+          <Clock className="text-amber-600 mt-0.5" size={20} />
+          <div>
+            <p className="font-semibold text-amber-800">{stats.pending_requests_count} Pending Request{stats.pending_requests_count > 1 ? 's' : ''}</p>
+            <p className="text-sm text-amber-700">Maintenance requests awaiting approval</p>
+            <Link to="/maintenance-requests" className="text-amber-700 text-sm mt-1 inline-block hover:underline">
+              Review requests →
+            </Link>
+          </div>
+        </div>
+      )}
+
+      {/* Critical Alerts */}
       {alerts && alerts.critical_count > 0 && (
         <div className="bg-red-50 border border-red-200 rounded-lg p-4 mb-6 flex items-start gap-3">
           <Bell className="text-red-600 mt-0.5" size={20} />
           <div>
             <p className="font-semibold text-red-800">{alerts.critical_count} Critical Alert{alerts.critical_count > 1 ? 's' : ''}</p>
-            <p className="text-sm text-red-700">Immediate attention required. Check alerts section below.</p>
+            <p className="text-sm text-red-700">Immediate attention required</p>
           </div>
         </div>
       )}
@@ -382,11 +416,11 @@ const ManagerDashboard = ({ user, isGroupManager }) => {
             <div>
               <p className="text-white/80 text-sm font-medium">Total Drivers</p>
               <h3 className="text-4xl font-bold mt-2">{stats?.total_drivers || 0}</h3>
-              <p className="text-white/70 text-xs mt-1">
-                {stats?.drivers_by_country && !selectedCountry 
-                  ? `GH: ${stats.drivers_by_country.GHANA || 0} | LR: ${stats.drivers_by_country.LIBERIA || 0} | ST: ${stats.drivers_by_country.SAO_TOME || 0}`
-                  : 'All countries'}
-              </p>
+              {stats?.vehicles_by_country && Object.keys(stats.vehicles_by_country).length > 0 && (
+                <p className="text-white/70 text-xs mt-1">
+                  GH: {stats.drivers_by_country?.GHANA || 0} | LR: {stats.drivers_by_country?.LIBERIA || 0}
+                </p>
+              )}
             </div>
             <div className="bg-white/20 p-3 rounded-lg">
               <Users size={28} />
@@ -399,7 +433,7 @@ const ManagerDashboard = ({ user, isGroupManager }) => {
             <div>
               <p className="text-white/80 text-sm font-medium">Pending Maintenance</p>
               <h3 className="text-4xl font-bold mt-2">{stats?.pending_maintenance || 0}</h3>
-              <p className="text-white/70 text-xs mt-1">{stats?.pending_requests || 0} awaiting approval</p>
+              <p className="text-white/70 text-xs mt-1">{stats?.pending_requests_count || 0} awaiting approval</p>
             </div>
             <div className="bg-white/20 p-3 rounded-lg">
               <Wrench size={28} />
@@ -436,7 +470,7 @@ const ManagerDashboard = ({ user, isGroupManager }) => {
         <div className="stat-card green" data-testid="maintenance-cost-card">
           <div className="flex items-start justify-between">
             <div>
-              <p className="text-white/80 text-sm font-medium">Total Maintenance Cost</p>
+              <p className="text-white/80 text-sm font-medium">Maintenance Cost</p>
               <h3 className="text-4xl font-bold mt-2">GH₵{(stats?.total_maintenance_cost_ghs || 0).toLocaleString()}</h3>
               <p className="text-white/70 text-xs mt-1">Rate: 1 USD = {stats?.ghs_exchange_rate || 12} GHS</p>
             </div>
@@ -447,8 +481,8 @@ const ManagerDashboard = ({ user, isGroupManager }) => {
         </div>
       </div>
 
+      {/* Alerts & Compliance */}
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-6 mb-8">
-        {/* Alerts Panel */}
         <div className="fleet-card">
           <h3 className="text-lg font-semibold text-slate-800 mb-4 flex items-center gap-2">
             <Bell size={20} className="text-purple-600" />
@@ -458,7 +492,7 @@ const ManagerDashboard = ({ user, isGroupManager }) => {
             {alerts?.alerts?.length === 0 ? (
               <div className="text-center py-8 text-slate-500">
                 <CheckCircle size={32} className="mx-auto mb-2 text-green-500" />
-                <p>No active alerts. All systems operational!</p>
+                <p>No active alerts</p>
               </div>
             ) : (
               alerts?.alerts?.slice(0, 8).map((alert, index) => (
@@ -468,9 +502,6 @@ const ManagerDashboard = ({ user, isGroupManager }) => {
                     <div className="flex-1">
                       <p className="font-medium text-sm text-slate-800">{alert.title}</p>
                       <p className="text-xs text-slate-600">{alert.description}</p>
-                      {alert.country && (
-                        <span className="text-xs text-slate-500 mt-1 inline-block">{alert.country}</span>
-                      )}
                     </div>
                   </div>
                 </div>
@@ -479,14 +510,12 @@ const ManagerDashboard = ({ user, isGroupManager }) => {
           </div>
         </div>
 
-        {/* Compliance Summary */}
         <div className="fleet-card">
           <h3 className="text-lg font-semibold text-slate-800 mb-4 flex items-center gap-2">
             <CheckCircle size={20} className="text-purple-600" />
             Compliance Overview
           </h3>
           <div className="space-y-4">
-            {/* Compliance Rate */}
             <div>
               <div className="flex justify-between mb-1">
                 <span className="text-sm text-slate-600">Overall Compliance</span>
@@ -502,7 +531,6 @@ const ManagerDashboard = ({ user, isGroupManager }) => {
                 />
               </div>
             </div>
-
             <div className="grid grid-cols-2 gap-4 mt-4">
               <div className="bg-green-50 rounded-lg p-3 text-center">
                 <p className="text-2xl font-bold text-green-700">{compliance?.valid_documents || 0}</p>
@@ -517,8 +545,8 @@ const ManagerDashboard = ({ user, isGroupManager }) => {
                 <p className="text-xs text-amber-600">Expiring Soon</p>
               </div>
               <div className="bg-blue-50 rounded-lg p-3 text-center">
-                <p className="text-2xl font-bold text-blue-700">{stats?.pending_requests || 0}</p>
-                <p className="text-xs text-blue-600">Pending Approvals</p>
+                <p className="text-2xl font-bold text-blue-700">{stats?.pending_users_count || 0}</p>
+                <p className="text-xs text-blue-600">Pending Users</p>
               </div>
             </div>
           </div>
@@ -528,17 +556,15 @@ const ManagerDashboard = ({ user, isGroupManager }) => {
   );
 };
 
-// Main Dashboard Component - Routes to appropriate view based on role
+// Main Dashboard Component
 const Dashboard = () => {
-  const { user, token, isDriverOrUser, isGroupManager } = useAuth();
+  const { user, token, isDriverOrUser, isGroupManager, isStaff } = useAuth();
 
-  // Show personal dashboard for Drivers and Users
   if (isDriverOrUser && isDriverOrUser()) {
     return <PersonalDashboard user={user} token={token} />;
   }
 
-  // Show manager dashboard for staff
-  return <ManagerDashboard user={user} isGroupManager={isGroupManager} />;
+  return <StaffDashboard user={user} token={token} isGroupManager={isGroupManager} />;
 };
 
 export default Dashboard;
