@@ -72,9 +72,13 @@ export const AuthProvider = ({ children }) => {
   };
 
   const isGroupManager = () => user?.role === 'GROUP_FLEET_MANAGER';
-  const isCountryManager = () => user?.role === 'COUNTRY_FLEET_MANAGER';
+  const isFleetManager = () => user?.role === 'FLEET_MANAGER';
+  const isFleetOfficer = () => user?.role === 'FLEET_OFFICER';
   const isDriver = () => user?.role === 'DRIVER';
-  const isManager = () => isGroupManager() || isCountryManager();
+  const isUser = () => user?.role === 'USER';
+  const isManager = () => isGroupManager() || isFleetManager();
+  const isStaff = () => isManager() || isFleetOfficer();
+  const isDriverOrUser = () => isDriver() || isUser();
 
   const value = {
     user,
@@ -84,9 +88,13 @@ export const AuthProvider = ({ children }) => {
     register,
     logout,
     isGroupManager,
-    isCountryManager,
+    isFleetManager,
+    isFleetOfficer,
     isDriver,
+    isUser,
     isManager,
+    isStaff,
+    isDriverOrUser,
     isAuthenticated: !!user,
   };
 
