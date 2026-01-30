@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { useNavigate } from 'react-router-dom';
+import { useNavigate, Link } from 'react-router-dom';
 import { useAuth } from '../contexts/AuthContext';
 import { toast } from 'sonner';
 import { Button } from '../components/ui/button';
@@ -8,6 +8,7 @@ import { Label } from '../components/ui/label';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '../components/ui/select';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '../components/ui/tabs';
 import { Truck, Shield, Users } from 'lucide-react';
+import PasswordInput from '../components/PasswordInput';
 
 const Login = () => {
   const navigate = useNavigate();
@@ -19,6 +20,7 @@ const Login = () => {
   const [registerData, setRegisterData] = useState({
     email: '',
     password: '',
+    confirmPassword: '',
     full_name: '',
     role: 'DRIVER',
     country: 'GHANA',
@@ -47,9 +49,22 @@ const Login = () => {
 
   const handleRegister = async (e) => {
     e.preventDefault();
+    
+    // Validate passwords match
+    if (registerData.password !== registerData.confirmPassword) {
+      toast.error('Passwords do not match');
+      return;
+    }
+    
+    if (registerData.password.length < 6) {
+      toast.error('Password must be at least 6 characters');
+      return;
+    }
+    
     setLoading(true);
     try {
-      const user = await register(registerData);
+      const { confirmPassword, ...dataToSend } = registerData;
+      const user = await register(dataToSend);
       if (user.is_approved) {
         toast.success('Registration successful!');
         navigate('/', { replace: true });
@@ -101,14 +116,20 @@ const Login = () => {
                 </div>
                 <div>
                   <Label>Password</Label>
-                  <Input
-                    type="password"
+                  <PasswordInput
                     value={loginData.password}
                     onChange={(e) => setLoginData({ ...loginData, password: e.target.value })}
-                    placeholder="••••••••"
-                    required
                     data-testid="login-password"
                   />
+                </div>
+                <div className="flex justify-end">
+                  <Link 
+                    to="/forgot-password" 
+                    className="text-sm text-purple-600 hover:text-purple-700"
+                    data-testid="forgot-password-link"
+                  >
+                    Forgot password?
+                  </Link>
                 </div>
                 <Button type="submit" className="w-full" disabled={loading} data-testid="login-btn">
                   {loading ? 'Signing in...' : 'Sign In'}
@@ -141,14 +162,24 @@ const Login = () => {
                 </div>
                 <div>
                   <Label>Password</Label>
-                  <Input
-                    type="password"
+                  <PasswordInput
                     value={registerData.password}
                     onChange={(e) => setRegisterData({ ...registerData, password: e.target.value })}
-                    placeholder="••••••••"
-                    required
                     data-testid="register-password"
                   />
+                </div>
+                <div>
+                  <Label>Confirm Password</Label>
+                  <PasswordInput
+                    value={registerData.confirmPassword}
+                    onChange={(e) => setRegisterData({ ...registerData, confirmPassword: e.target.value })}
+                    placeholder="Confirm your password"
+                    data-testid="register-confirm-password"
+                  />
+                  {registerData.password && registerData.confirmPassword && 
+                   registerData.password !== registerData.confirmPassword && (
+                    <p className="text-red-500 text-xs mt-1">Passwords do not match</p>
+                  )}
                 </div>
                 <div>
                   <Label>Role</Label>
