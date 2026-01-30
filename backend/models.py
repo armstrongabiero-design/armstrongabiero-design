@@ -590,6 +590,11 @@ class MaintenanceRequest(BaseModel):
     approved_at: Optional[datetime] = None
     rejected_at: Optional[datetime] = None
     completed_at: Optional[datetime] = None
+    # Track who submitted the request (for requests made on behalf of others)
+    submitted_by_id: Optional[str] = None
+    submitted_by_name: Optional[str] = None
+    submitted_by_role: Optional[str] = None
+    country: Optional[str] = None  # For country filtering
     created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
     updated_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
 
@@ -602,6 +607,7 @@ class MaintenanceRequestCreate(BaseModel):
     priority: RequestPriority = RequestPriority.MEDIUM
     estimated_cost: Optional[float] = None
     currency: CurrencyEnum = CurrencyEnum.GHS
+    country: Optional[str] = None
 
 
 class MaintenanceRequestApproval(BaseModel):
