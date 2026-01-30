@@ -103,9 +103,10 @@ class User(BaseModel):
     hashed_password: str
     full_name: str
     role: UserRole
-    country: Optional[CountryEnum] = None  # None for Group Fleet Manager (sees all)
+    country: Optional[str] = None  # Country name string, None for Group Fleet Manager (sees all)
     is_active: bool = True
-    is_approved: bool = False  # Must be approved by Group Fleet Manager
+    is_approved: bool = False  # Must be approved by appropriate manager
+    approved_by: Optional[str] = None  # ID of user who approved
     driver_id: Optional[str] = None  # Link to driver profile if role is DRIVER
     created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
     last_login: Optional[datetime] = None
@@ -116,7 +117,7 @@ class UserCreate(BaseModel):
     password: str
     full_name: str
     role: UserRole
-    country: Optional[CountryEnum] = None
+    country: Optional[str] = None
     driver_id: Optional[str] = None
 
 
@@ -129,7 +130,7 @@ class UserUpdate(BaseModel):
     full_name: Optional[str] = None
     is_active: Optional[bool] = None
     is_approved: Optional[bool] = None
-    country: Optional[CountryEnum] = None
+    country: Optional[str] = None
 
 
 class Token(BaseModel):
