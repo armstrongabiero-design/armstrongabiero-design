@@ -1,7 +1,7 @@
 import React, { useEffect, useState } from 'react';
 import axios from 'axios';
 import { Truck, Users, Wrench, DollarSign, TrendingUp, AlertCircle, AlertTriangle, 
-  CheckCircle, XCircle, Clock, Bell, ClipboardCheck, Book, FileCheck, Gauge, Activity } from 'lucide-react';
+  CheckCircle, XCircle, Clock, Bell, ClipboardCheck, Book, FileCheck, Gauge, Activity, Shield } from 'lucide-react';
 import { toast } from 'sonner';
 import { useAuth } from '../contexts/AuthContext';
 import { Link } from 'react-router-dom';
@@ -25,7 +25,6 @@ const PersonalDashboard = ({ user, token }) => {
         setStats(response.data);
       } catch (error) {
         console.error('Failed to fetch personal dashboard:', error);
-        // Set default empty state
         setStats({
           total_trips: 0,
           total_distance_km: 0,
@@ -33,7 +32,9 @@ const PersonalDashboard = ({ user, token }) => {
           approved_requests: 0,
           today_checklist_completed: false,
           assigned_vehicle: null,
-          recent_requests: []
+          recent_requests: [],
+          safety_score: 100,
+          speed_violations: 0
         });
       } finally {
         setLoading(false);
@@ -50,11 +51,47 @@ const PersonalDashboard = ({ user, token }) => {
     );
   }
 
+  // Calculate safety score based on violations
+  const safetyScore = Math.max(0, 100 - (stats?.speed_violations || 0) * 10);
+  const getSafetyColor = (score) => {
+    if (score >= 80) return { bg: 'bg-green-500', text: 'text-green-600', light: 'bg-green-100' };
+    if (score >= 60) return { bg: 'bg-yellow-500', text: 'text-yellow-600', light: 'bg-yellow-100' };
+    return { bg: 'bg-red-500', text: 'text-red-600', light: 'bg-red-100' };
+  };
+  const safetyColors = getSafetyColor(safetyScore);
+
   return (
     <div className="p-6 lg:p-8" data-testid="personal-dashboard">
       <div className="mb-8">
         <h1 className="text-3xl lg:text-4xl font-bold text-slate-800">Welcome, {user?.full_name}</h1>
         <p className="text-slate-600 mt-2">Your personal fleet activity dashboard</p>
+      </div>
+
+      {/* Safety Score Banner */}
+      <div className={`${safetyColors.light} border ${safetyScore >= 80 ? 'border-green-200' : safetyScore >= 60 ? 'border-yellow-200' : 'border-red-200'} rounded-xl p-6 mb-8`}>
+        <div className="flex items-center justify-between">
+          <div className="flex items-center gap-4">
+            <div className={`${safetyColors.bg} p-4 rounded-full`}>
+              <Shield className="text-white" size={32} />
+            </div>
+            <div>
+              <h2 className="text-xl font-bold text-slate-800">Safety Score</h2>
+              <p className="text-slate-600 text-sm">Based on your driving behavior this month</p>
+            </div>
+          </div>
+          <div className="text-right">
+            <p className={`text-5xl font-bold ${safetyColors.text}`}>{safetyScore}</p>
+            <p className="text-slate-500 text-sm">out of 100</p>
+          </div>
+        </div>
+        {stats?.speed_violations > 0 && (
+          <div className="mt-4 pt-4 border-t border-slate-200">
+            <p className="text-sm text-slate-600">
+              <AlertTriangle className="inline mr-2 text-yellow-500" size={16} />
+              {stats.speed_violations} speed violation{stats.speed_violations > 1 ? 's' : ''} recorded this period
+            </p>
+          </div>
+        )}
       </div>
 
       {/* Quick Actions */}
