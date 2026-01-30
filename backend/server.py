@@ -1018,6 +1018,93 @@ async def get_personal_dashboard(current_user: dict = Depends(get_current_user))
     }
 
 
+@api_router.get("/dashboard/staff")
+async def get_staff_dashboard(current_user: dict = Depends(get_current_user)):
+    """Get dashboard stats for Fleet Managers and Fleet Officers (country-specific)"""
+    user_role = current_user.get('role')
+    user_country = current_user.get('country')
+    
+    # Group Fleet Manager sees all, others see their country only
+    country_filter = {} if user_role == 'GROUP_FLEET_MANAGER' else {"country": user_country}
+    
+    # Basic stats
+    total_vehicles = await db.vehicles.count_documents(country_filter)
+    active_vehicles = await db.vehicles.count_documents({**country_filter, "status": "ACTIVE"})
+    total_drivers = await db.drivers.count_documents(country_filter)
+    pending_maintenance = await db.maintenance_records.count_documents({**country_filter, "completed_date": None})
+    
+    # Pending requests for this country
+    request_filter = {} if user_role == 'GROUP_FLEET_MANAGER' else {"country": user_country}
+    pending_requests = await db.maintenance_requests.find(
+        {**request_filter, "status": "PENDING"},
+        {"_id": 0}
+    ).sort("created_at", -1).to_list(20)
+    
+    # Pending user approvals based on role
+    pending_users_query = {"is_approved": False}
+    if user_role == 'GROUP_FLEET_MANAGER':
+        pass  # See all
+    elif user_role == 'FLEET_MANAGER':
+        pending_users_query['country'] = user_country
+        pending_users_query['role'] = {"$in": ['FLEET_OFFICER', 'DRIVER', 'USER']}
+    elif user_role == 'FLEET_OFFICER':
+        pending_users_query['country'] = user_country
+        pending_users_query['role'] = {"$in": ['DRIVER', 'USER']}
+    else:
+        pending_users_query['id'] = 'NONE'  # No results
+    
+    pending_users = await db.users.find(
+        pending_users_query, 
+        {"_id": 0, "hashed_password": 0}
+    ).to_list(50)
+    
+    # Financial totals
+    assets = await db.assets.find(country_filter, {"_id": 0, "current_value_usd": 1}).to_list(1000)
+    total_fleet_value = sum(a.get('current_value_usd', 0) for a in assets)
+    
+    fuel_txns = await db.fuel_transactions.find(country_filter, {"_id": 0, "cost_usd": 1}).to_list(1000)
+    total_fuel_cost = sum(f.get('cost_usd', 0) for f in fuel_txns)
+    
+    maintenance_records = await db.maintenance_records.find(country_filter, {"_id": 0, "cost_usd": 1}).to_list(1000)
+    total_maintenance_cost_usd = sum(m.get('cost_usd', 0) for m in maintenance_records)
+    
+    ghs_rate = currency_converter.get_rate(CurrencyEnum.USD, CurrencyEnum.GHS)
+    
+    # Recent activity in this country
+    recent_logbook = await db.driver_logbook.find(
+        country_filter, {"_id": 0}
+    ).sort("created_at", -1).to_list(10)
+    
+    # Count by country (for Group Manager)
+    vehicles_by_country = {}
+    drivers_by_country = {}
+    if user_role == 'GROUP_FLEET_MANAGER':
+        for c in ['GHANA', 'LIBERIA', 'SAO_TOME']:
+            vehicles_by_country[c] = await db.vehicles.count_documents({"country": c})
+            drivers_by_country[c] = await db.drivers.count_documents({"country": c})
+    
+    return {
+        "user_role": user_role,
+        "user_country": user_country,
+        "total_vehicles": total_vehicles,
+        "active_vehicles": active_vehicles,
+        "total_drivers": total_drivers,
+        "pending_maintenance": pending_maintenance,
+        "pending_requests_count": len(pending_requests),
+        "pending_requests": pending_requests[:5],
+        "pending_users_count": len(pending_users),
+        "pending_users": pending_users[:10],
+        "total_fleet_value_usd": round(total_fleet_value, 2),
+        "total_fuel_cost_usd": round(total_fuel_cost, 2),
+        "total_maintenance_cost_usd": round(total_maintenance_cost_usd, 2),
+        "total_maintenance_cost_ghs": round(total_maintenance_cost_usd * ghs_rate, 2),
+        "ghs_exchange_rate": round(ghs_rate, 2),
+        "recent_activity": recent_logbook[:5],
+        "vehicles_by_country": vehicles_by_country,
+        "drivers_by_country": drivers_by_country
+    }
+
+
 @api_router.get("/dashboard/alerts")
 async def get_dashboard_alerts(country: Optional[str] = None):
     """Get all active alerts for the dashboard"""
