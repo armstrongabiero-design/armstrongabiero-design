@@ -1375,7 +1375,7 @@ async def create_maintenance_request(input: MaintenanceRequestCreate, current_us
     
     # Get vehicle and driver info for notification
     vehicle = await db.vehicles.find_one({"id": input.vehicle_id}, {"_id": 0})
-    driver = await db.drivers.find_one({"id": input.driver_id}, {"_id": 0})
+    driver_info = await db.drivers.find_one({"id": input.driver_id}, {"_id": 0})
     
     # Send email notification to all fleet managers
     managers = await db.fleet_managers.find({"is_active": True}, {"_id": 0}).to_list(100)
@@ -1385,14 +1385,20 @@ async def create_maintenance_request(input: MaintenanceRequestCreate, current_us
                 manager['email'],
                 {
                     'vehicle_registration': vehicle.get('registration_number', 'N/A') if vehicle else 'N/A',
-                    'driver_name': f"{driver.get('first_name', '')} {driver.get('last_name', '')}" if driver else 'N/A',
+                    'driver_name': f"{driver_info.get('first_name', '')} {driver_info.get('last_name', '')}" if driver_info else 'N/A',
                     'request_type': input.request_type,
                     'priority': input.priority.value,
                     'description': input.description
                 }
             )
     
-    return request
+    # Return the document with submitted_by fields
+    # Convert datetime strings back to datetime for Pydantic
+    for field in ['created_at', 'updated_at', 'approved_at', 'rejected_at', 'completed_at']:
+        if doc.get(field) and isinstance(doc[field], str):
+            doc[field] = datetime.fromisoformat(doc[field])
+    
+    return doc
 
 
 @api_router.get("/maintenance-requests", response_model=List[MaintenanceRequest])
