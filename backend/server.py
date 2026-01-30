@@ -1326,7 +1326,7 @@ async def register_user(input: UserCreate):
     if existing:
         raise HTTPException(status_code=400, detail="Email already registered")
     
-    # Create user
+    # Create user - Only Group Fleet Manager is auto-approved
     user = User(
         email=input.email,
         hashed_password=get_password_hash(input.password),
@@ -1334,7 +1334,7 @@ async def register_user(input: UserCreate):
         role=input.role,
         country=input.country,
         driver_id=input.driver_id,
-        is_approved=input.role == UserRole.GROUP_FLEET_MANAGER  # Auto-approve group managers
+        is_approved=input.role == UserRole.GROUP_FLEET_MANAGER
     )
     
     doc = user.model_dump()
@@ -1350,7 +1350,7 @@ async def register_user(input: UserCreate):
             "sub": user.id,
             "email": user.email,
             "role": user.role.value,
-            "country": user.country.value if user.country else None,
+            "country": user.country if user.country else None,
             "full_name": user.full_name
         }
     )
@@ -1363,7 +1363,7 @@ async def register_user(input: UserCreate):
             "email": user.email,
             "full_name": user.full_name,
             "role": user.role.value,
-            "country": user.country.value if user.country else None,
+            "country": user.country if user.country else None,
             "is_approved": user.is_approved
         }
     )
