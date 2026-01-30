@@ -1611,15 +1611,78 @@ async def get_all_users(current_user: dict = Depends(require_group_manager())):
 
 
 @api_router.put("/auth/users/{user_id}/approve")
-async def approve_user(user_id: str, current_user: dict = Depends(require_group_manager())):
-    """Approve a user (Group Fleet Manager only)"""
+async def approve_user(user_id: str, current_user: dict = Depends(get_current_user)):
+    """Approve a user based on role hierarchy and country"""
+    # Get the user to be approved
+    user_to_approve = await db.users.find_one({"id": user_id}, {"_id": 0})
+    if not user_to_approve:
+        raise HTTPException(status_code=404, detail="User not found")
+    
+    approver_role = current_user.get('role')
+    approver_country = current_user.get('country')
+    user_role = user_to_approve.get('role')
+    user_country = user_to_approve.get('country')
+    
+    # Define approval permissions
+    can_approve = False
+    
+    if approver_role == 'GROUP_FLEET_MANAGER':
+        # Group Manager can approve anyone
+        can_approve = True
+    elif approver_role == 'FLEET_MANAGER':
+        # Fleet Manager can approve Fleet Officers, Drivers, Users in their country
+        if user_role in ['FLEET_OFFICER', 'DRIVER', 'USER'] and user_country == approver_country:
+            can_approve = True
+    elif approver_role == 'FLEET_OFFICER':
+        # Fleet Officer can approve Drivers and Users in their country
+        if user_role in ['DRIVER', 'USER'] and user_country == approver_country:
+            can_approve = True
+    
+    if not can_approve:
+        raise HTTPException(
+            status_code=403, 
+            detail=f"You don't have permission to approve {user_role.replace('_', ' ').title()} accounts"
+        )
+    
     result = await db.users.update_one(
         {"id": user_id},
-        {"$set": {"is_approved": True}}
+        {"$set": {
+            "is_approved": True,
+            "approved_by": current_user.get('id')
+        }}
     )
     if result.modified_count == 0:
         raise HTTPException(status_code=404, detail="User not found")
-    return {"status": "success", "message": "User approved"}
+    
+    return {"status": "success", "message": f"User approved by {current_user.get('full_name')}"}
+
+
+@api_router.get("/auth/users/pending")
+async def get_pending_users(current_user: dict = Depends(get_current_user)):
+    """Get pending users that current user can approve"""
+    approver_role = current_user.get('role')
+    approver_country = current_user.get('country')
+    
+    # Build filter based on role
+    query = {"is_approved": False}
+    
+    if approver_role == 'GROUP_FLEET_MANAGER':
+        # Can see all pending users
+        pass
+    elif approver_role == 'FLEET_MANAGER':
+        # Can see Fleet Officers, Drivers, Users in their country
+        query['country'] = approver_country
+        query['role'] = {"$in": ['FLEET_OFFICER', 'DRIVER', 'USER']}
+    elif approver_role == 'FLEET_OFFICER':
+        # Can see Drivers and Users in their country
+        query['country'] = approver_country
+        query['role'] = {"$in": ['DRIVER', 'USER']}
+    else:
+        # Drivers/Users cannot approve anyone
+        return []
+    
+    users = await db.users.find(query, {"_id": 0, "hashed_password": 0}).to_list(100)
+    return users
 
 
 @api_router.put("/auth/users/{user_id}")
