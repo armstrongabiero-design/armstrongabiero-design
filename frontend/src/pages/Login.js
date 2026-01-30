@@ -36,7 +36,7 @@ const Login = () => {
   useEffect(() => {
     const fetchCountries = async () => {
       try {
-        const response = await axios.get(`${API}/countries/list`);
+        const response = await axios.get(`${API}/countries/all-list`);
         setCountries(response.data.countries || []);
       } catch (error) {
         console.error('Failed to fetch countries:', error);
