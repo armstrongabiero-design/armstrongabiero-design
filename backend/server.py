@@ -1461,6 +1461,100 @@ async def update_user(user_id: str, input: UserUpdate, current_user: dict = Depe
     return {"status": "success", "message": "User updated"}
 
 
+@api_router.post("/auth/forgot-password")
+async def forgot_password(input: ForgotPasswordRequest):
+    """Request a password reset token"""
+    user = await db.users.find_one({"email": input.email}, {"_id": 0})
+    
+    # Always return success to prevent email enumeration
+    if not user:
+        return {"status": "success", "message": "If an account with that email exists, a reset link will be sent."}
+    
+    # Generate reset token
+    import secrets
+    reset_token = secrets.token_urlsafe(32)
+    expires_at = datetime.now(timezone.utc) + timedelta(hours=1)
+    
+    # Store reset token
+    token_doc = PasswordResetToken(
+        user_id=user['id'],
+        token=reset_token,
+        email=input.email,
+        expires_at=expires_at
+    )
+    doc = token_doc.model_dump()
+    doc['expires_at'] = doc['expires_at'].isoformat()
+    doc['created_at'] = doc['created_at'].isoformat()
+    await db.password_reset_tokens.insert_one(doc)
+    
+    # Send email with reset link (if SendGrid is configured)
+    reset_link = f"{os.environ.get('FRONTEND_URL', 'http://localhost:3000')}/reset-password?token={reset_token}"
+    email_service.send_password_reset_email(input.email, reset_link, user.get('full_name', 'User'))
+    
+    return {"status": "success", "message": "If an account with that email exists, a reset link will be sent."}
+
+
+@api_router.post("/auth/reset-password")
+async def reset_password(input: ResetPasswordRequest):
+    """Reset password using a reset token"""
+    # Find valid token
+    token_doc = await db.password_reset_tokens.find_one({
+        "token": input.token,
+        "used": False
+    }, {"_id": 0})
+    
+    if not token_doc:
+        raise HTTPException(status_code=400, detail="Invalid or expired reset token")
+    
+    # Check if token is expired
+    expires_at = token_doc.get('expires_at')
+    if isinstance(expires_at, str):
+        expires_at = datetime.fromisoformat(expires_at.replace('Z', '+00:00'))
+    
+    if expires_at < datetime.now(timezone.utc):
+        raise HTTPException(status_code=400, detail="Reset token has expired")
+    
+    # Update user's password
+    hashed_password = get_password_hash(input.new_password)
+    result = await db.users.update_one(
+        {"id": token_doc['user_id']},
+        {"$set": {"hashed_password": hashed_password}}
+    )
+    
+    if result.modified_count == 0:
+        raise HTTPException(status_code=404, detail="User not found")
+    
+    # Mark token as used
+    await db.password_reset_tokens.update_one(
+        {"token": input.token},
+        {"$set": {"used": True}}
+    )
+    
+    return {"status": "success", "message": "Password reset successfully"}
+
+
+@api_router.get("/auth/verify-reset-token/{token}")
+async def verify_reset_token(token: str):
+    """Verify if a reset token is valid"""
+    token_doc = await db.password_reset_tokens.find_one({
+        "token": token,
+        "used": False
+    }, {"_id": 0})
+    
+    if not token_doc:
+        return {"valid": False, "message": "Invalid reset token"}
+    
+    # Check if token is expired
+    expires_at = token_doc.get('expires_at')
+    if isinstance(expires_at, str):
+        expires_at = datetime.fromisoformat(expires_at.replace('Z', '+00:00'))
+    
+    if expires_at < datetime.now(timezone.utc):
+        return {"valid": False, "message": "Reset token has expired"}
+    
+    return {"valid": True, "email": token_doc.get('email')}
+
+
 # ============= TIRE MANAGEMENT ROUTES =============
 @api_router.post("/tires", response_model=Tire)
 async def create_tire(input: TireCreate):
