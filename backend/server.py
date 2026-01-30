@@ -1346,9 +1346,25 @@ async def get_fleet_managers():
 
 # ============= MAINTENANCE REQUEST ROUTES =============
 @api_router.post("/maintenance-requests", response_model=MaintenanceRequest)
-async def create_maintenance_request(input: MaintenanceRequestCreate):
+async def create_maintenance_request(input: MaintenanceRequestCreate, current_user: dict = Depends(get_current_user)):
     request = MaintenanceRequest(**input.model_dump())
     doc = request.model_dump()
+    
+    # Track who submitted this request (especially if on behalf of another driver)
+    if input.driver_id != current_user.get('id') and input.driver_id != current_user.get('driver_id'):
+        doc['submitted_by_id'] = current_user.get('id')
+        doc['submitted_by_name'] = current_user.get('full_name')
+        doc['submitted_by_role'] = current_user.get('role')
+    
+    # Add country from driver or input
+    if input.country:
+        doc['country'] = input.country
+    else:
+        driver = await db.drivers.find_one({"id": input.driver_id}, {"_id": 0, "country": 1})
+        if driver:
+            doc['country'] = driver.get('country')
+        elif current_user.get('country'):
+            doc['country'] = current_user.get('country')
     
     # Convert datetime fields
     for field in ['created_at', 'updated_at', 'approved_at', 'rejected_at', 'completed_at']:
@@ -1380,10 +1396,14 @@ async def create_maintenance_request(input: MaintenanceRequestCreate):
 
 
 @api_router.get("/maintenance-requests", response_model=List[MaintenanceRequest])
-async def get_maintenance_requests(status: Optional[str] = None):
+async def get_maintenance_requests(status: Optional[str] = None, driver_id: Optional[str] = None, country: Optional[str] = None):
     query = {}
     if status:
         query['status'] = status
+    if driver_id:
+        query['driver_id'] = driver_id
+    if country:
+        query['country'] = country
     
     requests = await db.maintenance_requests.find(query, {"_id": 0}).to_list(1000)
     for r in requests:
