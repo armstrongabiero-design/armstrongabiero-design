@@ -2,6 +2,7 @@ import React, { useEffect, useState } from 'react';
 import axios from 'axios';
 import { Plus, Book, AlertTriangle, TrendingUp } from 'lucide-react';
 import { toast } from 'sonner';
+import { useAuth } from '../contexts/AuthContext';
 import { Button } from '../components/ui/button';
 import { Input } from '../components/ui/input';
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle, DialogTrigger } from '../components/ui/dialog';
@@ -13,18 +14,21 @@ const BACKEND_URL = process.env.REACT_APP_BACKEND_URL;
 const API = `${BACKEND_URL}/api`;
 
 const DriverLogbook = () => {
+  const { user, token, isDriverOrUser } = useAuth();
+  const isPersonalView = isDriverOrUser && isDriverOrUser();
+  
   const [entries, setEntries] = useState([]);
   const [drivers, setDrivers] = useState([]);
   const [vehicles, setVehicles] = useState([]);
   const [loading, setLoading] = useState(true);
   const [dialogOpen, setDialogOpen] = useState(false);
-  const [selectedDriver, setSelectedDriver] = useState('');
+  const [selectedDriver, setSelectedDriver] = useState(isPersonalView ? (user?.driver_id || user?.id) : '');
   const [driverSummary, setDriverSummary] = useState(null);
 
   const [formData, setFormData] = useState({
-    driver_id: '',
+    driver_id: isPersonalView ? (user?.driver_id || user?.id) : '',
     vehicle_id: '',
-    country: 'GHANA',
+    country: user?.country || 'GHANA',
     date: new Date().toISOString().split('T')[0],
     start_time: '',
     end_time: '',
@@ -34,12 +38,6 @@ const DriverLogbook = () => {
     end_odometer: '',
     purpose: '',
     fuel_used_liters: '',
-    average_speed_kmh: '',
-    max_speed_kmh: '',
-    speed_limit_violations: 0,
-    harsh_braking_events: 0,
-    harsh_acceleration_events: 0,
-    idle_time_minutes: 0,
     notes: '',
   });
 
@@ -48,19 +46,29 @@ const DriverLogbook = () => {
   }, []);
 
   useEffect(() => {
-    if (selectedDriver) {
-      fetchDriverSummary(selectedDriver);
+    const driverId = isPersonalView ? (user?.driver_id || user?.id) : selectedDriver;
+    if (driverId) {
+      fetchDriverSummary(driverId);
     }
-  }, [selectedDriver]);
+  }, [selectedDriver, isPersonalView, user]);
 
   const fetchData = async () => {
     try {
+      const headers = token ? { Authorization: `Bearer ${token}` } : {};
       const [entriesRes, driversRes, vehiclesRes] = await Promise.all([
-        axios.get(`${API}/logbook`),
-        axios.get(`${API}/drivers`),
-        axios.get(`${API}/vehicles`),
+        axios.get(`${API}/logbook`, { headers }),
+        axios.get(`${API}/drivers`, { headers }),
+        axios.get(`${API}/vehicles`, { headers }),
       ]);
-      setEntries(entriesRes.data);
+      
+      // Filter entries for personal view
+      let filteredEntries = entriesRes.data;
+      if (isPersonalView) {
+        const userId = user?.driver_id || user?.id;
+        filteredEntries = entriesRes.data.filter(e => e.driver_id === userId);
+      }
+      
+      setEntries(filteredEntries);
       setDrivers(driversRes.data);
       setVehicles(vehiclesRes.data);
     } catch (error) {
@@ -72,7 +80,8 @@ const DriverLogbook = () => {
 
   const fetchDriverSummary = async (driverId) => {
     try {
-      const response = await axios.get(`${API}/logbook/summary/${driverId}`);
+      const headers = token ? { Authorization: `Bearer ${token}` } : {};
+      const response = await axios.get(`${API}/logbook/summary/${driverId}`, { headers });
       setDriverSummary(response.data);
     } catch (error) {
       console.error('Failed to fetch driver summary');
@@ -82,34 +91,46 @@ const DriverLogbook = () => {
   const handleSubmit = async (e) => {
     e.preventDefault();
     
-    const driver = drivers.find(d => d.id === formData.driver_id);
+    const driverId = isPersonalView ? (user?.driver_id || user?.id) : formData.driver_id;
+    const driver = drivers.find(d => d.id === driverId);
     
     try {
+      const headers = token ? { Authorization: `Bearer ${token}` } : {};
       await axios.post(`${API}/logbook`, {
         ...formData,
-        country: driver?.country || formData.country,
+        driver_id: driverId,
+        country: driver?.country || user?.country || formData.country,
         date: new Date(formData.date).toISOString(),
         start_time: new Date(`${formData.date}T${formData.start_time}`).toISOString(),
         end_time: formData.end_time ? new Date(`${formData.date}T${formData.end_time}`).toISOString() : null,
         start_odometer: parseFloat(formData.start_odometer),
         end_odometer: formData.end_odometer ? parseFloat(formData.end_odometer) : null,
         fuel_used_liters: formData.fuel_used_liters ? parseFloat(formData.fuel_used_liters) : null,
-        average_speed_kmh: formData.average_speed_kmh ? parseFloat(formData.average_speed_kmh) : null,
-        max_speed_kmh: formData.max_speed_kmh ? parseFloat(formData.max_speed_kmh) : null,
-        speed_limit_violations: parseInt(formData.speed_limit_violations) || 0,
-        harsh_braking_events: parseInt(formData.harsh_braking_events) || 0,
-        harsh_acceleration_events: parseInt(formData.harsh_acceleration_events) || 0,
-        idle_time_minutes: parseInt(formData.idle_time_minutes) || 0,
-      });
+      }, { headers });
       toast.success('Logbook entry added!');
       setDialogOpen(false);
       fetchData();
+      setFormData({
+        driver_id: isPersonalView ? (user?.driver_id || user?.id) : '',
+        vehicle_id: '',
+        country: user?.country || 'GHANA',
+        date: new Date().toISOString().split('T')[0],
+        start_time: '',
+        end_time: '',
+        start_location: '',
+        end_location: '',
+        start_odometer: '',
+        end_odometer: '',
+        purpose: '',
+        fuel_used_liters: '',
+        notes: '',
+      });
     } catch (error) {
       toast.error('Failed to add logbook entry');
     }
   };
 
-  const filteredEntries = selectedDriver
+  const filteredEntries = !isPersonalView && selectedDriver
     ? entries.filter(e => e.driver_id === selectedDriver)
     : entries;
 
@@ -117,21 +138,30 @@ const DriverLogbook = () => {
     <div className="p-6 lg:p-8" data-testid="driver-logbook-page">
       <div className="flex flex-col lg:flex-row lg:justify-between lg:items-center mb-6 gap-4">
         <div>
-          <h1 className="text-3xl font-bold text-slate-800">Driver Logbook</h1>
-          <p className="text-slate-600 mt-1">Digital trip logs and driver performance tracking</p>
+          <h1 className="text-3xl font-bold text-slate-800">
+            {isPersonalView ? 'My Logbook' : 'Driver Logbook'}
+          </h1>
+          <p className="text-slate-600 mt-1">
+            {isPersonalView 
+              ? 'Your trip logs and driving records'
+              : 'Digital trip logs and driver performance tracking'}
+          </p>
         </div>
         <div className="flex gap-2 flex-wrap">
-          <Select value={selectedDriver || "ALL"} onValueChange={(v) => setSelectedDriver(v === "ALL" ? "" : v)}>
-            <SelectTrigger className="w-48">
-              <SelectValue placeholder="All Drivers" />
-            </SelectTrigger>
-            <SelectContent>
-              <SelectItem value="ALL">All Drivers</SelectItem>
-              {drivers.map(d => (
-                <SelectItem key={d.id} value={d.id}>{d.first_name} {d.last_name}</SelectItem>
-              ))}
-            </SelectContent>
-          </Select>
+          {/* Only show driver filter for staff */}
+          {!isPersonalView && (
+            <Select value={selectedDriver || "ALL"} onValueChange={(v) => setSelectedDriver(v === "ALL" ? "" : v)}>
+              <SelectTrigger className="w-48">
+                <SelectValue placeholder="All Drivers" />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="ALL">All Drivers</SelectItem>
+                {drivers.map(d => (
+                  <SelectItem key={d.id} value={d.id}>{d.first_name} {d.last_name}</SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          )}
           <Dialog open={dialogOpen} onOpenChange={setDialogOpen}>
             <DialogTrigger asChild>
               <Button data-testid="add-entry-btn">
@@ -142,21 +172,31 @@ const DriverLogbook = () => {
             <DialogContent className="max-w-2xl max-h-[90vh] overflow-y-auto">
               <DialogHeader>
                 <DialogTitle>New Logbook Entry</DialogTitle>
-                <DialogDescription>Record a trip or driving session.</DialogDescription>
+                <DialogDescription>
+                  {isPersonalView ? 'Record your trip details.' : 'Record a trip or driving session.'}
+                </DialogDescription>
               </DialogHeader>
               <form onSubmit={handleSubmit} className="space-y-4">
                 <div className="grid grid-cols-2 gap-4">
-                  <div>
-                    <Label>Driver *</Label>
-                    <Select value={formData.driver_id} onValueChange={(value) => setFormData({...formData, driver_id: value})}>
-                      <SelectTrigger><SelectValue placeholder="Select driver" /></SelectTrigger>
-                      <SelectContent>
-                        {drivers.map(d => (
-                          <SelectItem key={d.id} value={d.id}>{d.first_name} {d.last_name}</SelectItem>
-                        ))}
-                      </SelectContent>
-                    </Select>
-                  </div>
+                  {/* Only show driver selection for staff */}
+                  {!isPersonalView ? (
+                    <div>
+                      <Label>Driver *</Label>
+                      <Select value={formData.driver_id} onValueChange={(value) => setFormData({...formData, driver_id: value})}>
+                        <SelectTrigger><SelectValue placeholder="Select driver" /></SelectTrigger>
+                        <SelectContent>
+                          {drivers.map(d => (
+                            <SelectItem key={d.id} value={d.id}>{d.first_name} {d.last_name}</SelectItem>
+                          ))}
+                        </SelectContent>
+                      </Select>
+                    </div>
+                  ) : (
+                    <div className="bg-slate-50 p-3 rounded-lg">
+                      <Label className="text-xs text-slate-500">Driver</Label>
+                      <p className="font-medium text-slate-800">{user?.full_name}</p>
+                    </div>
+                  )}
                   <div>
                     <Label>Vehicle *</Label>
                     <Select value={formData.vehicle_id} onValueChange={(value) => setFormData({...formData, vehicle_id: value})}>
@@ -199,62 +239,27 @@ const DriverLogbook = () => {
                 <div className="grid grid-cols-2 gap-4">
                   <div>
                     <Label>Start Odometer (km) *</Label>
-                    <Input type="number" value={formData.start_odometer} onChange={(e) => setFormData({...formData, start_odometer: e.target.value})} required />
+                    <Input type="number" step="0.1" value={formData.start_odometer} onChange={(e) => setFormData({...formData, start_odometer: e.target.value})} required />
                   </div>
                   <div>
                     <Label>End Odometer (km)</Label>
-                    <Input type="number" value={formData.end_odometer} onChange={(e) => setFormData({...formData, end_odometer: e.target.value})} />
+                    <Input type="number" step="0.1" value={formData.end_odometer} onChange={(e) => setFormData({...formData, end_odometer: e.target.value})} />
                   </div>
                 </div>
 
                 <div>
-                  <Label>Purpose *</Label>
-                  <Input value={formData.purpose} onChange={(e) => setFormData({...formData, purpose: e.target.value})} placeholder="e.g., Delivery, Site Visit, Client Meeting" required />
+                  <Label>Purpose of Trip *</Label>
+                  <Input value={formData.purpose} onChange={(e) => setFormData({...formData, purpose: e.target.value})} placeholder="e.g., Delivery to Accra Office" required />
                 </div>
 
-                <div className="border-t pt-4 mt-4">
-                  <h4 className="font-semibold text-slate-800 mb-3">Driving Metrics (from GPS/Telematics)</h4>
-                  <div className="grid grid-cols-3 gap-4">
-                    <div>
-                      <Label>Fuel Used (L)</Label>
-                      <Input type="number" step="0.1" value={formData.fuel_used_liters} onChange={(e) => setFormData({...formData, fuel_used_liters: e.target.value})} />
-                    </div>
-                    <div>
-                      <Label>Avg Speed (km/h)</Label>
-                      <Input type="number" value={formData.average_speed_kmh} onChange={(e) => setFormData({...formData, average_speed_kmh: e.target.value})} />
-                    </div>
-                    <div>
-                      <Label>Max Speed (km/h)</Label>
-                      <Input type="number" value={formData.max_speed_kmh} onChange={(e) => setFormData({...formData, max_speed_kmh: e.target.value})} />
-                    </div>
-                  </div>
-                </div>
-
-                <div className="border-t pt-4">
-                  <h4 className="font-semibold text-slate-800 mb-3">Safety Events</h4>
-                  <div className="grid grid-cols-4 gap-4">
-                    <div>
-                      <Label>Speed Violations</Label>
-                      <Input type="number" value={formData.speed_limit_violations} onChange={(e) => setFormData({...formData, speed_limit_violations: e.target.value})} />
-                    </div>
-                    <div>
-                      <Label>Harsh Braking</Label>
-                      <Input type="number" value={formData.harsh_braking_events} onChange={(e) => setFormData({...formData, harsh_braking_events: e.target.value})} />
-                    </div>
-                    <div>
-                      <Label>Harsh Accel.</Label>
-                      <Input type="number" value={formData.harsh_acceleration_events} onChange={(e) => setFormData({...formData, harsh_acceleration_events: e.target.value})} />
-                    </div>
-                    <div>
-                      <Label>Idle Time (min)</Label>
-                      <Input type="number" value={formData.idle_time_minutes} onChange={(e) => setFormData({...formData, idle_time_minutes: e.target.value})} />
-                    </div>
-                  </div>
+                <div>
+                  <Label>Fuel Used (Liters)</Label>
+                  <Input type="number" step="0.1" value={formData.fuel_used_liters} onChange={(e) => setFormData({...formData, fuel_used_liters: e.target.value})} />
                 </div>
 
                 <div>
                   <Label>Notes</Label>
-                  <Textarea value={formData.notes} onChange={(e) => setFormData({...formData, notes: e.target.value})} placeholder="Additional notes..." />
+                  <Textarea value={formData.notes} onChange={(e) => setFormData({...formData, notes: e.target.value})} placeholder="Any additional notes..." />
                 </div>
 
                 <div className="flex justify-end gap-2 mt-6">
@@ -267,109 +272,73 @@ const DriverLogbook = () => {
         </div>
       </div>
 
-      {/* Driver Summary Card */}
-      {selectedDriver && driverSummary && (
-        <div className="fleet-card mb-6">
-          <h3 className="text-lg font-semibold text-slate-800 mb-4">
-            {drivers.find(d => d.id === selectedDriver)?.first_name}'s 30-Day Summary
-          </h3>
-          <div className="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-6 gap-4">
-            <div>
-              <p className="text-sm text-slate-500">Total Trips</p>
-              <p className="text-2xl font-bold text-slate-800">{driverSummary.total_trips}</p>
-            </div>
-            <div>
-              <p className="text-sm text-slate-500">Distance</p>
-              <p className="text-2xl font-bold text-slate-800">{driverSummary.total_distance_km.toLocaleString()} km</p>
-            </div>
-            <div>
-              <p className="text-sm text-slate-500">Fuel Used</p>
-              <p className="text-2xl font-bold text-slate-800">{driverSummary.total_fuel_liters} L</p>
-            </div>
-            <div>
-              <p className="text-sm text-slate-500">Fuel Efficiency</p>
-              <p className="text-2xl font-bold text-green-600">{driverSummary.avg_fuel_efficiency} km/L</p>
-            </div>
-            <div>
-              <p className="text-sm text-slate-500">Speed Violations</p>
-              <p className={`text-2xl font-bold ${driverSummary.speed_violations > 0 ? 'text-red-600' : 'text-green-600'}`}>
-                {driverSummary.speed_violations}
-              </p>
-            </div>
-            <div>
-              <p className="text-sm text-slate-500">Harsh Events</p>
-              <p className={`text-2xl font-bold ${(driverSummary.harsh_braking_events + driverSummary.harsh_acceleration_events) > 0 ? 'text-amber-600' : 'text-green-600'}`}>
-                {driverSummary.harsh_braking_events + driverSummary.harsh_acceleration_events}
-              </p>
-            </div>
+      {/* Driver Summary - shown for personal view or when a driver is selected */}
+      {driverSummary && (isPersonalView || selectedDriver) && (
+        <div className="grid grid-cols-1 md:grid-cols-4 gap-4 mb-6">
+          <div className="bg-blue-50 rounded-lg p-4">
+            <p className="text-blue-600 text-sm font-medium">Total Trips</p>
+            <p className="text-2xl font-bold text-blue-800">{driverSummary.total_entries || 0}</p>
+          </div>
+          <div className="bg-green-50 rounded-lg p-4">
+            <p className="text-green-600 text-sm font-medium">Total Distance</p>
+            <p className="text-2xl font-bold text-green-800">{(driverSummary.total_distance_km || 0).toLocaleString()} km</p>
+          </div>
+          <div className="bg-purple-50 rounded-lg p-4">
+            <p className="text-purple-600 text-sm font-medium">Fuel Used</p>
+            <p className="text-2xl font-bold text-purple-800">{(driverSummary.total_fuel_liters || 0).toFixed(1)} L</p>
+          </div>
+          <div className="bg-amber-50 rounded-lg p-4">
+            <p className="text-amber-600 text-sm font-medium">Avg Efficiency</p>
+            <p className="text-2xl font-bold text-amber-800">{(driverSummary.avg_fuel_efficiency || 0).toFixed(1)} km/L</p>
           </div>
         </div>
       )}
 
-      {/* Logbook Entries Table */}
-      <div className="fleet-card">
-        <div className="table-container">
-          <table>
-            <thead>
+      {/* Logbook Table */}
+      <div className="fleet-card table-container">
+        <table>
+          <thead>
+            <tr>
+              <th>Date</th>
+              {!isPersonalView && <th>Driver</th>}
+              <th>Vehicle</th>
+              <th>Route</th>
+              <th>Distance</th>
+              <th>Purpose</th>
+              <th>Fuel</th>
+            </tr>
+          </thead>
+          <tbody>
+            {filteredEntries.length === 0 ? (
               <tr>
-                <th>Date</th>
-                <th>Driver</th>
-                <th>Vehicle</th>
-                <th>Route</th>
-                <th>Distance</th>
-                <th>Purpose</th>
-                <th>Max Speed</th>
-                <th>Violations</th>
+                <td colSpan={isPersonalView ? 6 : 7} className="text-center py-8 text-slate-500">
+                  No logbook entries found
+                </td>
               </tr>
-            </thead>
-            <tbody>
-              {filteredEntries.length === 0 ? (
-                <tr>
-                  <td colSpan="8" className="text-center py-8 text-slate-500">No logbook entries found</td>
-                </tr>
-              ) : (
-                filteredEntries.slice(0, 50).map(entry => {
-                  const driver = drivers.find(d => d.id === entry.driver_id);
-                  const vehicle = vehicles.find(v => v.id === entry.vehicle_id);
-                  const distance = entry.distance_km || (entry.end_odometer ? entry.end_odometer - entry.start_odometer : null);
-                  
-                  return (
-                    <tr key={entry.id}>
-                      <td>{new Date(entry.date).toLocaleDateString()}</td>
-                      <td className="font-semibold">{driver?.first_name} {driver?.last_name}</td>
-                      <td>{vehicle?.registration_number}</td>
-                      <td>
-                        <div className="text-sm">
-                          <div>{entry.start_location}</div>
-                          {entry.end_location && <div className="text-slate-500">→ {entry.end_location}</div>}
-                        </div>
-                      </td>
-                      <td>{distance ? `${distance.toFixed(1)} km` : '-'}</td>
-                      <td className="max-w-xs truncate">{entry.purpose}</td>
-                      <td>
-                        {entry.max_speed_kmh && (
-                          <span className={entry.max_speed_kmh > 100 ? 'text-red-600 font-semibold' : ''}>
-                            {entry.max_speed_kmh} km/h
-                          </span>
-                        )}
-                      </td>
-                      <td>
-                        {entry.speed_limit_violations > 0 ? (
-                          <span className="flex items-center gap-1 text-red-600">
-                            <AlertTriangle size={14} />
-                            {entry.speed_limit_violations}
-                          </span>
-                        ) : (
-                          <span className="text-green-600">✓</span>
-                        )}
-                      </td>
-                    </tr>
-                  );
-                })
-              )}
-            </tbody>
-          </table>
-        </div>
+            ) : (
+              filteredEntries.map(entry => {
+                const driver = drivers.find(d => d.id === entry.driver_id);
+                const vehicle = vehicles.find(v => v.id === entry.vehicle_id);
+                const distance = entry.end_odometer && entry.start_odometer
+                  ? (entry.end_odometer - entry.start_odometer).toFixed(1)
+                  : '-';
+                return (
+                  <tr key={entry.id}>
+                    <td>{new Date(entry.date).toLocaleDateString()}</td>
+                    {!isPersonalView && <td>{driver?.first_name} {driver?.last_name}</td>}
+                    <td className="font-semibold">{vehicle?.registration_number || 'N/A'}</td>
+                    <td className="text-sm">
+                      {entry.start_location} → {entry.end_location || '...'}
+                    </td>
+                    <td>{distance} km</td>
+                    <td className="text-sm max-w-xs truncate">{entry.purpose}</td>
+                    <td>{entry.fuel_used_liters ? `${entry.fuel_used_liters} L` : '-'}</td>
+                  </tr>
+                );
+              })
+            )}
+          </tbody>
+        </table>
       </div>
     </div>
   );
