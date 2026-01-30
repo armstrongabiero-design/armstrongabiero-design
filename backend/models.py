@@ -20,8 +20,10 @@ class CurrencyEnum(str, Enum):
 
 class UserRole(str, Enum):
     GROUP_FLEET_MANAGER = "GROUP_FLEET_MANAGER"
-    COUNTRY_FLEET_MANAGER = "COUNTRY_FLEET_MANAGER"
+    FLEET_MANAGER = "FLEET_MANAGER"
+    FLEET_OFFICER = "FLEET_OFFICER"
     DRIVER = "DRIVER"
+    USER = "USER"
 
 
 class VehicleStatus(str, Enum):
