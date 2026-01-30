@@ -442,6 +442,44 @@ class EmailService:
         """
         return self.send_email(email, subject, html_content)
 
+    def send_password_reset_email(self, email: str, reset_link: str, user_name: str) -> bool:
+        """Send password reset email"""
+        subject = "🔐 GTI Fleet Solutions - Password Reset Request"
+        html_content = f"""
+        <html>
+        <body style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
+            <div style="background: linear-gradient(135deg, #6366f1, #8b5cf6); color: white; padding: 20px; border-radius: 8px 8px 0 0;">
+                <h2 style="margin: 0;">GTI Fleet Solutions - Password Reset</h2>
+            </div>
+            <div style="padding: 20px; border: 1px solid #e5e7eb; border-top: none; border-radius: 0 0 8px 8px;">
+                <p>Hello <strong>{user_name}</strong>,</p>
+                <p>We received a request to reset your password for your GTI Fleet Solutions account.</p>
+                
+                <div style="text-align: center; margin: 30px 0;">
+                    <a href="{reset_link}" style="background: linear-gradient(135deg, #6366f1, #8b5cf6); color: white; padding: 15px 30px; text-decoration: none; border-radius: 8px; font-weight: bold; display: inline-block;">
+                        Reset Password
+                    </a>
+                </div>
+                
+                <p style="color: #6b7280; font-size: 14px;">Or copy and paste this link into your browser:</p>
+                <p style="background: #f3f4f6; padding: 10px; border-radius: 4px; word-break: break-all; font-size: 12px;">{reset_link}</p>
+                
+                <div style="background: #fef3c7; border-left: 4px solid #f59e0b; padding: 15px; margin: 20px 0;">
+                    <strong>⚠️ Important:</strong>
+                    <ul style="margin: 10px 0; padding-left: 20px;">
+                        <li>This link will expire in 1 hour</li>
+                        <li>If you didn't request this, please ignore this email</li>
+                        <li>Your password won't change until you create a new one</li>
+                    </ul>
+                </div>
+                
+                <p style="color: #6b7280; font-size: 14px;">If you need help, contact your system administrator.</p>
+            </div>
+        </body>
+        </html>
+        """
+        return self.send_email(email, subject, html_content)
+
 
 # Singleton instance
 email_service = EmailService()
