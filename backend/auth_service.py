@@ -95,10 +95,15 @@ def require_group_manager():
 
 
 def require_manager():
-    """Require any manager role"""
-    return require_role(["GROUP_FLEET_MANAGER", "COUNTRY_FLEET_MANAGER"])
+    """Require any manager role (Group Fleet Manager or Fleet Manager)"""
+    return require_role(["GROUP_FLEET_MANAGER", "FLEET_MANAGER"])
+
+
+def require_fleet_staff():
+    """Require fleet staff role (managers + officers)"""
+    return require_role(["GROUP_FLEET_MANAGER", "FLEET_MANAGER", "FLEET_OFFICER"])
 
 
 def require_any_authenticated():
     """Require any authenticated user"""
-    return require_role(["GROUP_FLEET_MANAGER", "COUNTRY_FLEET_MANAGER", "DRIVER"])
+    return require_role(["GROUP_FLEET_MANAGER", "FLEET_MANAGER", "FLEET_OFFICER", "DRIVER", "USER"])
