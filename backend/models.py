@@ -773,6 +773,10 @@ class LogbookEntry(BaseModel):
     idle_time_minutes: int = 0
     notes: Optional[str] = None
     synced: bool = True  # For offline mode
+    # Track who submitted the entry (for entries made on behalf of others)
+    submitted_by_id: Optional[str] = None
+    submitted_by_name: Optional[str] = None
+    submitted_by_role: Optional[str] = None
     created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
 
 
