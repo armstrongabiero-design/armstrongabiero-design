@@ -73,13 +73,16 @@ AI-native Fleet Management System designed for GTI operations globally (with foc
 - Safety scoring system
 - License and document tracking
 
-### 5. Maintenance & Requests
+### 5. Maintenance & Requests (Updated Jan 2026)
 - Maintenance records with AI predictions
 - **Authorization Workflow:**
   - Driver/Fleet Officer submits request
   - Fleet Manager receives notification
   - Manager approves or rejects (with reason)
   - Driver notified of decision
+- **Action Logging:** Tracks when manager submits request on behalf of driver
+  - `submitted_by_id`, `submitted_by_name`, `submitted_by_role` fields
+  - UI shows "Submitted By" column with role badge or "Self" indicator
 
 ### 6. Pre-Trip Checklist
 - Daily vehicle inspection before trips
