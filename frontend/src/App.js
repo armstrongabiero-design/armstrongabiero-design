@@ -98,6 +98,7 @@ const AppLayout = () => {
           <Route path="/pre-trip-checklist" element={<PreTripChecklist />} />
           <Route path="/tires" element={<TireManagement />} />
           <Route path="/logbook" element={<DriverLogbook />} />
+          <Route path="/driving-metrics" element={<DrivingMetrics />} />
           <Route path="/inventory" element={<Inventory />} />
           <Route path="/fuel" element={<Fuel />} />
           <Route path="/expenditures" element={<Expenditures />} />
