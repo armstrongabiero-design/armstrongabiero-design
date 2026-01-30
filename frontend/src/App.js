@@ -21,11 +21,13 @@ import DrivingMetrics from './pages/DrivingMetrics';
 import VendorManagement from './pages/VendorManagement';
 import Reports from './pages/Reports';
 import Login from './pages/Login';
+import AdminRegister from './pages/AdminRegister';
 import ForgotPassword from './pages/ForgotPassword';
 import ResetPassword from './pages/ResetPassword';
 import UserManagement from './pages/UserManagement';
 import Sidebar from './components/Sidebar';
 import { Toaster } from './components/ui/sonner';
+import { Button } from './components/ui/button';
 
 // Protected Route Component
 const ProtectedRoute = ({ children }) => {
