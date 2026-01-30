@@ -20,6 +20,8 @@ import DriverLogbook from './pages/DriverLogbook';
 import VendorManagement from './pages/VendorManagement';
 import Reports from './pages/Reports';
 import Login from './pages/Login';
+import ForgotPassword from './pages/ForgotPassword';
+import ResetPassword from './pages/ResetPassword';
 import UserManagement from './pages/UserManagement';
 import Sidebar from './components/Sidebar';
 import { Toaster } from './components/ui/sonner';
