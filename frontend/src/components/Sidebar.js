@@ -3,45 +3,100 @@ import { Link, useLocation, useNavigate } from 'react-router-dom';
 import { 
   Truck, Users, Wrench, Package, Droplet, DollarSign, FileText, 
   TrendingUp, AlertTriangle, Menu, X, ClipboardCheck, FileCheck,
-  MapPin, Book, CircleDot, Building, BarChart3, LogOut, Shield, UserCog
+  MapPin, Book, CircleDot, Building, BarChart3, LogOut, Shield, UserCog,
+  Gauge, User
 } from 'lucide-react';
 import { useAuth } from '../contexts/AuthContext';
 
 const Sidebar = ({ open, setOpen }) => {
   const location = useLocation();
   const navigate = useNavigate();
-  const { user, logout, isGroupManager } = useAuth();
+  const { user, logout, isGroupManager, isManager, isStaff, isDriverOrUser } = useAuth();
 
   const handleLogout = () => {
     logout();
     navigate('/login');
   };
 
-  const menuItems = [
-    { path: '/', icon: TrendingUp, label: 'Dashboard' },
-    { path: '/fleet-map', icon: MapPin, label: 'Fleet Map' },
-    { path: '/vehicles', icon: Truck, label: 'Vehicles' },
-    { path: '/drivers', icon: Users, label: 'Drivers' },
-    { path: '/logbook', icon: Book, label: 'Driver Logbook' },
-    { path: '/pre-trip-checklist', icon: ClipboardCheck, label: 'Pre-Trip Check' },
-    { divider: true, label: 'Operations' },
-    { path: '/maintenance', icon: Wrench, label: 'Maintenance' },
-    { path: '/maintenance-requests', icon: FileCheck, label: 'Requests' },
-    { path: '/tires', icon: CircleDot, label: 'Tire Management' },
-    { path: '/inventory', icon: Package, label: 'Inventory' },
-    { divider: true, label: 'Finance' },
-    { path: '/fuel', icon: Droplet, label: 'Fuel' },
-    { path: '/expenditures', icon: DollarSign, label: 'Expenditures' },
-    { path: '/vendors', icon: Building, label: 'Vendors' },
-    { divider: true, label: 'Compliance' },
-    { path: '/documents', icon: FileText, label: 'Documents' },
-    { path: '/assets', icon: TrendingUp, label: 'Assets' },
-    { path: '/safety', icon: AlertTriangle, label: 'Safety' },
-    { divider: true, label: 'Analytics' },
-    { path: '/reports', icon: BarChart3, label: 'Reports & TCO' },
-    { divider: true, label: 'Admin', requireGroupManager: true },
-    { path: '/users', icon: UserCog, label: 'User Management', requireGroupManager: true },
-  ];
+  const getRoleDisplay = (role) => {
+    switch (role) {
+      case 'GROUP_FLEET_MANAGER': return 'Group Manager';
+      case 'FLEET_MANAGER': return 'Fleet Manager';
+      case 'FLEET_OFFICER': return 'Fleet Officer';
+      case 'DRIVER': return 'Driver';
+      case 'USER': return 'User';
+      default: return role;
+    }
+  };
+
+  const getRoleIcon = (role) => {
+    switch (role) {
+      case 'GROUP_FLEET_MANAGER': return <Shield size={16} className="text-purple-600" />;
+      case 'FLEET_MANAGER': return <Users size={16} className="text-blue-600" />;
+      case 'FLEET_OFFICER': return <UserCog size={16} className="text-indigo-600" />;
+      case 'DRIVER': return <Truck size={16} className="text-green-600" />;
+      case 'USER': return <User size={16} className="text-slate-600" />;
+      default: return <User size={16} className="text-slate-600" />;
+    }
+  };
+
+  // Define menu items based on roles
+  const getMenuItems = () => {
+    const isDriverUser = isDriverOrUser && isDriverOrUser();
+    const isStaffMember = isStaff && isStaff();
+    const isGroupMgr = isGroupManager && isGroupManager();
+    const isMgr = isManager && isManager();
+
+    if (isDriverUser) {
+      // Driver/User menu - limited, personalized view
+      return [
+        { path: '/', icon: TrendingUp, label: 'My Dashboard' },
+        { path: '/pre-trip-checklist', icon: ClipboardCheck, label: 'Pre-Trip Check' },
+        { path: '/logbook', icon: Book, label: 'My Logbook' },
+        { path: '/driving-metrics', icon: Gauge, label: 'Driving Metrics' },
+        { divider: true, label: 'Operations' },
+        { path: '/maintenance-requests', icon: FileCheck, label: 'My Requests' },
+        { divider: true, label: 'Reports' },
+        { path: '/reports', icon: BarChart3, label: 'My Reports' },
+      ];
+    }
+
+    // Staff/Manager menu - full access
+    const items = [
+      { path: '/', icon: TrendingUp, label: 'Dashboard' },
+      { path: '/fleet-map', icon: MapPin, label: 'Fleet Map' },
+      { path: '/vehicles', icon: Truck, label: 'Vehicles' },
+      { path: '/drivers', icon: Users, label: 'Drivers' },
+      { path: '/logbook', icon: Book, label: 'Driver Logbook' },
+      { path: '/driving-metrics', icon: Gauge, label: 'Driving Metrics' },
+      { path: '/pre-trip-checklist', icon: ClipboardCheck, label: 'Pre-Trip Check' },
+      { divider: true, label: 'Operations' },
+      { path: '/maintenance', icon: Wrench, label: 'Maintenance' },
+      { path: '/maintenance-requests', icon: FileCheck, label: 'Requests' },
+      { path: '/tires', icon: CircleDot, label: 'Tire Management' },
+      { path: '/inventory', icon: Package, label: 'Inventory' },
+      { divider: true, label: 'Finance' },
+      { path: '/fuel', icon: Droplet, label: 'Fuel' },
+      { path: '/expenditures', icon: DollarSign, label: 'Expenditures' },
+      { path: '/vendors', icon: Building, label: 'Vendors' },
+      { divider: true, label: 'Compliance' },
+      { path: '/documents', icon: FileText, label: 'Documents' },
+      { path: '/assets', icon: TrendingUp, label: 'Assets' },
+      { path: '/safety', icon: AlertTriangle, label: 'Safety' },
+      { divider: true, label: 'Analytics' },
+      { path: '/reports', icon: BarChart3, label: 'Reports & TCO' },
+    ];
+
+    // Add admin section for managers
+    if (isMgr) {
+      items.push({ divider: true, label: 'Admin' });
+      items.push({ path: '/users', icon: UserCog, label: 'User Management' });
+    }
+
+    return items;
+  };
+
+  const menuItems = getMenuItems();
 
   return (
     <>
@@ -69,19 +124,19 @@ const Sidebar = ({ open, setOpen }) => {
         {user && (
           <div className="px-4 py-3 bg-slate-50 border-b border-slate-200">
             <div className="flex items-center gap-2">
-              <div className={`p-2 rounded-full ${isGroupManager && isGroupManager() ? 'bg-purple-100' : 'bg-blue-100'}`}>
-                {isGroupManager && isGroupManager() ? (
-                  <Shield size={16} className="text-purple-600" />
-                ) : (
-                  <Users size={16} className="text-blue-600" />
-                )}
+              <div className={`p-2 rounded-full ${
+                user.role === 'GROUP_FLEET_MANAGER' ? 'bg-purple-100' :
+                user.role === 'FLEET_MANAGER' ? 'bg-blue-100' :
+                user.role === 'FLEET_OFFICER' ? 'bg-indigo-100' :
+                user.role === 'DRIVER' ? 'bg-green-100' : 'bg-slate-100'
+              }`}>
+                {getRoleIcon(user.role)}
               </div>
               <div className="flex-1 min-w-0">
                 <p className="text-sm font-medium text-slate-800 truncate">{user.full_name}</p>
                 <p className="text-xs text-slate-500 truncate">
-                  {user.role === 'GROUP_FLEET_MANAGER' ? 'Group Manager' : 
-                   user.role === 'COUNTRY_FLEET_MANAGER' ? `${user.country} Manager` : 
-                   'Driver'}
+                  {getRoleDisplay(user.role)}
+                  {user.country && ` • ${user.country}`}
                 </p>
               </div>
             </div>
@@ -90,16 +145,7 @@ const Sidebar = ({ open, setOpen }) => {
 
         <nav className="flex-1 p-4 space-y-1 overflow-y-auto">
           {menuItems.map((item, index) => {
-            // Skip items that require Group Manager if user is not one
-            if (item.requireGroupManager && (!isGroupManager || !isGroupManager())) {
-              return null;
-            }
-            
             if (item.divider) {
-              // Skip divider if it requires Group Manager
-              if (item.requireGroupManager && (!isGroupManager || !isGroupManager())) {
-                return null;
-              }
               return (
                 <div key={index} className="pt-4 pb-2">
                   <p className="text-xs font-semibold text-slate-400 uppercase tracking-wider px-4">
