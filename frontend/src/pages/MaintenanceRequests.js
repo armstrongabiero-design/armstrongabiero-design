@@ -468,6 +468,7 @@ const MaintenanceRequests = () => {
                   <th>Date</th>
                   <th>Vehicle</th>
                   {!isPersonalView && <th>Requestor</th>}
+                  {!isPersonalView && <th>Submitted By</th>}
                   <th>Type</th>
                   <th>Priority</th>
                   <th>Description</th>
@@ -479,7 +480,7 @@ const MaintenanceRequests = () => {
               <tbody>
                 {filteredRequests.length === 0 ? (
                   <tr>
-                    <td colSpan={isPersonalView ? 6 : 8} className="text-center py-8 text-slate-500">
+                    <td colSpan={isPersonalView ? 7 : 10} className="text-center py-8 text-slate-500">
                       No {activeTab.toLowerCase()} requests
                     </td>
                   </tr>
@@ -487,11 +488,26 @@ const MaintenanceRequests = () => {
                   filteredRequests.map((request) => {
                     const vehicle = vehicles.find(v => v.id === request.vehicle_id);
                     const driver = drivers.find(d => d.id === request.driver_id);
+                    const wasSubmittedByOther = request.submitted_by_id && request.submitted_by_id !== request.driver_id;
                     return (
-                      <tr key={request.id}>
+                      <tr key={request.id} data-testid={`request-row-${request.id}`}>
                         <td>{new Date(request.created_at).toLocaleDateString()}</td>
                         <td className="font-semibold">{vehicle?.registration_number || 'N/A'}</td>
                         {!isPersonalView && <td>{driver?.first_name} {driver?.last_name}</td>}
+                        {!isPersonalView && (
+                          <td>
+                            {wasSubmittedByOther ? (
+                              <div className="flex flex-col">
+                                <span className="text-sm font-medium text-slate-700">{request.submitted_by_name}</span>
+                                <span className="text-xs text-purple-600 bg-purple-50 px-1.5 py-0.5 rounded-full w-fit">
+                                  {request.submitted_by_role?.replace('_', ' ')}
+                                </span>
+                              </div>
+                            ) : (
+                              <span className="text-slate-400 text-sm">Self</span>
+                            )}
+                          </td>
+                        )}
                         <td>{request.request_type}</td>
                         <td><span className={getPriorityBadge(request.priority)}>{request.priority}</span></td>
                         <td className="text-sm max-w-xs truncate">{request.description}</td>
