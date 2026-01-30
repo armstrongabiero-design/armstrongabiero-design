@@ -2,6 +2,7 @@ import React, { useEffect, useState } from 'react';
 import axios from 'axios';
 import { ClipboardCheck, Camera, AlertTriangle, CheckCircle2, XCircle, AlertCircle } from 'lucide-react';
 import { toast } from 'sonner';
+import { useAuth } from '../contexts/AuthContext';
 import { Button } from '../components/ui/button';
 import { Input } from '../components/ui/input';
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle, DialogTrigger } from '../components/ui/dialog';
@@ -23,6 +24,9 @@ const CHECKLIST_ITEMS = [
 ];
 
 const PreTripChecklist = () => {
+  const { user, token, isDriverOrUser } = useAuth();
+  const isPersonalView = isDriverOrUser && isDriverOrUser();
+  
   const [checklists, setChecklists] = useState([]);
   const [drivers, setDrivers] = useState([]);
   const [vehicles, setVehicles] = useState([]);
@@ -31,11 +35,12 @@ const PreTripChecklist = () => {
   const [checklistStatus, setChecklistStatus] = useState(null);
   const [uploadingPhoto, setUploadingPhoto] = useState(false);
 
-  const [selectedDriver, setSelectedDriver] = useState('');
+  // For personal view, auto-set driver
+  const [selectedDriver, setSelectedDriver] = useState(isPersonalView ? (user?.driver_id || user?.id) : '');
   const [selectedVehicle, setSelectedVehicle] = useState('');
   
   const [formData, setFormData] = useState({
-    driver_id: '',
+    driver_id: isPersonalView ? (user?.driver_id || user?.id) : '',
     vehicle_id: '',
     engine_oil: 'OK',
     engine_oil_notes: '',
@@ -60,19 +65,29 @@ const PreTripChecklist = () => {
   }, []);
 
   useEffect(() => {
-    if (selectedDriver && selectedVehicle) {
-      checkTodayStatus();
+    const driverId = isPersonalView ? (user?.driver_id || user?.id) : selectedDriver;
+    if (driverId && selectedVehicle) {
+      checkTodayStatus(driverId, selectedVehicle);
     }
-  }, [selectedDriver, selectedVehicle]);
+  }, [selectedDriver, selectedVehicle, isPersonalView, user]);
 
   const fetchData = async () => {
     try {
+      const headers = token ? { Authorization: `Bearer ${token}` } : {};
       const [checklistsRes, driversRes, vehiclesRes] = await Promise.all([
-        axios.get(`${API}/pre-trip-checklists`),
-        axios.get(`${API}/drivers`),
-        axios.get(`${API}/vehicles`),
+        axios.get(`${API}/pre-trip-checklists`, { headers }),
+        axios.get(`${API}/drivers`, { headers }),
+        axios.get(`${API}/vehicles`, { headers }),
       ]);
-      setChecklists(checklistsRes.data);
+      
+      // Filter checklists for personal view
+      let filteredChecklists = checklistsRes.data;
+      if (isPersonalView) {
+        const userId = user?.driver_id || user?.id;
+        filteredChecklists = checklistsRes.data.filter(c => c.driver_id === userId);
+      }
+      
+      setChecklists(filteredChecklists);
       setDrivers(driversRes.data);
       setVehicles(vehiclesRes.data);
     } catch (error) {
@@ -82,9 +97,10 @@ const PreTripChecklist = () => {
     }
   };
 
-  const checkTodayStatus = async () => {
+  const checkTodayStatus = async (driverId, vehicleId) => {
     try {
-      const response = await axios.get(`${API}/pre-trip-checklists/today/${selectedDriver}/${selectedVehicle}`);
+      const headers = token ? { Authorization: `Bearer ${token}` } : {};
+      const response = await axios.get(`${API}/pre-trip-checklists/today/${driverId}/${vehicleId}`, { headers });
       setChecklistStatus(response.data);
     } catch (error) {
       setChecklistStatus(null);
@@ -100,8 +116,9 @@ const PreTripChecklist = () => {
     formDataUpload.append('file', file);
 
     try {
+      const headers = token ? { Authorization: `Bearer ${token}` } : {};
       const response = await axios.post(`${API}/pre-trip-checklists/upload-photo`, formDataUpload, {
-        headers: { 'Content-Type': 'multipart/form-data' }
+        headers: { ...headers, 'Content-Type': 'multipart/form-data' }
       });
       setFormData({
         ...formData,
@@ -117,12 +134,22 @@ const PreTripChecklist = () => {
 
   const handleSubmit = async (e) => {
     e.preventDefault();
+    
+    const driverId = isPersonalView ? (user?.driver_id || user?.id) : formData.driver_id;
+    
     try {
-      await axios.post(`${API}/pre-trip-checklists`, formData);
+      const headers = token ? { Authorization: `Bearer ${token}` } : {};
+      await axios.post(`${API}/pre-trip-checklists`, {
+        ...formData,
+        driver_id: driverId,
+      }, { headers });
       toast.success('Pre-trip checklist completed! You can now log trips and fuel.');
       setDialogOpen(false);
       fetchData();
-      checkTodayStatus();
+      const vehicleId = formData.vehicle_id;
+      if (driverId && vehicleId) {
+        checkTodayStatus(driverId, vehicleId);
+      }
     } catch (error) {
       if (error.response?.data?.detail) {
         toast.error(error.response.data.detail);
@@ -156,9 +183,10 @@ const PreTripChecklist = () => {
   };
 
   const openChecklistForm = () => {
+    const driverId = isPersonalView ? (user?.driver_id || user?.id) : selectedDriver;
     setFormData({
       ...formData,
-      driver_id: selectedDriver,
+      driver_id: driverId,
       vehicle_id: selectedVehicle,
     });
     setDialogOpen(true);
@@ -167,29 +195,41 @@ const PreTripChecklist = () => {
   return (
     <div className="p-6 lg:p-8" data-testid="pretrip-checklist-page">
       <div className="mb-6">
-        <h1 className="text-3xl font-bold text-slate-800">Pre-Trip Checklist</h1>
+        <h1 className="text-3xl font-bold text-slate-800">
+          {isPersonalView ? 'My Pre-Trip Checklist' : 'Pre-Trip Checklist'}
+        </h1>
         <p className="text-slate-600 mt-1">Complete vehicle inspection before starting your day</p>
       </div>
 
       {/* Driver & Vehicle Selection */}
       <div className="fleet-card mb-6">
-        <h3 className="text-lg font-semibold text-slate-800 mb-4">Select Driver & Vehicle</h3>
+        <h3 className="text-lg font-semibold text-slate-800 mb-4">
+          {isPersonalView ? 'Select Vehicle' : 'Select Driver & Vehicle'}
+        </h3>
         <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-          <div>
-            <Label>Driver</Label>
-            <Select value={selectedDriver} onValueChange={setSelectedDriver}>
-              <SelectTrigger>
-                <SelectValue placeholder="Select driver" />
-              </SelectTrigger>
-              <SelectContent>
-                {drivers.map(d => (
-                  <SelectItem key={d.id} value={d.id}>
-                    {d.first_name} {d.last_name}
-                  </SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
-          </div>
+          {/* Only show driver selection for staff */}
+          {!isPersonalView ? (
+            <div>
+              <Label>Driver</Label>
+              <Select value={selectedDriver} onValueChange={setSelectedDriver}>
+                <SelectTrigger>
+                  <SelectValue placeholder="Select driver" />
+                </SelectTrigger>
+                <SelectContent>
+                  {drivers.map(d => (
+                    <SelectItem key={d.id} value={d.id}>
+                      {d.first_name} {d.last_name}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+          ) : (
+            <div className="bg-slate-50 p-3 rounded-lg">
+              <Label className="text-xs text-slate-500">Driver</Label>
+              <p className="font-medium text-slate-800">{user?.full_name}</p>
+            </div>
+          )}
           <div>
             <Label>Vehicle</Label>
             <Select value={selectedVehicle} onValueChange={setSelectedVehicle}>
@@ -208,38 +248,30 @@ const PreTripChecklist = () => {
         </div>
 
         {/* Today's Status */}
-        {selectedDriver && selectedVehicle && (
-          <div className="mt-6">
-            {checklistStatus?.completed ? (
-              <div className={`p-4 rounded-lg ${checklistStatus.can_log_trips ? 'bg-green-50 border border-green-200' : 'bg-red-50 border border-red-200'}`}>
-                <div className="flex items-center gap-2">
-                  {checklistStatus.can_log_trips ? (
-                    <CheckCircle2 className="text-green-600" size={24} />
-                  ) : (
-                    <XCircle className="text-red-600" size={24} />
-                  )}
-                  <div>
-                    <p className="font-semibold text-slate-800">
-                      {checklistStatus.can_log_trips ? "Today's checklist completed!" : "Checklist completed but vehicle needs attention"}
-                    </p>
-                    <p className="text-sm text-slate-600">
-                      {checklistStatus.can_log_trips 
-                        ? "You can now log fuel and trips for this vehicle."
-                        : "Please address vehicle issues before proceeding."}
-                    </p>
-                  </div>
+        {(isPersonalView || selectedDriver) && selectedVehicle && (
+          <div className="mt-4 p-4 rounded-lg border border-slate-200">
+            {checklistStatus ? (
+              <div className="flex items-center justify-between">
+                <div>
+                  <p className="font-medium text-green-700">Today's Checklist Complete</p>
+                  <p className="text-sm text-slate-600">
+                    Completed at {new Date(checklistStatus.created_at).toLocaleTimeString()}
+                  </p>
                 </div>
+                <span className={getOverallStatusBadge(checklistStatus.overall_status)}>
+                  {checklistStatus.overall_status}
+                </span>
               </div>
             ) : (
-              <div className="bg-amber-50 border border-amber-200 p-4 rounded-lg">
-                <div className="flex items-center gap-2 mb-3">
-                  <AlertTriangle className="text-amber-600" size={24} />
-                  <div>
-                    <p className="font-semibold text-amber-800">Pre-Trip Checklist Required</p>
-                    <p className="text-sm text-amber-700">Complete the inspection before logging fuel or trips.</p>
-                  </div>
+              <div className="flex items-center justify-between">
+                <div>
+                  <p className="font-medium text-amber-700 flex items-center gap-2">
+                    <AlertTriangle size={18} />
+                    No checklist completed today
+                  </p>
+                  <p className="text-sm text-slate-600">Complete checklist before logging trips</p>
                 </div>
-                <Button onClick={openChecklistForm} data-testid="start-checklist-btn">
+                <Button onClick={openChecklistForm}>
                   <ClipboardCheck size={18} className="mr-2" />
                   Start Checklist
                 </Button>
@@ -254,40 +286,45 @@ const PreTripChecklist = () => {
         <DialogContent className="max-w-2xl max-h-[90vh] overflow-y-auto">
           <DialogHeader>
             <DialogTitle>Pre-Trip Vehicle Inspection</DialogTitle>
-            <DialogDescription>
-              Inspect your vehicle before starting. Mark any issues found.
-            </DialogDescription>
+            <DialogDescription>Check each item and note any issues</DialogDescription>
           </DialogHeader>
-          <form onSubmit={handleSubmit} className="space-y-6">
-            {CHECKLIST_ITEMS.map((item) => (
-              <div key={item.key} className="border-b pb-4">
+          <form onSubmit={handleSubmit} className="space-y-4">
+            {CHECKLIST_ITEMS.map(item => (
+              <div key={item.key} className="border rounded-lg p-4">
                 <div className="flex items-center justify-between mb-2">
-                  <Label className="text-base flex items-center gap-2">
+                  <Label className="flex items-center gap-2 text-base">
                     <span>{item.icon}</span>
                     {item.label}
                   </Label>
-                  <div className="flex gap-1">
-                    {['OK', 'NEEDS_ATTENTION', 'FAILED'].map((status) => (
-                      <Button
-                        key={status}
-                        type="button"
-                        size="sm"
-                        variant={formData[item.key] === status ? 'default' : 'outline'}
-                        className={formData[item.key] === status ? (
-                          status === 'OK' ? 'bg-green-500 hover:bg-green-600' :
-                          status === 'NEEDS_ATTENTION' ? 'bg-amber-500 hover:bg-amber-600' :
-                          'bg-red-500 hover:bg-red-600'
-                        ) : ''}
-                        onClick={() => setFormData({...formData, [item.key]: status})}
-                      >
-                        {status === 'OK' ? '✓ OK' : status === 'NEEDS_ATTENTION' ? '⚠ Attention' : '✗ Failed'}
-                      </Button>
-                    ))}
-                  </div>
+                  <Select 
+                    value={formData[item.key]} 
+                    onValueChange={(value) => setFormData({...formData, [item.key]: value})}
+                  >
+                    <SelectTrigger className="w-40">
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="OK">
+                        <span className="flex items-center gap-2">
+                          <CheckCircle2 className="text-green-500" size={16} /> OK
+                        </span>
+                      </SelectItem>
+                      <SelectItem value="NEEDS_ATTENTION">
+                        <span className="flex items-center gap-2">
+                          <AlertCircle className="text-amber-500" size={16} /> Needs Attention
+                        </span>
+                      </SelectItem>
+                      <SelectItem value="FAILED">
+                        <span className="flex items-center gap-2">
+                          <XCircle className="text-red-500" size={16} /> Failed
+                        </span>
+                      </SelectItem>
+                    </SelectContent>
+                  </Select>
                 </div>
                 {formData[item.key] !== 'OK' && (
                   <Input
-                    placeholder={`Notes for ${item.label.toLowerCase()}...`}
+                    placeholder="Describe the issue..."
                     value={formData[`${item.key}_notes`]}
                     onChange={(e) => setFormData({...formData, [`${item.key}_notes`]: e.target.value})}
                     className="mt-2"
@@ -297,42 +334,25 @@ const PreTripChecklist = () => {
             ))}
 
             {/* Photo Upload */}
-            <div className="border-b pb-4">
-              <Label className="text-base flex items-center gap-2 mb-2">
+            <div className="border rounded-lg p-4">
+              <Label className="flex items-center gap-2 mb-2">
                 <Camera size={18} />
-                Damage Photos
+                Damage Photos (Optional)
               </Label>
-              <p className="text-sm text-slate-500 mb-2">Upload photos of any damage found during inspection</p>
-              <div className="flex flex-wrap gap-2 mb-2">
-                {formData.damage_photos.map((url, index) => (
-                  <div key={index} className="relative w-20 h-20 border rounded overflow-hidden">
-                    <img src={`${BACKEND_URL}${url}`} alt={`Damage ${index + 1}`} className="w-full h-full object-cover" />
-                    <button
-                      type="button"
-                      onClick={() => setFormData({
-                        ...formData,
-                        damage_photos: formData.damage_photos.filter((_, i) => i !== index)
-                      })}
-                      className="absolute top-0 right-0 bg-red-500 text-white p-1 text-xs"
-                    >
-                      ✕
-                    </button>
-                  </div>
-                ))}
-              </div>
-              <Input
-                type="file"
-                accept="image/*"
-                onChange={handlePhotoUpload}
-                disabled={uploadingPhoto}
-              />
-              {uploadingPhoto && <p className="text-sm text-slate-500 mt-1">Uploading...</p>}
+              <Input type="file" accept="image/*" onChange={handlePhotoUpload} disabled={uploadingPhoto} />
+              {formData.damage_photos.length > 0 && (
+                <div className="flex gap-2 mt-2 flex-wrap">
+                  {formData.damage_photos.map((url, idx) => (
+                    <img key={idx} src={url} alt={`Damage ${idx + 1}`} className="w-20 h-20 object-cover rounded" />
+                  ))}
+                </div>
+              )}
             </div>
 
             {/* Additional Notes */}
             <div>
               <Label>Additional Notes</Label>
-              <Textarea
+              <Textarea 
                 value={formData.additional_notes}
                 onChange={(e) => setFormData({...formData, additional_notes: e.target.value})}
                 placeholder="Any other observations..."
@@ -349,59 +369,34 @@ const PreTripChecklist = () => {
 
       {/* Recent Checklists */}
       <div className="fleet-card">
-        <h3 className="text-lg font-semibold text-slate-800 mb-4">Recent Checklists</h3>
-        <div className="table-container">
-          <table>
-            <thead>
-              <tr>
-                <th>Date</th>
-                <th>Driver</th>
-                <th>Vehicle</th>
-                <th>Status</th>
-                <th>Issues</th>
-                <th>Photos</th>
-              </tr>
-            </thead>
-            <tbody>
-              {checklists.length === 0 ? (
-                <tr>
-                  <td colSpan="6" className="text-center py-8 text-slate-500">No checklists completed yet</td>
-                </tr>
-              ) : (
-                checklists.slice(0, 20).map((checklist) => {
-                  const driver = drivers.find(d => d.id === checklist.driver_id);
-                  const vehicle = vehicles.find(v => v.id === checklist.vehicle_id);
-                  const issueCount = checklist.checklist_items?.filter(i => i.status !== 'OK').length || 0;
-                  return (
-                    <tr key={checklist.id}>
-                      <td>{new Date(checklist.date).toLocaleDateString()}</td>
-                      <td className="font-semibold">{driver?.first_name} {driver?.last_name}</td>
-                      <td>{vehicle?.registration_number}</td>
-                      <td>
-                        <span className={getOverallStatusBadge(checklist.overall_status)}>
-                          {checklist.overall_status}
-                        </span>
-                      </td>
-                      <td>
-                        {issueCount > 0 ? (
-                          <span className="text-amber-600 font-semibold">{issueCount} issue(s)</span>
-                        ) : (
-                          <span className="text-green-600">All OK</span>
-                        )}
-                      </td>
-                      <td>
-                        {checklist.damage_photos?.length > 0 ? (
-                          <span className="text-purple-600">{checklist.damage_photos.length} photo(s)</span>
-                        ) : (
-                          <span className="text-slate-400">-</span>
-                        )}
-                      </td>
-                    </tr>
-                  );
-                })
-              )}
-            </tbody>
-          </table>
+        <h3 className="text-lg font-semibold text-slate-800 mb-4">
+          {isPersonalView ? 'My Recent Checklists' : 'Recent Checklists'}
+        </h3>
+        <div className="space-y-3">
+          {checklists.length === 0 ? (
+            <p className="text-slate-500 text-center py-8">No checklists completed yet</p>
+          ) : (
+            checklists.slice(0, 10).map(checklist => {
+              const driver = drivers.find(d => d.id === checklist.driver_id);
+              const vehicle = vehicles.find(v => v.id === checklist.vehicle_id);
+              return (
+                <div key={checklist.id} className="flex items-center justify-between p-3 bg-slate-50 rounded-lg">
+                  <div>
+                    <p className="font-medium text-slate-800">
+                      {vehicle?.registration_number || 'N/A'}
+                      {!isPersonalView && ` - ${driver?.first_name || ''} ${driver?.last_name || ''}`}
+                    </p>
+                    <p className="text-sm text-slate-600">
+                      {new Date(checklist.date || checklist.created_at).toLocaleDateString()} at {new Date(checklist.created_at).toLocaleTimeString()}
+                    </p>
+                  </div>
+                  <span className={getOverallStatusBadge(checklist.overall_status)}>
+                    {checklist.overall_status}
+                  </span>
+                </div>
+              );
+            })
+          )}
         </div>
       </div>
     </div>
