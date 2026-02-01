@@ -133,9 +133,9 @@ const Login = () => {
   const getRoleIcon = (role) => {
     switch (role) {
       case 'FLEET_MANAGER':
-        return <Users size={16} className="text-blue-600" />;
+        return <Users size={16} className="text-amber-600" />;
       case 'FLEET_OFFICER':
-        return <UserCog size={16} className="text-indigo-600" />;
+        return <UserCog size={16} className="text-amber-500" />;
       case 'DRIVER':
         return <Truck size={16} className="text-green-600" />;
       case 'USER':
@@ -146,15 +146,15 @@ const Login = () => {
   };
 
   return (
-    <div className="min-h-screen bg-gradient-to-br from-slate-900 via-purple-900 to-slate-900 flex items-center justify-center p-4">
+    <div className="min-h-screen flex items-center justify-center p-4" style={{background: 'linear-gradient(135deg, #1e293b 0%, #78350f 50%, #1e293b 100%)'}}>
       <div className="w-full max-w-md">
         {/* Logo */}
         <div className="text-center mb-8">
           <div className="inline-flex items-center gap-3 mb-4">
-            <div className="bg-purple-600 p-3 rounded-xl">
+            <div className="p-3 rounded-xl" style={{backgroundColor: '#e3aa27'}}>
               <Truck className="text-white" size={32} />
             </div>
-            <h1 className="text-3xl font-bold text-white">GTI <span className="text-purple-400">FLEET</span></h1>
+            <h1 className="text-3xl font-bold text-white">GTI <span style={{color: '#e3aa27'}}>FLEET</span></h1>
           </div>
           <p className="text-slate-400">GTI Fleet Solutions</p>
         </div>
@@ -191,13 +191,14 @@ const Login = () => {
                 <div className="flex justify-end">
                   <Link 
                     to="/forgot-password" 
-                    className="text-sm text-purple-600 hover:text-purple-700"
+                    className="text-sm hover:underline"
+                    style={{color: '#e3aa27'}}
                     data-testid="forgot-password-link"
                   >
                     Forgot password?
                   </Link>
                 </div>
-                <Button type="submit" className="w-full" disabled={loading} data-testid="login-btn">
+                <Button type="submit" className="w-full" disabled={loading} data-testid="login-btn" style={{backgroundColor: '#e3aa27', color: 'white'}}>
                   {loading ? 'Signing in...' : 'Sign In'}
                 </Button>
               </form>
