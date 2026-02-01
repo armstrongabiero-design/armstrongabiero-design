@@ -190,8 +190,9 @@ class TestMaintenanceApprovalAutoFill:
         assert create_resp.status_code in [200, 201], f"Failed to create request: {create_resp.text}"
         request_id = create_resp.json().get('id')
         
-        # Approve the request
+        # Approve the request - manager_id is required but will be overridden by current user
         approval_data = {
+            "manager_id": user_data.get('id', 'auto'),  # Will be overridden by current user
             "approved": True
         }
         
