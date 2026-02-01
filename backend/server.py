@@ -538,7 +538,7 @@ async def get_inventory_transactions(item_id: Optional[str] = None):
 
 # ============= FUEL ROUTES =============
 @api_router.post("/fuel", response_model=FuelTransaction)
-async def create_fuel_transaction(input: FuelTransactionCreate):
+async def create_fuel_transaction(input: FuelTransactionCreate, current_user: dict = Depends(get_current_user)):
     cost_usd = currency_converter.convert(input.cost, input.currency, CurrencyEnum.USD)
     
     # Get previous fuel transaction to calculate efficiency
@@ -578,6 +578,12 @@ async def create_fuel_transaction(input: FuelTransactionCreate):
     doc = fuel_transaction.model_dump()
     doc['date'] = doc['date'].isoformat()
     doc['created_at'] = doc['created_at'].isoformat()
+    
+    # Track who submitted this entry (especially if on behalf of another driver)
+    if input.driver_id and input.driver_id != current_user.get('id') and input.driver_id != current_user.get('driver_id'):
+        doc['submitted_by_id'] = current_user.get('id')
+        doc['submitted_by_name'] = current_user.get('full_name')
+        doc['submitted_by_role'] = current_user.get('role')
     
     await db.fuel_transactions.insert_one(doc)
     return fuel_transaction
