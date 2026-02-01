@@ -783,7 +783,7 @@ class LogbookEntry(BaseModel):
 class LogbookEntryCreate(BaseModel):
     driver_id: str
     vehicle_id: str
-    country: CountryEnum
+    country: Optional[str] = None  # Accept any country string, will be normalized
     date: datetime
     start_time: datetime
     end_time: Optional[datetime] = None
