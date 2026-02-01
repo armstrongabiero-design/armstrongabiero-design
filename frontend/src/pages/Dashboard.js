@@ -235,6 +235,8 @@ const StaffDashboard = ({ user, token, isGroupManager }) => {
   const [compliance, setCompliance] = useState(null);
   const [loading, setLoading] = useState(true);
   const [selectedCountry, setSelectedCountry] = useState('');
+  const [showAllPendingUsers, setShowAllPendingUsers] = useState(false);
+  const [showAllPendingRequests, setShowAllPendingRequests] = useState(false);
 
   useEffect(() => {
     fetchDashboardData();
@@ -309,6 +311,14 @@ const StaffDashboard = ({ user, token, isGroupManager }) => {
     return roles[role] || role;
   };
 
+  const displayedPendingUsers = showAllPendingUsers 
+    ? stats?.pending_users 
+    : stats?.pending_users?.slice(0, 4);
+  
+  const displayedPendingRequests = showAllPendingRequests 
+    ? stats?.pending_requests 
+    : stats?.pending_requests?.slice(0, 4);
+
   return (
     <div className="p-6 lg:p-8" data-testid="staff-dashboard">
       <div className="flex flex-col lg:flex-row lg:items-center lg:justify-between mb-8 gap-4">
@@ -340,52 +350,7 @@ const StaffDashboard = ({ user, token, isGroupManager }) => {
         )}
       </div>
 
-      {/* Pending Users Alert */}
-      {stats?.pending_users_count > 0 && (
-        <div className="bg-purple-50 border border-purple-200 rounded-lg p-4 mb-6">
-          <div className="flex items-start gap-3">
-            <UserPlus className="text-purple-600 mt-0.5" size={20} />
-            <div className="flex-1">
-              <p className="font-semibold text-purple-800">{stats.pending_users_count} Pending Account{stats.pending_users_count > 1 ? 's' : ''}</p>
-              <p className="text-sm text-purple-700 mb-3">User registrations awaiting your approval</p>
-              <div className="space-y-2">
-                {stats.pending_users?.slice(0, 5).map((pendingUser) => (
-                  <div key={pendingUser.id} className="flex items-center justify-between bg-white p-3 rounded-lg">
-                    <div>
-                      <p className="font-medium text-slate-800">{pendingUser.full_name}</p>
-                      <p className="text-sm text-slate-500">{pendingUser.email} • {getRoleDisplay(pendingUser.role)} • {pendingUser.country}</p>
-                    </div>
-                    <Button size="sm" onClick={() => handleApproveUser(pendingUser.id)}>
-                      Approve
-                    </Button>
-                  </div>
-                ))}
-              </div>
-              {stats.pending_users_count > 5 && (
-                <Link to="/users" className="text-purple-700 text-sm mt-2 inline-block hover:underline">
-                  View all {stats.pending_users_count} pending users →
-                </Link>
-              )}
-            </div>
-          </div>
-        </div>
-      )}
-
-      {/* Pending Requests Alert */}
-      {stats?.pending_requests_count > 0 && (
-        <div className="bg-amber-50 border border-amber-200 rounded-lg p-4 mb-6 flex items-start gap-3">
-          <Clock className="text-amber-600 mt-0.5" size={20} />
-          <div>
-            <p className="font-semibold text-amber-800">{stats.pending_requests_count} Pending Request{stats.pending_requests_count > 1 ? 's' : ''}</p>
-            <p className="text-sm text-amber-700">Maintenance requests awaiting approval</p>
-            <Link to="/maintenance-requests" className="text-amber-700 text-sm mt-1 inline-block hover:underline">
-              Review requests →
-            </Link>
-          </div>
-        </div>
-      )}
-
-      {/* Critical Alerts */}
+      {/* Critical Alerts (Keep at top) */}
       {alerts && alerts.critical_count > 0 && (
         <div className="bg-red-50 border border-red-200 rounded-lg p-4 mb-6 flex items-start gap-3">
           <Bell className="text-red-600 mt-0.5" size={20} />
@@ -552,6 +517,79 @@ const StaffDashboard = ({ user, token, isGroupManager }) => {
           </div>
         </div>
       </div>
+
+      {/* Pending Accounts Section (Below Compliance) */}
+      {stats?.pending_users_count > 0 && (
+        <div className="fleet-card mb-6">
+          <div className="flex items-center justify-between mb-4">
+            <h3 className="text-lg font-semibold text-slate-800 flex items-center gap-2">
+              <UserPlus size={20} className="text-purple-600" />
+              Pending Accounts ({stats.pending_users_count})
+            </h3>
+            {stats.pending_users_count > 4 && (
+              <Button 
+                variant="ghost" 
+                size="sm" 
+                onClick={() => setShowAllPendingUsers(!showAllPendingUsers)}
+              >
+                {showAllPendingUsers ? 'Show Less' : `View All (${stats.pending_users_count})`}
+              </Button>
+            )}
+          </div>
+          <div className="space-y-2">
+            {displayedPendingUsers?.map((pendingUser) => (
+              <div key={pendingUser.id} className="flex items-center justify-between bg-purple-50 p-3 rounded-lg">
+                <div>
+                  <p className="font-medium text-slate-800">{pendingUser.full_name}</p>
+                  <p className="text-sm text-slate-500">{pendingUser.email} • {getRoleDisplay(pendingUser.role)} • {pendingUser.country}</p>
+                </div>
+                <Button size="sm" onClick={() => handleApproveUser(pendingUser.id)}>
+                  Approve
+                </Button>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {/* Pending Maintenance Requests Section (Below Pending Accounts) */}
+      {stats?.pending_requests_count > 0 && (
+        <div className="fleet-card">
+          <div className="flex items-center justify-between mb-4">
+            <h3 className="text-lg font-semibold text-slate-800 flex items-center gap-2">
+              <Clock size={20} className="text-amber-600" />
+              Pending Maintenance Requests ({stats.pending_requests_count})
+            </h3>
+            {stats.pending_requests_count > 4 && (
+              <Button 
+                variant="ghost" 
+                size="sm" 
+                onClick={() => setShowAllPendingRequests(!showAllPendingRequests)}
+              >
+                {showAllPendingRequests ? 'Show Less' : `View All (${stats.pending_requests_count})`}
+              </Button>
+            )}
+          </div>
+          <div className="space-y-2">
+            {displayedPendingRequests?.map((request) => (
+              <div key={request.id} className="flex items-center justify-between bg-amber-50 p-3 rounded-lg">
+                <div>
+                  <p className="font-medium text-slate-800">{request.request_type}</p>
+                  <p className="text-sm text-slate-500">{request.description?.substring(0, 60)}...</p>
+                </div>
+                <Link to="/maintenance-requests">
+                  <Button size="sm" variant="outline">Review</Button>
+                </Link>
+              </div>
+            ))}
+          </div>
+          {stats.pending_requests_count > 0 && (
+            <Link to="/maintenance-requests" className="text-purple-700 text-sm mt-4 inline-block hover:underline">
+              Manage all requests →
+            </Link>
+          )}
+        </div>
+      )}
     </div>
   );
 };
