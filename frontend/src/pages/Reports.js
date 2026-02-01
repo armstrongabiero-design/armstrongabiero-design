@@ -362,7 +362,7 @@ const Reports = () => {
       </div>
 
       {/* Vehicle-specific details when selected */}
-      {selectedVehicle && tcoData?.utilization && (
+      {!isPersonalView && selectedVehicle && tcoData?.utilization && (
         <div className="fleet-card mt-6">
           <h2 className="text-xl font-semibold text-slate-800 mb-4">
             Vehicle Details: {tcoData.registration_number}
@@ -386,6 +386,8 @@ const Reports = () => {
             </div>
           </div>
         </div>
+      )}
+      </>
       )}
     </div>
   );
