@@ -84,6 +84,28 @@ AI-native Fleet Management System designed for GTI operations globally (with foc
 - **Action Logging:** Tracks when manager submits request on behalf of driver
   - `submitted_by_id`, `submitted_by_name`, `submitted_by_role` fields
   - UI shows "Submitted By" column with role badge or "Self" indicator
+- **Approval Tracking:** Auto-fills approving manager info
+  - `approved_by_id`, `approved_by_name`, `approved_by_role` fields when approved
+  - `rejected_by_id`, `rejected_by_name`, `rejected_by_role` fields when rejected
+
+### 6. Driver Logbook (Updated Jan 2026)
+- Digital trip logging with odometer tracking
+- Fuel efficiency calculations
+- **Submitted By Tracking:** Logs when manager submits on behalf of driver
+
+### 7. Pre-Trip Checklist (Updated Jan 2026)
+- Daily vehicle inspection checklist
+- 7-point inspection (Engine Oil, Tires, Brakes, Lights, Fuel, Mirrors/Wipers, Cleanliness)
+- Damage photo upload
+- Overall status: PASSED / ATTENTION_NEEDED / FAILED
+- **Fixed:** No longer auto-completes on vehicle selection (Jan 2026)
+- **Submitted By Tracking:** Logs when manager submits on behalf of driver
+
+### 8. Reports & Analytics (Updated Jan 2026)
+- **Manager View:** Fleet-wide TCO, expense breakdown, utilization
+- **Driver/User View:** Personal driving statistics (trips, distance, fuel, efficiency)
+- Country and vehicle filtering for managers
+- Period selection (7/30/90/365 days)
 
 ### 6. Pre-Trip Checklist
 - Daily vehicle inspection before trips
