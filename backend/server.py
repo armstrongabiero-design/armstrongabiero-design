@@ -1350,7 +1350,14 @@ async def get_compliance_status(country: Optional[str] = None):
 
 # ============= FLEET MANAGER ROUTES =============
 @api_router.post("/fleet-managers", response_model=FleetManager)
-async def create_fleet_manager(input: FleetManagerCreate):
+async def create_fleet_manager(input: FleetManagerCreate, current_user: dict = Depends(get_current_user)):
+    """Create a new fleet manager - only Group Fleet Manager and Fleet Manager can create"""
+    user_role = current_user.get('role')
+    
+    # Only Group Fleet Manager and Fleet Manager can create Fleet Managers
+    if user_role not in ['GROUP_FLEET_MANAGER', 'FLEET_MANAGER']:
+        raise HTTPException(status_code=403, detail="Only Group Fleet Manager or Fleet Manager can add Fleet Managers")
+    
     manager = FleetManager(**input.model_dump())
     doc = manager.model_dump()
     doc['created_at'] = doc['created_at'].isoformat()
