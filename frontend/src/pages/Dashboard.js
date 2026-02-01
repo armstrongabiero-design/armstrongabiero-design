@@ -206,7 +206,7 @@ const PersonalDashboard = ({ user, token }) => {
             <>
               <CheckCircle className="text-green-600" size={24} />
               <div>
-                <p className="font-semibold text-green-800">Today's Pre-Trip Checklist Complete</p>
+                <p className="font-semibold text-green-800">Today&apos;s Pre-Trip Checklist Complete</p>
                 <p className="text-sm text-green-700">Status: {stats.today_checklist_status || 'Completed'}</p>
               </div>
             </>
