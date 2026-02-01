@@ -1523,7 +1523,7 @@ async def approve_maintenance_request(request_id: str, approval: MaintenanceRequ
 
 # ============= PRE-TRIP CHECKLIST ROUTES =============
 @api_router.post("/pre-trip-checklists", response_model=PreTripChecklist)
-async def create_pretrip_checklist(input: PreTripChecklistCreate):
+async def create_pretrip_checklist(input: PreTripChecklistCreate, current_user: dict = Depends(get_current_user)):
     # Check if checklist already exists for today
     today = datetime.now(timezone.utc).date()
     existing = await db.pretrip_checklists.find_one({
@@ -1565,6 +1565,12 @@ async def create_pretrip_checklist(input: PreTripChecklistCreate):
     doc = checklist.model_dump()
     doc['date'] = doc['date'].isoformat()
     doc['created_at'] = doc['created_at'].isoformat()
+    
+    # Track who submitted this checklist (especially if on behalf of another driver)
+    if input.driver_id != current_user.get('id') and input.driver_id != current_user.get('driver_id'):
+        doc['submitted_by_id'] = current_user.get('id')
+        doc['submitted_by_name'] = current_user.get('full_name')
+        doc['submitted_by_role'] = current_user.get('role')
     
     await db.pretrip_checklists.insert_one(doc)
     return checklist
