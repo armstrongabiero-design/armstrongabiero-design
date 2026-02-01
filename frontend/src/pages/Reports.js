@@ -1,32 +1,55 @@
 import React, { useEffect, useState } from 'react';
 import axios from 'axios';
-import { TrendingUp, DollarSign, Truck, PieChart, BarChart3 } from 'lucide-react';
+import { TrendingUp, DollarSign, Truck, PieChart, BarChart3, User } from 'lucide-react';
 import { toast } from 'sonner';
+import { useAuth } from '../contexts/AuthContext';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '../components/ui/select';
 
 const BACKEND_URL = process.env.REACT_APP_BACKEND_URL;
 const API = `${BACKEND_URL}/api`;
 
 const Reports = () => {
+  const { user, token, isDriverOrUser } = useAuth();
+  const isPersonalView = isDriverOrUser && isDriverOrUser();
+  
   const [tcoData, setTcoData] = useState(null);
   const [expenseBreakdown, setExpenseBreakdown] = useState(null);
   const [utilization, setUtilization] = useState(null);
   const [vehicles, setVehicles] = useState([]);
+  const [driverSummary, setDriverSummary] = useState(null);
   const [loading, setLoading] = useState(true);
   const [selectedVehicle, setSelectedVehicle] = useState('');
   const [selectedCountry, setSelectedCountry] = useState('');
   const [periodDays, setPeriodDays] = useState('30');
 
   useEffect(() => {
-    fetchVehicles();
-    fetchReports();
-  }, [selectedCountry, periodDays]);
+    if (isPersonalView) {
+      fetchPersonalReports();
+    } else {
+      fetchVehicles();
+      fetchReports();
+    }
+  }, [selectedCountry, periodDays, isPersonalView]);
 
   useEffect(() => {
-    if (selectedVehicle) {
+    if (selectedVehicle && !isPersonalView) {
       fetchVehicleTCO(selectedVehicle);
     }
   }, [selectedVehicle, periodDays]);
+
+  const fetchPersonalReports = async () => {
+    try {
+      const headers = token ? { Authorization: `Bearer ${token}` } : {};
+      const driverId = user?.driver_id || user?.id;
+      
+      const response = await axios.get(`${API}/logbook/summary/${driverId}?period_days=${periodDays}`, { headers });
+      setDriverSummary(response.data);
+    } catch (error) {
+      console.error('Failed to fetch personal reports');
+    } finally {
+      setLoading(false);
+    }
+  };
 
   const fetchVehicles = async () => {
     try {
