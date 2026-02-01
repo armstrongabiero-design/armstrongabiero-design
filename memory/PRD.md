@@ -36,6 +36,7 @@ AI-native Fleet Management System designed for GTI operations globally (with foc
 - **Password Visibility Toggle** - Show/hide password for all password fields (Dec 2025)
 - **Confirm Password** - Registration form now requires password confirmation (Dec 2025)
 - **Country Selection** - 100+ countries with search functionality (Dec 2025)
+- **Fleet Officer Restriction** - Fleet Officers cannot add Fleet Managers (Jan 2026)
 
 ### 2. Dashboard with Role-Based Views (Updated Jan 2026)
 **Manager Dashboard (Staff):**
@@ -44,8 +45,8 @@ AI-native Fleet Management System designed for GTI operations globally (with foc
 - Group Fleet Manager sees all countries with filter dropdown
 - Compliance status indicators (compliant, non-compliant, expiring soon)
 - Active alerts with severity levels
-- Pending user approvals with inline Approve button
-- Pending maintenance requests summary
+- **Pending Accounts Section** - Below compliance, shows 4 users with "View All" button (Jan 2026)
+- **Pending Requests Section** - Below pending accounts, shows 4 requests with "View All" button (Jan 2026)
 
 **Driver/User Personal Dashboard:**
 - Personal activity stats (trips, distance, fuel efficiency)
