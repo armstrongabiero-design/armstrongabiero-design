@@ -1,4 +1,4 @@
-from fastapi import FastAPI, APIRouter, HTTPException, UploadFile, File, Depends, Query
+from fastapi import FastAPI, APIRouter, HTTPException, UploadFile, File, Depends, Query, Body
 from fastapi.responses import Response
 from dotenv import load_dotenv
 from starlette.middleware.cors import CORSMiddleware
