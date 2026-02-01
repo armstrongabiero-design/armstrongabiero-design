@@ -326,17 +326,6 @@ const Login = () => {
           </Tabs>
         </div>
 
-        {/* Admin link */}
-        <div className="mt-6 text-center">
-          <Link 
-            to="/admin-register" 
-            className="text-slate-400 text-sm transition-colors"
-            style={{'--tw-text-opacity': 1}}
-            onMouseOver={(e) => e.target.style.color = '#e3aa27'}
-            onMouseOut={(e) => e.target.style.color = '#94a3b8'}
-          >
-            Group Fleet Manager Registration →
-          </Link>
         </div>
       </div>
     </div>
