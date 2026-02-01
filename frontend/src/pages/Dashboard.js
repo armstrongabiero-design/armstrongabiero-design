@@ -86,7 +86,7 @@ const PersonalDashboard = ({ user, token }) => {
       </div>
 
       {/* Quick Actions */}
-      <div className="bg-gradient-to-r from-purple-600 to-indigo-600 rounded-xl p-6 mb-8 text-white">
+      <div className="rounded-xl p-6 mb-8 text-white" style={{background: 'linear-gradient(135deg, #e3aa27 0%, #c4912a 100%)'}}>
         <h2 className="text-xl font-semibold mb-4">Quick Actions</h2>
         <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
           <Link to="/pre-trip-checklist">
