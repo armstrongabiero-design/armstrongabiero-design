@@ -255,16 +255,16 @@ const PreTripChecklist = () => {
         {/* Today's Status */}
         {(isPersonalView || selectedDriver) && selectedVehicle && (
           <div className="mt-4 p-4 rounded-lg border border-slate-200">
-            {checklistStatus ? (
+            {checklistStatus && checklistStatus.completed ? (
               <div className="flex items-center justify-between">
                 <div>
                   <p className="font-medium text-green-700">Today's Checklist Complete</p>
                   <p className="text-sm text-slate-600">
-                    Completed at {new Date(checklistStatus.created_at).toLocaleTimeString()}
+                    Completed at {new Date(checklistStatus.checklist?.created_at || checklistStatus.created_at).toLocaleTimeString()}
                   </p>
                 </div>
-                <span className={getOverallStatusBadge(checklistStatus.overall_status)}>
-                  {checklistStatus.overall_status}
+                <span className={getOverallStatusBadge(checklistStatus.checklist?.overall_status || checklistStatus.overall_status)}>
+                  {checklistStatus.checklist?.overall_status || checklistStatus.overall_status}
                 </span>
               </div>
             ) : (
