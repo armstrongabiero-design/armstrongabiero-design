@@ -1726,6 +1726,108 @@ async def login(input: UserLogin):
     if not user.get('is_approved', False):
         raise HTTPException(status_code=403, detail="Account pending approval by Group Fleet Manager")
     
+    # Check if user is Group Fleet Manager - require OTP verification
+    if user['role'] == 'GROUP_FLEET_MANAGER':
+        # Return a response indicating OTP is required
+        return {
+            "requires_otp": True,
+            "email": user['email'],
+            "message": "OTP verification required for Group Fleet Manager login"
+        }
+    
+    # Update last login
+    await db.users.update_one(
+        {"id": user['id']},
+        {"$set": {"last_login": datetime.now(timezone.utc).isoformat()}}
+    )
+    
+    # Create token
+    access_token = create_access_token(
+        data={
+            "sub": user['id'],
+            "email": user['email'],
+            "role": user['role'],
+            "country": user.get('country'),
+            "full_name": user['full_name']
+        }
+    )
+    
+    return Token(
+        access_token=access_token,
+        token_type="bearer",
+        user={
+            "id": user['id'],
+            "email": user['email'],
+            "full_name": user['full_name'],
+            "role": user['role'],
+            "country": user.get('country'),
+            "is_approved": user.get('is_approved', False)
+        }
+    )
+
+
+@api_router.post("/auth/send-otp")
+async def send_otp(input: UserLogin):
+    """Send OTP to Group Fleet Manager email for verification"""
+    user = await db.users.find_one({"email": input.email}, {"_id": 0})
+    if not user:
+        raise HTTPException(status_code=401, detail="Invalid email or password")
+    
+    if not verify_password(input.password, user['hashed_password']):
+        raise HTTPException(status_code=401, detail="Invalid email or password")
+    
+    if user['role'] != 'GROUP_FLEET_MANAGER':
+        raise HTTPException(status_code=400, detail="OTP verification only required for Group Fleet Manager")
+    
+    # Generate 6-digit OTP
+    import random
+    otp_code = ''.join([str(random.randint(0, 9)) for _ in range(6)])
+    
+    # Store OTP with expiry (5 minutes)
+    otp_expiry = datetime.now(timezone.utc) + timedelta(minutes=5)
+    await db.otp_codes.update_one(
+        {"email": input.email},
+        {"$set": {
+            "email": input.email,
+            "otp": otp_code,
+            "expires_at": otp_expiry.isoformat(),
+            "created_at": datetime.now(timezone.utc).isoformat()
+        }},
+        upsert=True
+    )
+    
+    # Send OTP via email
+    email_service.send_otp_email(user['email'], user['full_name'], otp_code)
+    
+    return {"message": "OTP sent to your email", "email": user['email']}
+
+
+@api_router.post("/auth/verify-otp")
+async def verify_otp(email: str = Body(...), otp: str = Body(...)):
+    """Verify OTP and complete Group Fleet Manager login"""
+    # Find OTP record
+    otp_record = await db.otp_codes.find_one({"email": email}, {"_id": 0})
+    if not otp_record:
+        raise HTTPException(status_code=400, detail="No OTP found. Please request a new one.")
+    
+    # Check expiry
+    expiry = datetime.fromisoformat(otp_record['expires_at'])
+    if datetime.now(timezone.utc) > expiry:
+        await db.otp_codes.delete_one({"email": email})
+        raise HTTPException(status_code=400, detail="OTP has expired. Please request a new one.")
+    
+    # Verify OTP
+    if otp_record['otp'] != otp:
+        raise HTTPException(status_code=400, detail="Invalid OTP")
+    
+    # Delete used OTP
+    await db.otp_codes.delete_one({"email": email})
+    
+    # Get user and complete login
+    user = await db.users.find_one({"email": email}, {"_id": 0})
+    if not user:
+        raise HTTPException(status_code=401, detail="User not found")
+    
     # Update last login
     await db.users.update_one(
         {"id": user['id']},
