@@ -318,7 +318,7 @@ const Login = () => {
                   </div>
                 </div>
                 
-                <Button type="submit" className="w-full" disabled={loading} data-testid="register-btn">
+                <Button type="submit" className="w-full" disabled={loading} data-testid="register-btn" style={{backgroundColor: '#e3aa27', color: 'white'}}>
                   {loading ? 'Registering...' : 'Register'}
                 </Button>
                 <p className="text-xs text-slate-500 text-center">
@@ -333,7 +333,10 @@ const Login = () => {
         <div className="mt-6 text-center">
           <Link 
             to="/admin-register" 
-            className="text-slate-400 text-sm hover:text-purple-400 transition-colors"
+            className="text-slate-400 text-sm transition-colors"
+            style={{'--tw-text-opacity': 1}}
+            onMouseOver={(e) => e.target.style.color = '#e3aa27'}
+            onMouseOut={(e) => e.target.style.color = '#94a3b8'}
           >
             Group Fleet Manager Registration →
           </Link>
