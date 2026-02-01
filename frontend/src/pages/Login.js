@@ -71,13 +71,64 @@ const Login = () => {
     e.preventDefault();
     setLoading(true);
     try {
+      const response = await axios.post(`${API}/auth/login`, loginData);
+      
+      // Check if OTP verification is required (Group Fleet Manager)
+      if (response.data.requires_otp) {
+        setOtpEmail(response.data.email);
+        setOtpSending(true);
+        
+        // Send OTP
+        await axios.post(`${API}/auth/send-otp`, loginData);
+        toast.success('Verification code sent to your email');
+        setShowOtpForm(true);
+        setOtpSending(false);
+        return;
+      }
+      
+      // Normal login flow
       await login(loginData.email, loginData.password);
       toast.success('Login successful!');
       navigate('/', { replace: true });
     } catch (error) {
       toast.error(error.response?.data?.detail || 'Login failed');
+      setOtpSending(false);
     } finally {
       setLoading(false);
+    }
+  };
+
+  const handleOtpVerify = async (e) => {
+    e.preventDefault();
+    setLoading(true);
+    try {
+      const response = await axios.post(`${API}/auth/verify-otp`, {
+        email: otpEmail,
+        otp: otpCode
+      });
+      
+      // Store token and user data
+      localStorage.setItem('token', response.data.access_token);
+      localStorage.setItem('user', JSON.stringify(response.data.user));
+      
+      toast.success('Login successful!');
+      window.location.href = '/'; // Force reload to update auth state
+    } catch (error) {
+      toast.error(error.response?.data?.detail || 'Invalid verification code');
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const handleResendOtp = async () => {
+    setOtpSending(true);
+    try {
+      await axios.post(`${API}/auth/send-otp`, loginData);
+      toast.success('New verification code sent');
+    } catch (error) {
+      toast.error('Failed to resend code');
+    } finally {
+      setOtpSending(false);
     }
   };
 
