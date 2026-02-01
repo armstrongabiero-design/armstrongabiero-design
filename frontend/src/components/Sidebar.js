@@ -164,11 +164,12 @@ const Sidebar = ({ open, setOpen }) => {
                 data-testid={`nav-${item.label.toLowerCase().replace(/\s+/g, '-')}`}
                 className={`flex items-center gap-3 px-4 py-2.5 rounded-lg transition-all ${
                   isActive
-                    ? 'bg-purple-50 text-purple-700 font-semibold'
-                    : 'text-slate-600 hover:bg-slate-50'
+                    ? 'bg-amber-50 font-semibold border-l-3'
+                    : 'text-slate-600 hover:bg-amber-50/50'
                 }`}
+                style={isActive ? {borderLeft: '3px solid #e3aa27', color: '#c4912a'} : {}}
               >
-                <Icon size={18} />
+                <Icon size={18} className={isActive ? 'text-amber-600' : ''} />
                 <span className="text-sm">{item.label}</span>
               </Link>
             );
