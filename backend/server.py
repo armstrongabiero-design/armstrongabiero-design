@@ -1024,8 +1024,29 @@ async def get_staff_dashboard(current_user: dict = Depends(get_current_user)):
     user_role = current_user.get('role')
     user_country = current_user.get('country')
     
+    # Normalize country for matching (handle different case formats)
+    def normalize_country(country):
+        if not country:
+            return None
+        country_upper = country.upper().replace(' ', '_').replace('É', 'E')
+        # Map common variations
+        if 'GHANA' in country_upper:
+            return 'GHANA'
+        if 'LIBERIA' in country_upper:
+            return 'LIBERIA'
+        if 'SAO' in country_upper or 'TOME' in country_upper or 'STP' in country_upper:
+            return 'SAO_TOME'
+        return country_upper
+    
+    normalized_country = normalize_country(user_country)
+    
     # Group Fleet Manager sees all, others see their country only
-    country_filter = {} if user_role == 'GROUP_FLEET_MANAGER' else {"country": user_country}
+    if user_role == 'GROUP_FLEET_MANAGER':
+        country_filter = {}
+    else:
+        # Match both exact and case variations
+        country_regex = {"$regex": f"^{normalized_country}$", "$options": "i"} if normalized_country else {"$exists": False}
+        country_filter = {"country": country_regex}
     
     # Basic stats
     total_vehicles = await db.vehicles.count_documents(country_filter)
@@ -1034,7 +1055,7 @@ async def get_staff_dashboard(current_user: dict = Depends(get_current_user)):
     pending_maintenance = await db.maintenance_records.count_documents({**country_filter, "completed_date": None})
     
     # Pending requests for this country
-    request_filter = {} if user_role == 'GROUP_FLEET_MANAGER' else {"country": user_country}
+    request_filter = {} if user_role == 'GROUP_FLEET_MANAGER' else country_filter
     pending_requests = await db.maintenance_requests.find(
         {**request_filter, "status": "PENDING"},
         {"_id": 0}
@@ -1045,10 +1066,12 @@ async def get_staff_dashboard(current_user: dict = Depends(get_current_user)):
     if user_role == 'GROUP_FLEET_MANAGER':
         pass  # See all
     elif user_role == 'FLEET_MANAGER':
-        pending_users_query['country'] = user_country
+        if normalized_country:
+            pending_users_query['country'] = {"$regex": f"^{normalized_country}$", "$options": "i"}
         pending_users_query['role'] = {"$in": ['FLEET_OFFICER', 'DRIVER', 'USER']}
     elif user_role == 'FLEET_OFFICER':
-        pending_users_query['country'] = user_country
+        if normalized_country:
+            pending_users_query['country'] = {"$regex": f"^{normalized_country}$", "$options": "i"}
         pending_users_query['role'] = {"$in": ['DRIVER', 'USER']}
     else:
         pending_users_query['id'] = 'NONE'  # No results
@@ -1080,8 +1103,8 @@ async def get_staff_dashboard(current_user: dict = Depends(get_current_user)):
     drivers_by_country = {}
     if user_role == 'GROUP_FLEET_MANAGER':
         for c in ['GHANA', 'LIBERIA', 'SAO_TOME']:
-            vehicles_by_country[c] = await db.vehicles.count_documents({"country": c})
-            drivers_by_country[c] = await db.drivers.count_documents({"country": c})
+            vehicles_by_country[c] = await db.vehicles.count_documents({"country": {"$regex": f"^{c}$", "$options": "i"}})
+            drivers_by_country[c] = await db.drivers.count_documents({"country": {"$regex": f"^{c}$", "$options": "i"}})
     
     return {
         "user_role": user_role,
