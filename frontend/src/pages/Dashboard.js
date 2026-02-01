@@ -143,8 +143,8 @@ const PersonalDashboard = ({ user, token }) => {
           <p className="text-3xl font-bold text-slate-800 mt-1">{stats?.pending_requests || 0}</p>
         </div>
         <div className="bg-white rounded-xl shadow-sm border border-slate-200 p-6">
-          <div className="bg-purple-100 p-3 rounded-lg w-fit mb-3">
-            <Gauge className="text-purple-600" size={24} />
+          <div className="bg-amber-100 p-3 rounded-lg w-fit mb-3">
+            <Gauge className="text-amber-600" size={24} />
           </div>
           <h3 className="text-slate-500 text-sm">Fuel Efficiency</h3>
           <p className="text-3xl font-bold text-slate-800 mt-1">{stats?.avg_fuel_efficiency || 0} km/L</p>
@@ -155,7 +155,7 @@ const PersonalDashboard = ({ user, token }) => {
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
         <div className="bg-white rounded-xl shadow-sm border border-slate-200 p-6">
           <h3 className="text-lg font-semibold text-slate-800 mb-4 flex items-center gap-2">
-            <Truck size={20} className="text-purple-600" />
+            <Truck size={20} className="text-amber-600" />
             Assigned Vehicle
           </h3>
           {stats?.assigned_vehicle ? (
@@ -172,7 +172,7 @@ const PersonalDashboard = ({ user, token }) => {
         </div>
         <div className="bg-white rounded-xl shadow-sm border border-slate-200 p-6">
           <h3 className="text-lg font-semibold text-slate-800 mb-4 flex items-center gap-2">
-            <FileCheck size={20} className="text-purple-600" />
+            <FileCheck size={20} className="text-amber-600" />
             Recent Requests
           </h3>
           {stats?.recent_requests?.length > 0 ? (
@@ -327,7 +327,7 @@ const StaffDashboard = ({ user, token, isGroupManager }) => {
           <p className="text-slate-600 mt-2">
             {user ? `Welcome, ${user.full_name}` : 'Monitor your fleet operations'}
             {stats?.user_country && stats?.user_role !== 'GROUP_FLEET_MANAGER' && (
-              <span className="ml-2 px-2 py-1 bg-purple-100 text-purple-700 text-sm rounded-full">
+              <span className="ml-2 px-2 py-1 bg-amber-100 text-amber-700 text-sm rounded-full">
                 {stats.user_country}
               </span>
             )}
@@ -523,7 +523,7 @@ const StaffDashboard = ({ user, token, isGroupManager }) => {
         <div className="fleet-card mb-6">
           <div className="flex items-center justify-between mb-4">
             <h3 className="text-lg font-semibold text-slate-800 flex items-center gap-2">
-              <UserPlus size={20} className="text-purple-600" />
+              <UserPlus size={20} className="text-amber-600" />
               Pending Accounts ({stats.pending_users_count})
             </h3>
             {stats.pending_users_count > 4 && (
@@ -538,7 +538,7 @@ const StaffDashboard = ({ user, token, isGroupManager }) => {
           </div>
           <div className="space-y-2">
             {displayedPendingUsers?.map((pendingUser) => (
-              <div key={pendingUser.id} className="flex items-center justify-between bg-purple-50 p-3 rounded-lg">
+              <div key={pendingUser.id} className="flex items-center justify-between bg-amber-50 p-3 rounded-lg">
                 <div>
                   <p className="font-medium text-slate-800">{pendingUser.full_name}</p>
                   <p className="text-sm text-slate-500">{pendingUser.email} • {getRoleDisplay(pendingUser.role)} • {pendingUser.country}</p>
@@ -584,7 +584,7 @@ const StaffDashboard = ({ user, token, isGroupManager }) => {
             ))}
           </div>
           {stats.pending_requests_count > 0 && (
-            <Link to="/maintenance-requests" className="text-purple-700 text-sm mt-4 inline-block hover:underline">
+            <Link to="/maintenance-requests" className="text-amber-700 text-sm mt-4 inline-block hover:underline">
               Manage all requests →
             </Link>
           )}
