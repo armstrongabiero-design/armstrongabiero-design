@@ -198,7 +198,7 @@ const Safety = () => {
                 <h3 className="font-semibold text-slate-800">{driver.first_name} {driver.last_name}</h3>
                 <p className="text-xs text-slate-500">{driver.license_number}</p>
               </div>
-              <span className="text-2xl font-bold text-purple-600">{driver.safety_score}</span>
+              <span className="text-2xl font-bold text-amber-600">{driver.safety_score}</span>
             </div>
             <div className="w-full bg-slate-200 rounded-full h-2">
               <div 

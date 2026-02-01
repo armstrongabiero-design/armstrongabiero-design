@@ -52,7 +52,7 @@ const UserManagement = () => {
 
   const getRoleBadge = (role) => {
     const badges = {
-      GROUP_FLEET_MANAGER: { bg: 'bg-purple-100 text-purple-800', icon: Shield, label: 'Group Manager' },
+      GROUP_FLEET_MANAGER: { bg: 'bg-amber-100 text-purple-800', icon: Shield, label: 'Group Manager' },
       COUNTRY_FLEET_MANAGER: { bg: 'bg-blue-100 text-blue-800', icon: Users, label: 'Country Manager' },
       DRIVER: { bg: 'bg-green-100 text-green-800', icon: Users, label: 'Driver' },
     };
@@ -166,10 +166,10 @@ const UserManagement = () => {
                 const roleBadge = getRoleBadge(user.role);
                 const isCurrentUser = user.id === currentUser?.id;
                 return (
-                  <tr key={user.id} className={isCurrentUser ? 'bg-purple-50' : ''}>
+                  <tr key={user.id} className={isCurrentUser ? 'bg-amber-50' : ''}>
                     <td className="font-semibold">
                       {user.full_name}
-                      {isCurrentUser && <span className="text-xs text-purple-600 ml-2">(You)</span>}
+                      {isCurrentUser && <span className="text-xs text-amber-600 ml-2">(You)</span>}
                     </td>
                     <td>{user.email}</td>
                     <td>

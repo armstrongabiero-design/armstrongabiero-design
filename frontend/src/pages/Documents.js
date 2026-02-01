@@ -189,11 +189,11 @@ const Documents = () => {
         </Dialog>
       </div>
 
-      <div className="bg-purple-50 border border-purple-200 rounded-lg p-4 mb-6 flex items-start gap-3">
-        <Sparkles className="text-purple-600" size={20} />
+      <div className="bg-amber-50 border border-amber-200 rounded-lg p-4 mb-6 flex items-start gap-3">
+        <Sparkles className="text-amber-600" size={20} />
         <div>
           <p className="font-semibold text-purple-800">AI OCR Available</p>
-          <p className="text-sm text-purple-700">Upload documents for automatic data extraction and validation</p>
+          <p className="text-sm text-amber-700">Upload documents for automatic data extraction and validation</p>
         </div>
       </div>
 

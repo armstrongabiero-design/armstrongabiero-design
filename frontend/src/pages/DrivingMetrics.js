@@ -74,9 +74,9 @@ const DrivingMetrics = () => {
       title: 'Fuel Efficiency',
       value: `${(metrics?.avg_fuel_efficiency || 0).toFixed(1)} km/L`,
       icon: Gauge,
-      color: 'bg-purple-500',
-      bgLight: 'bg-purple-50',
-      textColor: 'text-purple-600'
+      color: 'bg-amber-500',
+      bgLight: 'bg-amber-50',
+      textColor: 'text-amber-600'
     },
     {
       title: 'Fuel Used',

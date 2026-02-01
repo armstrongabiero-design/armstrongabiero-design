@@ -213,7 +213,7 @@ const VehicleMap = () => {
         <div className="bg-slate-100 rounded-lg h-96 flex items-center justify-center relative overflow-hidden">
           <div className="absolute inset-0 bg-gradient-to-br from-blue-100 to-green-100 opacity-50"></div>
           <div className="relative z-10 text-center">
-            <MapPin size={48} className="text-purple-600 mx-auto mb-4" />
+            <MapPin size={48} className="text-amber-600 mx-auto mb-4" />
             <h3 className="text-xl font-semibold text-slate-800">Fleet Map View</h3>
             <p className="text-slate-600 mt-2">
               {filteredLocations.length} vehicles with location data

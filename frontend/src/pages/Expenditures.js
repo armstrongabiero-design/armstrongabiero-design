@@ -134,7 +134,7 @@ const Expenditures = () => {
 
       <div className="fleet-card mb-6">
         <h3 className="text-lg font-semibold text-slate-800 mb-2">Total Expenditure</h3>
-        <p className="text-3xl font-bold text-purple-600">${totalUSD.toLocaleString()}</p>
+        <p className="text-3xl font-bold text-amber-600">${totalUSD.toLocaleString()}</p>
         <p className="text-sm text-slate-500 mt-1">USD equivalent</p>
       </div>
 

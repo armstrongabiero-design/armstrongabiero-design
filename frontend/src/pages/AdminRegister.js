@@ -58,15 +58,15 @@ const AdminRegister = () => {
   };
 
   return (
-    <div className="min-h-screen bg-gradient-to-br from-slate-900 via-purple-900 to-slate-900 flex items-center justify-center p-4">
+    <div className="min-h-screen bg-gradient-to-br from-slate-900 via-amber-800 to-slate-900 flex items-center justify-center p-4">
       <div className="w-full max-w-md">
         {/* Logo */}
         <div className="text-center mb-8">
           <div className="inline-flex items-center gap-3 mb-4">
-            <div className="bg-purple-600 p-3 rounded-xl">
+            <div className="bg-amber-600 p-3 rounded-xl">
               <Truck className="text-white" size={32} />
             </div>
-            <h1 className="text-3xl font-bold text-white">GTI <span className="text-purple-400">FLEET</span></h1>
+            <h1 className="text-3xl font-bold text-white">GTI <span className="text-amber-400">FLEET</span></h1>
           </div>
           <p className="text-slate-400">GTI Fleet Solutions</p>
         </div>
@@ -74,8 +74,8 @@ const AdminRegister = () => {
         {/* Registration Card */}
         <div className="bg-white rounded-2xl shadow-2xl p-8">
           <div className="text-center mb-6">
-            <div className="inline-flex items-center justify-center w-16 h-16 bg-purple-100 rounded-full mb-4">
-              <Shield className="text-purple-600" size={32} />
+            <div className="inline-flex items-center justify-center w-16 h-16 bg-amber-100 rounded-full mb-4">
+              <Shield className="text-amber-600" size={32} />
             </div>
             <h2 className="text-2xl font-bold text-slate-800">Group Fleet Manager</h2>
             <p className="text-slate-500 text-sm mt-2">
@@ -127,9 +127,9 @@ const AdminRegister = () => {
               )}
             </div>
             
-            <div className="bg-purple-50 border border-purple-200 rounded-lg p-4">
+            <div className="bg-amber-50 border border-amber-200 rounded-lg p-4">
               <h4 className="font-semibold text-purple-800 text-sm mb-2">Group Fleet Manager Privileges:</h4>
-              <ul className="text-xs text-purple-700 space-y-1">
+              <ul className="text-xs text-amber-700 space-y-1">
                 <li>• Full access to all countries and features</li>
                 <li>• Approve/deny all user registrations</li>
                 <li>• Manage Fleet Managers, Officers, and Drivers</li>
@@ -150,7 +150,7 @@ const AdminRegister = () => {
           <div className="mt-6 text-center">
             <Link 
               to="/login" 
-              className="text-purple-600 hover:text-purple-700 text-sm inline-flex items-center gap-2"
+              className="text-amber-600 hover:text-amber-700 text-sm inline-flex items-center gap-2"
             >
               <ArrowLeft size={16} />
               Back to Sign In

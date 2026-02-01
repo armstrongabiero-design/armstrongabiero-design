@@ -123,7 +123,7 @@ const Fuel = () => {
                   <div>
                     <p className="font-semibold text-amber-800 text-sm">Pre-Trip Checklist Required</p>
                     <p className="text-xs text-amber-700">Complete the checklist before logging fuel.</p>
-                    <Link to="/pre-trip-checklist" className="text-xs text-purple-600 underline mt-1 inline-block">
+                    <Link to="/pre-trip-checklist" className="text-xs text-amber-600 underline mt-1 inline-block">
                       Go to Pre-Trip Checklist →
                     </Link>
                   </div>

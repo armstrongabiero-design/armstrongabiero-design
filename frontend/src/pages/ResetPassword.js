@@ -76,22 +76,22 @@ const ResetPassword = () => {
 
   if (verifying) {
     return (
-      <div className="min-h-screen bg-gradient-to-br from-slate-900 via-purple-900 to-slate-900 flex items-center justify-center p-4">
+      <div className="min-h-screen bg-gradient-to-br from-slate-900 via-amber-800 to-slate-900 flex items-center justify-center p-4">
         <div className="text-white text-lg">Verifying reset link...</div>
       </div>
     );
   }
 
   return (
-    <div className="min-h-screen bg-gradient-to-br from-slate-900 via-purple-900 to-slate-900 flex items-center justify-center p-4">
+    <div className="min-h-screen bg-gradient-to-br from-slate-900 via-amber-800 to-slate-900 flex items-center justify-center p-4">
       <div className="w-full max-w-md">
         {/* Logo */}
         <div className="text-center mb-8">
           <div className="inline-flex items-center gap-3 mb-4">
-            <div className="bg-purple-600 p-3 rounded-xl">
+            <div className="bg-amber-600 p-3 rounded-xl">
               <Truck className="text-white" size={32} />
             </div>
-            <h1 className="text-3xl font-bold text-white">GTI <span className="text-purple-400">FLEET</span></h1>
+            <h1 className="text-3xl font-bold text-white">GTI <span className="text-amber-400">FLEET</span></h1>
           </div>
           <p className="text-slate-400">GTI Fleet Solutions</p>
         </div>
@@ -127,8 +127,8 @@ const ResetPassword = () => {
           ) : (
             <>
               <div className="text-center mb-6">
-                <div className="bg-purple-100 w-16 h-16 rounded-full flex items-center justify-center mx-auto mb-4">
-                  <Lock className="text-purple-600" size={28} />
+                <div className="bg-amber-100 w-16 h-16 rounded-full flex items-center justify-center mx-auto mb-4">
+                  <Lock className="text-amber-600" size={28} />
                 </div>
                 <h2 className="text-2xl font-bold text-slate-800">Reset Password</h2>
                 <p className="text-slate-500 text-sm mt-2">
@@ -175,7 +175,7 @@ const ResetPassword = () => {
           <div className="mt-6 text-center">
             <Link 
               to="/login" 
-              className="text-purple-600 hover:text-purple-700 text-sm inline-flex items-center gap-2"
+              className="text-amber-600 hover:text-amber-700 text-sm inline-flex items-center gap-2"
             >
               <ArrowLeft size={16} />
               Back to Sign In

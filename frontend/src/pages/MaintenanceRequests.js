@@ -499,7 +499,7 @@ const MaintenanceRequests = () => {
                             {wasSubmittedByOther ? (
                               <div className="flex flex-col">
                                 <span className="text-sm font-medium text-slate-700">{request.submitted_by_name}</span>
-                                <span className="text-xs text-purple-600 bg-purple-50 px-1.5 py-0.5 rounded-full w-fit">
+                                <span className="text-xs text-amber-600 bg-amber-50 px-1.5 py-0.5 rounded-full w-fit">
                                   {request.submitted_by_role?.replace('_', ' ')}
                                 </span>
                               </div>

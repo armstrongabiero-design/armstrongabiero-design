@@ -283,8 +283,8 @@ const DriverLogbook = () => {
             <p className="text-green-600 text-sm font-medium">Total Distance</p>
             <p className="text-2xl font-bold text-green-800">{(driverSummary.total_distance_km || 0).toLocaleString()} km</p>
           </div>
-          <div className="bg-purple-50 rounded-lg p-4">
-            <p className="text-purple-600 text-sm font-medium">Fuel Used</p>
+          <div className="bg-amber-50 rounded-lg p-4">
+            <p className="text-amber-600 text-sm font-medium">Fuel Used</p>
             <p className="text-2xl font-bold text-purple-800">{(driverSummary.total_fuel_liters || 0).toFixed(1)} L</p>
           </div>
           <div className="bg-amber-50 rounded-lg p-4">

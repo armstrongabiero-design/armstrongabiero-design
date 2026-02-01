@@ -94,7 +94,7 @@ const Reports = () => {
   const getExpenseColor = (category) => {
     const colors = {
       FUEL: 'bg-blue-500',
-      MAINTENANCE: 'bg-purple-500',
+      MAINTENANCE: 'bg-amber-500',
       TIRES: 'bg-amber-500',
       INSURANCE: 'bg-green-500',
       LICENSE_FEES: 'bg-indigo-500',
@@ -175,8 +175,8 @@ const Reports = () => {
               <p className="text-3xl font-bold text-slate-800">{(driverSummary.total_distance_km || 0).toLocaleString()} km</p>
             </div>
             <div className="fleet-card text-center">
-              <div className="bg-purple-100 p-3 rounded-full w-fit mx-auto mb-3">
-                <DollarSign className="text-purple-600" size={24} />
+              <div className="bg-amber-100 p-3 rounded-full w-fit mx-auto mb-3">
+                <DollarSign className="text-amber-600" size={24} />
               </div>
               <p className="text-slate-500 text-sm">Fuel Used</p>
               <p className="text-3xl font-bold text-slate-800">{(driverSummary.total_fuel_liters || 0).toFixed(1)} L</p>
@@ -192,7 +192,7 @@ const Reports = () => {
           
           <div className="fleet-card">
             <h2 className="text-xl font-semibold text-slate-800 mb-4 flex items-center gap-2">
-              <User className="text-purple-600" />
+              <User className="text-amber-600" />
               Personal Performance Summary
             </h2>
             <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
@@ -228,7 +228,7 @@ const Reports = () => {
         <>
       <div className="fleet-card mb-6">
         <h2 className="text-xl font-semibold text-slate-800 mb-4 flex items-center gap-2">
-          <TrendingUp className="text-purple-600" />
+          <TrendingUp className="text-amber-600" />
           Total Cost of Ownership (TCO)
           {selectedVehicle && ` - ${vehicles.find(v => v.id === selectedVehicle)?.registration_number}`}
         </h2>
@@ -239,9 +239,9 @@ const Reports = () => {
               <p className="text-sm text-slate-500">Fuel Cost</p>
               <p className="text-2xl font-bold text-blue-600">${tcoData.costs?.fuel?.toLocaleString()}</p>
             </div>
-            <div className="text-center p-4 bg-purple-50 rounded-lg">
+            <div className="text-center p-4 bg-amber-50 rounded-lg">
               <p className="text-sm text-slate-500">Maintenance</p>
-              <p className="text-2xl font-bold text-purple-600">${tcoData.costs?.maintenance?.toLocaleString()}</p>
+              <p className="text-2xl font-bold text-amber-600">${tcoData.costs?.maintenance?.toLocaleString()}</p>
             </div>
             <div className="text-center p-4 bg-amber-50 rounded-lg">
               <p className="text-sm text-slate-500">Tires</p>
@@ -284,7 +284,7 @@ const Reports = () => {
         {/* Expense Breakdown */}
         <div className="fleet-card">
           <h2 className="text-xl font-semibold text-slate-800 mb-4 flex items-center gap-2">
-            <PieChart className="text-purple-600" />
+            <PieChart className="text-amber-600" />
             Expense Breakdown
           </h2>
           
@@ -325,7 +325,7 @@ const Reports = () => {
         {/* Fleet Utilization */}
         <div className="fleet-card">
           <h2 className="text-xl font-semibold text-slate-800 mb-4 flex items-center gap-2">
-            <BarChart3 className="text-purple-600" />
+            <BarChart3 className="text-amber-600" />
             Fleet Utilization
           </h2>
           
@@ -333,7 +333,7 @@ const Reports = () => {
             <>
               <div className="text-center p-4 bg-slate-50 rounded-lg mb-4">
                 <p className="text-sm text-slate-500">Average Fleet Utilization</p>
-                <p className="text-3xl font-bold text-purple-600">{utilization.fleet_avg_utilization}%</p>
+                <p className="text-3xl font-bold text-amber-600">{utilization.fleet_avg_utilization}%</p>
               </div>
               
               <div className="space-y-3 max-h-64 overflow-y-auto">
