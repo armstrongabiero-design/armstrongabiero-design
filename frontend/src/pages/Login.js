@@ -8,7 +8,7 @@ import { Input } from '../components/ui/input';
 import { Label } from '../components/ui/label';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '../components/ui/select';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '../components/ui/tabs';
-import { Truck, Users, UserCog, User, Search } from 'lucide-react';
+import { Users, UserCog, User, Search, ShieldCheck, KeyRound } from 'lucide-react';
 import PasswordInput from '../components/PasswordInput';
 
 const BACKEND_URL = process.env.REACT_APP_BACKEND_URL;
@@ -21,6 +21,12 @@ const Login = () => {
   const [loading, setLoading] = useState(false);
   const [countries, setCountries] = useState([]);
   const [countrySearch, setCountrySearch] = useState('');
+  
+  // OTP verification state
+  const [showOtpForm, setShowOtpForm] = useState(false);
+  const [otpCode, setOtpCode] = useState('');
+  const [otpEmail, setOtpEmail] = useState('');
+  const [otpSending, setOtpSending] = useState(false);
 
   const [loginData, setLoginData] = useState({ email: '', password: '' });
   const [registerData, setRegisterData] = useState({
