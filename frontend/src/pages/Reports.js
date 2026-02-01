@@ -108,8 +108,12 @@ const Reports = () => {
     <div className="p-6 lg:p-8" data-testid="reports-page">
       <div className="flex flex-col lg:flex-row lg:justify-between lg:items-center mb-6 gap-4">
         <div>
-          <h1 className="text-3xl font-bold text-slate-800">Reports & Analytics</h1>
-          <p className="text-slate-600 mt-1">TCO, expense breakdown, and fleet utilization</p>
+          <h1 className="text-3xl font-bold text-slate-800">
+            {isPersonalView ? 'My Reports' : 'Reports & Analytics'}
+          </h1>
+          <p className="text-slate-600 mt-1">
+            {isPersonalView ? 'Your personal driving statistics and performance' : 'TCO, expense breakdown, and fleet utilization'}
+          </p>
         </div>
         <div className="flex gap-2 flex-wrap">
           <Select value={periodDays} onValueChange={setPeriodDays}>
@@ -123,32 +127,105 @@ const Reports = () => {
               <SelectItem value="365">Last Year</SelectItem>
             </SelectContent>
           </Select>
-          <Select value={selectedCountry || "ALL"} onValueChange={(v) => setSelectedCountry(v === "ALL" ? "" : v)}>
-            <SelectTrigger className="w-36">
-              <SelectValue placeholder="All Countries" />
-            </SelectTrigger>
-            <SelectContent>
-              <SelectItem value="ALL">All Countries</SelectItem>
-              <SelectItem value="GHANA">Ghana</SelectItem>
-              <SelectItem value="LIBERIA">Liberia</SelectItem>
-              <SelectItem value="SAO_TOME">São Tomé</SelectItem>
-            </SelectContent>
-          </Select>
-          <Select value={selectedVehicle || "FLEET"} onValueChange={(v) => setSelectedVehicle(v === "FLEET" ? "" : v)}>
-            <SelectTrigger className="w-48">
-              <SelectValue placeholder="Fleet Overview" />
-            </SelectTrigger>
-            <SelectContent>
-              <SelectItem value="FLEET">Fleet Overview</SelectItem>
-              {vehicles.map(v => (
-                <SelectItem key={v.id} value={v.id}>{v.registration_number}</SelectItem>
-              ))}
-            </SelectContent>
-          </Select>
+          {!isPersonalView && (
+            <>
+              <Select value={selectedCountry || "ALL"} onValueChange={(v) => setSelectedCountry(v === "ALL" ? "" : v)}>
+                <SelectTrigger className="w-36">
+                  <SelectValue placeholder="All Countries" />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="ALL">All Countries</SelectItem>
+                  <SelectItem value="GHANA">Ghana</SelectItem>
+                  <SelectItem value="LIBERIA">Liberia</SelectItem>
+                  <SelectItem value="SAO_TOME">São Tomé</SelectItem>
+                </SelectContent>
+              </Select>
+              <Select value={selectedVehicle || "FLEET"} onValueChange={(v) => setSelectedVehicle(v === "FLEET" ? "" : v)}>
+                <SelectTrigger className="w-48">
+                  <SelectValue placeholder="Fleet Overview" />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="FLEET">Fleet Overview</SelectItem>
+                  {vehicles.map(v => (
+                    <SelectItem key={v.id} value={v.id}>{v.registration_number}</SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </>
+          )}
         </div>
       </div>
 
-      {/* TCO Summary */}
+      {/* Personal Reports for Drivers/Users */}
+      {isPersonalView && driverSummary && (
+        <>
+          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6 mb-6">
+            <div className="fleet-card text-center">
+              <div className="bg-blue-100 p-3 rounded-full w-fit mx-auto mb-3">
+                <Truck className="text-blue-600" size={24} />
+              </div>
+              <p className="text-slate-500 text-sm">Total Trips</p>
+              <p className="text-3xl font-bold text-slate-800">{driverSummary.total_entries || 0}</p>
+            </div>
+            <div className="fleet-card text-center">
+              <div className="bg-green-100 p-3 rounded-full w-fit mx-auto mb-3">
+                <TrendingUp className="text-green-600" size={24} />
+              </div>
+              <p className="text-slate-500 text-sm">Total Distance</p>
+              <p className="text-3xl font-bold text-slate-800">{(driverSummary.total_distance_km || 0).toLocaleString()} km</p>
+            </div>
+            <div className="fleet-card text-center">
+              <div className="bg-purple-100 p-3 rounded-full w-fit mx-auto mb-3">
+                <DollarSign className="text-purple-600" size={24} />
+              </div>
+              <p className="text-slate-500 text-sm">Fuel Used</p>
+              <p className="text-3xl font-bold text-slate-800">{(driverSummary.total_fuel_liters || 0).toFixed(1)} L</p>
+            </div>
+            <div className="fleet-card text-center">
+              <div className="bg-amber-100 p-3 rounded-full w-fit mx-auto mb-3">
+                <BarChart3 className="text-amber-600" size={24} />
+              </div>
+              <p className="text-slate-500 text-sm">Avg Efficiency</p>
+              <p className="text-3xl font-bold text-slate-800">{(driverSummary.avg_fuel_efficiency || 0).toFixed(1)} km/L</p>
+            </div>
+          </div>
+          
+          <div className="fleet-card">
+            <h2 className="text-xl font-semibold text-slate-800 mb-4 flex items-center gap-2">
+              <User className="text-purple-600" />
+              Personal Performance Summary
+            </h2>
+            <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+              <div className="p-4 bg-slate-50 rounded-lg text-center">
+                <p className="text-sm text-slate-500">Total Hours</p>
+                <p className="text-xl font-bold text-slate-800">{(driverSummary.total_hours || 0).toFixed(1)} hrs</p>
+              </div>
+              <div className="p-4 bg-slate-50 rounded-lg text-center">
+                <p className="text-sm text-slate-500">Avg Trip Distance</p>
+                <p className="text-xl font-bold text-slate-800">
+                  {driverSummary.total_entries > 0 
+                    ? ((driverSummary.total_distance_km || 0) / driverSummary.total_entries).toFixed(1) 
+                    : 0} km
+                </p>
+              </div>
+              <div className="p-4 bg-slate-50 rounded-lg text-center">
+                <p className="text-sm text-slate-500">Speed Violations</p>
+                <p className="text-xl font-bold text-red-600">{driverSummary.total_speed_violations || 0}</p>
+              </div>
+              <div className="p-4 bg-slate-50 rounded-lg text-center">
+                <p className="text-sm text-slate-500">Harsh Events</p>
+                <p className="text-xl font-bold text-amber-600">
+                  {(driverSummary.total_harsh_braking || 0) + (driverSummary.total_harsh_acceleration || 0)}
+                </p>
+              </div>
+            </div>
+          </div>
+        </>
+      )}
+
+      {/* Fleet Reports for Managers */}
+      {!isPersonalView && (
+        <>
       <div className="fleet-card mb-6">
         <h2 className="text-xl font-semibold text-slate-800 mb-4 flex items-center gap-2">
           <TrendingUp className="text-purple-600" />
