@@ -63,12 +63,9 @@ const AdminRegister = () => {
         {/* Logo */}
         <div className="text-center mb-8">
           <div className="inline-flex items-center gap-3 mb-4">
-            <div className="bg-amber-600 p-3 rounded-xl">
-              <Truck className="text-white" size={32} />
-            </div>
-            <h1 className="text-3xl font-bold text-white">GTI <span className="text-amber-400">FLEET</span></h1>
+            <img src="https://customer-assets.emergentagent.com/job_fleetwizard-3/artifacts/thwmb0am_GTI.png" alt="GTI Fleet" className="h-14" />
           </div>
-          <p className="text-slate-400">GTI Fleet Solutions</p>
+          <p className="text-slate-400">Fleet Solutions</p>
         </div>
 
         {/* Registration Card */}
