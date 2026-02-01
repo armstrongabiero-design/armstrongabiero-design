@@ -8,7 +8,7 @@ import { Input } from '../components/ui/input';
 import { Label } from '../components/ui/label';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '../components/ui/select';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '../components/ui/tabs';
-import { Users, UserCog, User, Search, ShieldCheck, KeyRound } from 'lucide-react';
+import { Users, UserCog, User, Search, ShieldCheck, KeyRound, Truck } from 'lucide-react';
 import PasswordInput from '../components/PasswordInput';
 
 const BACKEND_URL = process.env.REACT_APP_BACKEND_URL;
