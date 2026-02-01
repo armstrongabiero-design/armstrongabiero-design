@@ -116,8 +116,10 @@ const Sidebar = ({ open, setOpen }) => {
         }`}
       >
         <div className="p-6 border-b border-amber-100">
-          <h1 className="text-2xl font-bold text-slate-800">GTI <span className="text-golden" style={{color: '#e3aa27'}}>FLEET</span></h1>
-          <p className="text-xs text-slate-500 mt-1">GTI Fleet Solutions</p>
+          <div className="flex items-center gap-2">
+            <img src="https://customer-assets.emergentagent.com/job_fleetwizard-3/artifacts/thwmb0am_GTI.png" alt="GTI Fleet" className="h-10" />
+          </div>
+          <p className="text-xs text-slate-500 mt-1">Fleet Solutions</p>
         </div>
 
         {/* User Info */}
