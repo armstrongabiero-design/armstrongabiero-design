@@ -31,9 +31,9 @@ const Sidebar = ({ open, setOpen }) => {
 
   const getRoleIcon = (role) => {
     switch (role) {
-      case 'GROUP_FLEET_MANAGER': return <Shield size={16} className="text-purple-600" />;
-      case 'FLEET_MANAGER': return <Users size={16} className="text-blue-600" />;
-      case 'FLEET_OFFICER': return <UserCog size={16} className="text-indigo-600" />;
+      case 'GROUP_FLEET_MANAGER': return <Shield size={16} className="text-amber-600" />;
+      case 'FLEET_MANAGER': return <Users size={16} className="text-amber-600" />;
+      case 'FLEET_OFFICER': return <UserCog size={16} className="text-amber-500" />;
       case 'DRIVER': return <Truck size={16} className="text-green-600" />;
       case 'USER': return <User size={16} className="text-slate-600" />;
       default: return <User size={16} className="text-slate-600" />;
