@@ -101,7 +101,12 @@ const PreTripChecklist = () => {
     try {
       const headers = token ? { Authorization: `Bearer ${token}` } : {};
       const response = await axios.get(`${API}/pre-trip-checklists/today/${driverId}/${vehicleId}`, { headers });
-      setChecklistStatus(response.data);
+      // Only set status if checklist was actually completed today
+      if (response.data.completed) {
+        setChecklistStatus(response.data);
+      } else {
+        setChecklistStatus(null);
+      }
     } catch (error) {
       setChecklistStatus(null);
     }
