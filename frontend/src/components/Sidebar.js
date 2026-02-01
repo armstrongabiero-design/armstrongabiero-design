@@ -115,19 +115,19 @@ const Sidebar = ({ open, setOpen }) => {
           open ? 'translate-x-0' : '-translate-x-full'
         }`}
       >
-        <div className="p-6 border-b border-slate-200">
-          <h1 className="text-2xl font-bold text-slate-800">GTI <span className="text-purple-600">FLEET</span></h1>
+        <div className="p-6 border-b border-amber-100">
+          <h1 className="text-2xl font-bold text-slate-800">GTI <span className="text-golden" style={{color: '#e3aa27'}}>FLEET</span></h1>
           <p className="text-xs text-slate-500 mt-1">GTI Fleet Solutions</p>
         </div>
 
         {/* User Info */}
         {user && (
-          <div className="px-4 py-3 bg-slate-50 border-b border-slate-200">
+          <div className="px-4 py-3 bg-amber-50/50 border-b border-amber-100">
             <div className="flex items-center gap-2">
               <div className={`p-2 rounded-full ${
-                user.role === 'GROUP_FLEET_MANAGER' ? 'bg-purple-100' :
-                user.role === 'FLEET_MANAGER' ? 'bg-blue-100' :
-                user.role === 'FLEET_OFFICER' ? 'bg-indigo-100' :
+                user.role === 'GROUP_FLEET_MANAGER' ? 'bg-amber-100' :
+                user.role === 'FLEET_MANAGER' ? 'bg-amber-100' :
+                user.role === 'FLEET_OFFICER' ? 'bg-amber-50' :
                 user.role === 'DRIVER' ? 'bg-green-100' : 'bg-slate-100'
               }`}>
                 {getRoleIcon(user.role)}
