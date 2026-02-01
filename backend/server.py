@@ -1461,7 +1461,8 @@ async def get_maintenance_request(request_id: str):
 
 
 @api_router.post("/maintenance-requests/{request_id}/approve")
-async def approve_maintenance_request(request_id: str, approval: MaintenanceRequestApproval):
+async def approve_maintenance_request(request_id: str, approval: MaintenanceRequestApproval, current_user: dict = Depends(get_current_user)):
+    """Approve or reject a maintenance request - auto-fills approving manager"""
     request = await db.maintenance_requests.find_one({"id": request_id}, {"_id": 0})
     if not request:
         raise HTTPException(status_code=404, detail="Request not found")
@@ -1471,10 +1472,18 @@ async def approve_maintenance_request(request_id: str, approval: MaintenanceRequ
     
     now = datetime.now(timezone.utc).isoformat()
     
+    # Auto-fill the approving manager with current user
+    approving_manager_id = current_user.get('id')
+    approving_manager_name = current_user.get('full_name')
+    approving_manager_role = current_user.get('role')
+    
     if approval.approved:
         update = {
             "status": "APPROVED",
-            "manager_id": approval.manager_id,
+            "manager_id": approval.manager_id or approving_manager_id,
+            "approved_by_id": approving_manager_id,
+            "approved_by_name": approving_manager_name,
+            "approved_by_role": approving_manager_role,
             "approved_at": now,
             "updated_at": now
         }
@@ -1483,7 +1492,10 @@ async def approve_maintenance_request(request_id: str, approval: MaintenanceRequ
             raise HTTPException(status_code=400, detail="Rejection reason is required")
         update = {
             "status": "REJECTED",
-            "manager_id": approval.manager_id,
+            "manager_id": approval.manager_id or approving_manager_id,
+            "rejected_by_id": approving_manager_id,
+            "rejected_by_name": approving_manager_name,
+            "rejected_by_role": approving_manager_role,
             "rejection_reason": approval.rejection_reason,
             "rejected_at": now,
             "updated_at": now
