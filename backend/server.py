@@ -1999,21 +1999,38 @@ async def get_tire_rotation_history(vehicle_id: Optional[str] = None):
 
 # ============= DRIVER LOGBOOK ROUTES =============
 @api_router.post("/logbook", response_model=LogbookEntry)
-async def create_logbook_entry(input: LogbookEntryCreate):
+async def create_logbook_entry(input: LogbookEntryCreate, current_user: dict = Depends(get_current_user)):
     """Create a new logbook entry"""
-    entry = LogbookEntry(**input.model_dump())
+    entry_data = input.model_dump()
+    
+    # Get country from driver if not provided
+    if not entry_data.get('country'):
+        driver = await db.drivers.find_one({"id": input.driver_id}, {"_id": 0, "country": 1})
+        if driver:
+            entry_data['country'] = driver.get('country')
+        elif current_user.get('country'):
+            entry_data['country'] = current_user.get('country')
+    
+    entry = LogbookEntry(**entry_data)
     
     # Calculate distance if not provided
     if input.end_odometer and not entry.distance_km:
         entry.distance_km = input.end_odometer - input.start_odometer
     
     doc = entry.model_dump()
+    
+    # Track who submitted this entry (especially if on behalf of another driver)
+    if input.driver_id != current_user.get('id') and input.driver_id != current_user.get('driver_id'):
+        doc['submitted_by_id'] = current_user.get('id')
+        doc['submitted_by_name'] = current_user.get('full_name')
+        doc['submitted_by_role'] = current_user.get('role')
+    
     for field in ['date', 'start_time', 'end_time', 'created_at']:
         if doc.get(field):
             doc[field] = doc[field].isoformat()
     
     await db.driver_logbook.insert_one(doc)
-    return entry
+    return doc
 
 
 @api_router.get("/logbook")
