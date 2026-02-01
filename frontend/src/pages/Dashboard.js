@@ -450,7 +450,7 @@ const StaffDashboard = ({ user, token, isGroupManager }) => {
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-6 mb-8">
         <div className="fleet-card">
           <h3 className="text-lg font-semibold text-slate-800 mb-4 flex items-center gap-2">
-            <Bell size={20} className="text-purple-600" />
+            <Bell size={20} style={{color: '#e3aa27'}} />
             Active Alerts ({alerts?.total_count || 0})
           </h3>
           <div className="space-y-2 max-h-72 overflow-y-auto">
@@ -477,7 +477,7 @@ const StaffDashboard = ({ user, token, isGroupManager }) => {
 
         <div className="fleet-card">
           <h3 className="text-lg font-semibold text-slate-800 mb-4 flex items-center gap-2">
-            <CheckCircle size={20} className="text-purple-600" />
+            <CheckCircle size={20} style={{color: '#e3aa27'}} />
             Compliance Overview
           </h3>
           <div className="space-y-4">
@@ -509,9 +509,9 @@ const StaffDashboard = ({ user, token, isGroupManager }) => {
                 <p className="text-2xl font-bold text-amber-700">{compliance?.summary?.warning || 0}</p>
                 <p className="text-xs text-amber-600">Expiring Soon</p>
               </div>
-              <div className="bg-blue-50 rounded-lg p-3 text-center">
-                <p className="text-2xl font-bold text-blue-700">{stats?.pending_users_count || 0}</p>
-                <p className="text-xs text-blue-600">Pending Users</p>
+              <div className="rounded-lg p-3 text-center" style={{backgroundColor: '#fef8eb'}}>
+                <p className="text-2xl font-bold" style={{color: '#c4912a'}}>{stats?.pending_users_count || 0}</p>
+                <p className="text-xs" style={{color: '#b8860b'}}>Pending Users</p>
               </div>
             </div>
           </div>
