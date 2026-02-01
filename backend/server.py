@@ -1710,7 +1710,7 @@ async def register_user(input: UserCreate):
     )
 
 
-@api_router.post("/auth/login", response_model=Token)
+@api_router.post("/auth/login")
 async def login(input: UserLogin):
     """Login and get access token"""
     user = await db.users.find_one({"email": input.email}, {"_id": 0})
