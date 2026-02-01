@@ -213,11 +213,79 @@ const Login = () => {
           <p className="text-slate-400">Fleet Solutions</p>
         </div>
 
-        {/* Auth Card */}
-        <div className="bg-white rounded-2xl shadow-2xl p-8 max-h-[80vh] overflow-y-auto">
-          <Tabs value={activeTab} onValueChange={setActiveTab}>
-            <TabsList className="grid w-full grid-cols-2 mb-6">
-              <TabsTrigger value="login">Sign In</TabsTrigger>
+        {/* OTP Verification Form */}
+        {showOtpForm ? (
+          <div className="bg-white rounded-2xl shadow-2xl p-8">
+            <div className="text-center mb-6">
+              <div className="inline-flex items-center justify-center w-16 h-16 rounded-full mb-4" style={{backgroundColor: '#fef8eb'}}>
+                <ShieldCheck size={32} style={{color: '#e3aa27'}} />
+              </div>
+              <h2 className="text-2xl font-bold text-slate-800">Verify Your Identity</h2>
+              <p className="text-slate-500 text-sm mt-2">
+                A 6-digit verification code has been sent to<br />
+                <span className="font-medium text-slate-700">{otpEmail}</span>
+              </p>
+            </div>
+
+            <form onSubmit={handleOtpVerify} className="space-y-4">
+              <div>
+                <Label>Verification Code</Label>
+                <div className="relative">
+                  <KeyRound className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" size={18} />
+                  <Input
+                    type="text"
+                    value={otpCode}
+                    onChange={(e) => setOtpCode(e.target.value.replace(/\D/g, '').slice(0, 6))}
+                    placeholder="Enter 6-digit code"
+                    className="pl-10 text-center text-xl tracking-widest font-mono"
+                    maxLength={6}
+                    required
+                    data-testid="otp-input"
+                  />
+                </div>
+              </div>
+
+              <Button 
+                type="submit" 
+                className="w-full" 
+                disabled={loading || otpCode.length !== 6}
+                style={{backgroundColor: '#e3aa27', color: 'white'}}
+                data-testid="verify-otp-btn"
+              >
+                {loading ? 'Verifying...' : 'Verify & Sign In'}
+              </Button>
+
+              <div className="text-center text-sm">
+                <span className="text-slate-500">Didn&apos;t receive the code? </span>
+                <button
+                  type="button"
+                  onClick={handleResendOtp}
+                  disabled={otpSending}
+                  className="font-medium hover:underline"
+                  style={{color: '#e3aa27'}}
+                >
+                  {otpSending ? 'Sending...' : 'Resend'}
+                </button>
+              </div>
+
+              <button
+                type="button"
+                onClick={() => {
+                  setShowOtpForm(false);
+                  setOtpCode('');
+                }}
+                className="w-full text-sm text-slate-500 hover:text-slate-700"
+              >
+                ← Back to Sign In
+              </button>
+            </form>
+          </div>
+        ) : (
+          /* Auth Card */
+          <div className="bg-white rounded-2xl shadow-2xl p-8 max-h-[80vh] overflow-y-auto">
+            <Tabs value={activeTab} onValueChange={setActiveTab}>
+              <TabsList className="grid w-full grid-cols-2 mb-6">
+                <TabsTrigger value="login">Sign In</TabsTrigger>
               <TabsTrigger value="register">Register</TabsTrigger>
             </TabsList>
 
