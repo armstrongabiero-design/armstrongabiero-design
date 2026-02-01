@@ -594,6 +594,13 @@ class MaintenanceRequest(BaseModel):
     submitted_by_id: Optional[str] = None
     submitted_by_name: Optional[str] = None
     submitted_by_role: Optional[str] = None
+    # Track who approved/rejected the request
+    approved_by_id: Optional[str] = None
+    approved_by_name: Optional[str] = None
+    approved_by_role: Optional[str] = None
+    rejected_by_id: Optional[str] = None
+    rejected_by_name: Optional[str] = None
+    rejected_by_role: Optional[str] = None
     country: Optional[str] = None  # For country filtering
     created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
     updated_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
