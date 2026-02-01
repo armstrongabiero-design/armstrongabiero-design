@@ -450,8 +450,7 @@ const Login = () => {
             </TabsContent>
           </Tabs>
         </div>
-
-        </div>
+        )}
       </div>
     </div>
   );
