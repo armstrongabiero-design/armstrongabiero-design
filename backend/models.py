@@ -754,7 +754,7 @@ class LogbookEntry(BaseModel):
     id: str = Field(default_factory=lambda: str(uuid.uuid4()))
     driver_id: str
     vehicle_id: str
-    country: CountryEnum
+    country: Optional[str] = None  # Accept any country string
     date: datetime
     start_time: datetime
     end_time: Optional[datetime] = None
