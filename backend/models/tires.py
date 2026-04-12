@@ -1,0 +1,71 @@
+"""Tire management models"""
+from pydantic import BaseModel, Field, ConfigDict
+from typing import Optional, List, Dict
+from datetime import datetime, timezone
+import uuid
+
+from .enums import TirePosition, TireStatus, CountryEnum, CurrencyEnum
+
+
+class Tire(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+    id: str = Field(default_factory=lambda: str(uuid.uuid4()))
+    serial_number: str
+    brand: str
+    model: str
+    size: str
+    vehicle_id: Optional[str] = None
+    position: Optional[TirePosition] = None
+    status: TireStatus = TireStatus.SPARE
+    country: CountryEnum
+    purchase_date: datetime
+    purchase_cost: float
+    currency: CurrencyEnum
+    mileage_at_install: Optional[float] = None
+    current_mileage: Optional[float] = None
+    max_mileage: float = 80000
+    tread_depth_mm: Optional[float] = None
+    min_tread_depth: float = 1.6
+    last_rotation_date: Optional[datetime] = None
+    next_rotation_due: Optional[datetime] = None
+    rotation_interval_km: float = 10000
+    notes: Optional[str] = None
+    created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+    updated_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+
+
+class TireCreate(BaseModel):
+    serial_number: str
+    brand: str
+    model: str
+    size: str
+    vehicle_id: Optional[str] = None
+    position: Optional[TirePosition] = None
+    country: CountryEnum
+    purchase_date: datetime
+    purchase_cost: float
+    currency: CurrencyEnum
+    mileage_at_install: Optional[float] = None
+    tread_depth_mm: Optional[float] = None
+    notes: Optional[str] = None
+
+
+class TireRotation(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+    id: str = Field(default_factory=lambda: str(uuid.uuid4()))
+    vehicle_id: str
+    rotation_date: datetime
+    odometer_reading: float
+    rotations: List[Dict[str, str]]
+    performed_by: str
+    notes: Optional[str] = None
+    created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+
+
+class TireRotationCreate(BaseModel):
+    vehicle_id: str
+    rotation_date: datetime
+    odometer_reading: float
+    rotations: List[Dict[str, str]]
+    performed_by: str
+    notes: Optional[str] = None
