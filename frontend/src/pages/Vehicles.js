@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useState, useCallback } from 'react';
 import axios from 'axios';
 import { Plus, Search, Filter } from 'lucide-react';
 import { toast } from 'sonner';
@@ -45,27 +45,18 @@ const Vehicles = () => {
     odometer_reading: 0,
   });
 
-  useEffect(() => {
-    fetchVehicles();
-  }, []);
-
-  useEffect(() => {
-    filterVehicles();
-  }, [vehicles, searchTerm, countryFilter]);
-
-  const fetchVehicles = async () => {
+  const fetchVehicles = useCallback(async () => {
     try {
       const response = await axios.get(`${API}/vehicles`);
       setVehicles(response.data);
-    } catch (error) {
+    } catch {
       toast.error('Failed to load vehicles');
-      console.error(error);
     } finally {
       setLoading(false);
     }
-  };
+  }, []);
 
-  const filterVehicles = () => {
+  const filterVehicles = useCallback(() => {
     let filtered = vehicles;
 
     if (countryFilter !== 'ALL') {
@@ -81,7 +72,15 @@ const Vehicles = () => {
     }
 
     setFilteredVehicles(filtered);
-  };
+  }, [vehicles, searchTerm, countryFilter]);
+
+  useEffect(() => {
+    fetchVehicles();
+  }, [fetchVehicles]);
+
+  useEffect(() => {
+    filterVehicles();
+  }, [filterVehicles]);
 
   const handleSubmit = async (e) => {
     e.preventDefault();
@@ -111,7 +110,6 @@ const Vehicles = () => {
       });
     } catch (error) {
       toast.error('Failed to add vehicle');
-      console.error(error);
     }
   };
 

@@ -45,7 +45,6 @@ const Login = () => {
         const response = await axios.get(`${API}/countries/all-list`);
         setCountries(response.data.countries || []);
       } catch (error) {
-        console.error('Failed to fetch countries:', error);
         setCountries([
           { code: 'GH', name: 'Ghana' },
           { code: 'LR', name: 'Liberia' },

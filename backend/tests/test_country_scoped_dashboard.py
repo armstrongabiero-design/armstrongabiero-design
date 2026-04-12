@@ -12,11 +12,11 @@ import uuid
 
 BASE_URL = os.environ.get('REACT_APP_BACKEND_URL', '').rstrip('/')
 
-# Test credentials
-GROUP_MANAGER_EMAIL = "admin@gti.com"
-GROUP_MANAGER_PASSWORD = "admin123"
-DRIVER_EMAIL = "driver1@gti.com"
-DRIVER_PASSWORD = "Test123!"
+# Test credentials from environment variables
+GROUP_MANAGER_EMAIL = os.environ.get("TEST_GROUP_MANAGER_EMAIL", "admin@gti.com")
+GROUP_MANAGER_PASSWORD = os.environ.get("TEST_GROUP_MANAGER_PASSWORD", "admin123")
+DRIVER_EMAIL = os.environ.get("TEST_DRIVER_EMAIL", "driver1@gti.com")
+DRIVER_PASSWORD = os.environ.get("TEST_DRIVER_PASSWORD", "Test123!")
 
 
 class TestAuthentication:

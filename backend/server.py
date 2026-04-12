@@ -2447,15 +2447,15 @@ async def get_fleet_tco(country: Optional[str] = None, period_days: int = 365):
     }
     total_distance = 0
     
-    for v in vehicles:
+    for vehicle in vehicles:
         try:
-            tco = await get_vehicle_tco(v['id'], period_days)
+            tco = await get_vehicle_tco(vehicle['id'], period_days)
             fleet_tco['fuel'] += tco['costs']['fuel']
             fleet_tco['maintenance'] += tco['costs']['maintenance']
             fleet_tco['tires'] += tco['costs']['tires']
             fleet_tco['total'] += tco['costs']['total']
             total_distance += tco['utilization']['total_distance_km']
-        except:
+        except Exception:
             pass
     
     return {

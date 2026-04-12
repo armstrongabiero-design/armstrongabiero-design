@@ -1,7 +1,6 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useState, useCallback } from 'react';
 import axios from 'axios';
 import { TrendingUp, DollarSign, Truck, PieChart, BarChart3, User } from 'lucide-react';
-import { toast } from 'sonner';
 import { useAuth } from '../contexts/AuthContext';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '../components/ui/select';
 
@@ -22,45 +21,29 @@ const Reports = () => {
   const [selectedCountry, setSelectedCountry] = useState('');
   const [periodDays, setPeriodDays] = useState('30');
 
-  useEffect(() => {
-    if (isPersonalView) {
-      fetchPersonalReports();
-    } else {
-      fetchVehicles();
-      fetchReports();
-    }
-  }, [selectedCountry, periodDays, isPersonalView]);
-
-  useEffect(() => {
-    if (selectedVehicle && !isPersonalView) {
-      fetchVehicleTCO(selectedVehicle);
-    }
-  }, [selectedVehicle, periodDays]);
-
-  const fetchPersonalReports = async () => {
+  const fetchPersonalReports = useCallback(async () => {
     try {
       const headers = token ? { Authorization: `Bearer ${token}` } : {};
       const driverId = user?.driver_id || user?.id;
-      
       const response = await axios.get(`${API}/logbook/summary/${driverId}?period_days=${periodDays}`, { headers });
       setDriverSummary(response.data);
-    } catch (error) {
-      console.error('Failed to fetch personal reports');
+    } catch {
+      // Silent fail
     } finally {
       setLoading(false);
     }
-  };
+  }, [token, user, periodDays]);
 
-  const fetchVehicles = async () => {
+  const fetchVehicles = useCallback(async () => {
     try {
       const response = await axios.get(`${API}/vehicles`);
       setVehicles(response.data);
-    } catch (error) {
-      console.error('Failed to fetch vehicles');
+    } catch {
+      // Silent fail
     }
-  };
+  }, []);
 
-  const fetchReports = async () => {
+  const fetchReports = useCallback(async () => {
     try {
       const params = new URLSearchParams();
       if (selectedCountry) params.append('country', selectedCountry);
@@ -75,21 +58,36 @@ const Reports = () => {
       setExpenseBreakdown(expenseRes.data);
       setUtilization(utilizationRes.data);
       setTcoData(fleetTcoRes.data);
-    } catch (error) {
-      console.error('Failed to fetch reports');
+    } catch {
+      // Silent fail
     } finally {
       setLoading(false);
     }
-  };
+  }, [selectedCountry, periodDays]);
 
-  const fetchVehicleTCO = async (vehicleId) => {
+  const fetchVehicleTCO = useCallback(async (vehicleId) => {
     try {
       const response = await axios.get(`${API}/tco/vehicle/${vehicleId}?period_days=${periodDays}`);
       setTcoData(response.data);
-    } catch (error) {
-      console.error('Failed to fetch vehicle TCO');
+    } catch {
+      // Silent fail
     }
-  };
+  }, [periodDays]);
+
+  useEffect(() => {
+    if (isPersonalView) {
+      fetchPersonalReports();
+    } else {
+      fetchVehicles();
+      fetchReports();
+    }
+  }, [isPersonalView, fetchPersonalReports, fetchVehicles, fetchReports]);
+
+  useEffect(() => {
+    if (selectedVehicle && !isPersonalView) {
+      fetchVehicleTCO(selectedVehicle);
+    }
+  }, [selectedVehicle, isPersonalView, fetchVehicleTCO]);
 
   const getExpenseColor = (category) => {
     const colors = {

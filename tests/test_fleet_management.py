@@ -55,24 +55,26 @@ class TestAuthentication:
     
     def test_login_with_credentials(self):
         """Test login with admin credentials"""
+        admin_email = os.environ.get("TEST_ADMIN_EMAIL", "admin@gti.com")
+        admin_password = os.environ.get("TEST_ADMIN_PASSWORD", "admin123")
         response = requests.post(f"{API}/auth/login", json={
-            "email": "admin@gti.com",
-            "password": "admin123"
+            "email": admin_email,
+            "password": admin_password
         })
         
         # May fail if user doesn't exist, try to register first
         if response.status_code == 401:
             # Register the admin user first
             reg_response = requests.post(f"{API}/auth/register", json={
-                "email": "admin@gti.com",
-                "password": "admin123",
+                "email": admin_email,
+                "password": admin_password,
                 "full_name": "Admin User",
                 "role": "GROUP_FLEET_MANAGER"
             })
             if reg_response.status_code == 200:
                 response = requests.post(f"{API}/auth/login", json={
-                    "email": "admin@gti.com",
-                    "password": "admin123"
+                    "email": admin_email,
+                    "password": admin_password
                 })
         
         assert response.status_code == 200, f"Login failed: {response.text}"

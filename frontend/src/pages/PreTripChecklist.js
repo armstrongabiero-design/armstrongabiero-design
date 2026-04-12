@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useState, useCallback } from 'react';
 import axios from 'axios';
 import { ClipboardCheck, Camera, AlertTriangle, CheckCircle2, XCircle, AlertCircle } from 'lucide-react';
 import { toast } from 'sonner';
@@ -60,18 +60,7 @@ const PreTripChecklist = () => {
     additional_notes: '',
   });
 
-  useEffect(() => {
-    fetchData();
-  }, []);
-
-  useEffect(() => {
-    const driverId = isPersonalView ? (user?.driver_id || user?.id) : selectedDriver;
-    if (driverId && selectedVehicle) {
-      checkTodayStatus(driverId, selectedVehicle);
-    }
-  }, [selectedDriver, selectedVehicle, isPersonalView, user]);
-
-  const fetchData = async () => {
+  const fetchData = useCallback(async () => {
     try {
       const headers = token ? { Authorization: `Bearer ${token}` } : {};
       const [checklistsRes, driversRes, vehiclesRes] = await Promise.all([
@@ -80,7 +69,6 @@ const PreTripChecklist = () => {
         axios.get(`${API}/vehicles`, { headers }),
       ]);
       
-      // Filter checklists for personal view
       let filteredChecklists = checklistsRes.data;
       if (isPersonalView) {
         const userId = user?.driver_id || user?.id;
@@ -90,27 +78,37 @@ const PreTripChecklist = () => {
       setChecklists(filteredChecklists);
       setDrivers(driversRes.data);
       setVehicles(vehiclesRes.data);
-    } catch (error) {
+    } catch {
       toast.error('Failed to load data');
     } finally {
       setLoading(false);
     }
-  };
+  }, [token, isPersonalView, user]);
 
-  const checkTodayStatus = async (driverId, vehicleId) => {
+  const checkTodayStatus = useCallback(async (driverId, vehicleId) => {
     try {
       const headers = token ? { Authorization: `Bearer ${token}` } : {};
       const response = await axios.get(`${API}/pre-trip-checklists/today/${driverId}/${vehicleId}`, { headers });
-      // Only set status if checklist was actually completed today
       if (response.data.completed) {
         setChecklistStatus(response.data);
       } else {
         setChecklistStatus(null);
       }
-    } catch (error) {
+    } catch {
       setChecklistStatus(null);
     }
-  };
+  }, [token]);
+
+  useEffect(() => {
+    fetchData();
+  }, [fetchData]);
+
+  useEffect(() => {
+    const driverId = isPersonalView ? (user?.driver_id || user?.id) : selectedDriver;
+    if (driverId && selectedVehicle) {
+      checkTodayStatus(driverId, selectedVehicle);
+    }
+  }, [selectedDriver, selectedVehicle, isPersonalView, user, checkTodayStatus]);
 
   const handlePhotoUpload = async (e) => {
     const file = e.target.files[0];
@@ -347,8 +345,8 @@ const PreTripChecklist = () => {
               <Input type="file" accept="image/*" onChange={handlePhotoUpload} disabled={uploadingPhoto} />
               {formData.damage_photos.length > 0 && (
                 <div className="flex gap-2 mt-2 flex-wrap">
-                  {formData.damage_photos.map((url, idx) => (
-                    <img key={idx} src={url} alt={`Damage ${idx + 1}`} className="w-20 h-20 object-cover rounded" />
+                  {formData.damage_photos.map((url) => (
+                    <img key={url} src={url} alt="Damage photo" className="w-20 h-20 object-cover rounded" />
                   ))}
                 </div>
               )}
