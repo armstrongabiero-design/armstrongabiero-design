@@ -194,7 +194,7 @@ AI-native Fleet Management System designed for GTI operations globally (with foc
 - **Role:** Group Fleet Manager
 
 ## Pending Configuration
-- **SendGrid API Key** - For email notifications
+- **Resend API Key** (`RESEND_API_KEY`) — For email notifications (see `backend/email_service.py`)
   - Get free key at: https://sendgrid.com
   - Add to `/app/backend/.env` as `SENDGRID_API_KEY=your_key`
 

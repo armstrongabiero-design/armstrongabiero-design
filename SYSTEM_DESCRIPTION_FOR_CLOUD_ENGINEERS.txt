@@ -1,0 +1,627 @@
+================================================================================
+JR FLEET MANAGEMENT SYSTEM - CLOUD DEPLOYMENT INFORMATION
+GTI Holdings Pilot Phase
+================================================================================
+
+CLIENT: GTI Holdings
+ENVIRONMENT: Pilot/Testing Phase
+TARGET USERS: ~700 concurrent users
+DEPLOYMENT REGION: Flexible (currently considering us-east-1)
+ESTIMATED PILOT DURATION: 3-6 months
+
+================================================================================
+SYSTEM OVERVIEW
+================================================================================
+
+JR Fleet Management System is a comprehensive fleet operations platform designed
+for multi-country vehicle fleet management across Ghana, Liberia, and São Tomé
+and Príncé. The system handles vehicle tracking, maintenance scheduling, driver
+management, fuel tracking, inventory management, safety compliance, and financial
+reporting with multi-currency support.
+
+This is a pilot deployment for GTI Holdings to validate the solution before
+scaling to full production.
+
+================================================================================
+TECHNICAL ARCHITECTURE
+================================================================================
+
+APPLICATION STACK:
+------------------
+Backend:
+- Framework: FastAPI (Python 3.11+)
+- API Design: RESTful with /api prefix
+- Authentication: JWT-based with role-based access control (RBAC)
+- API Documentation: OpenAPI/Swagger auto-generated
+- Server File: backend/server.py (2,617 lines, 100+ endpoints)
+
+Frontend:
+- Framework: React 19.0 with React Router DOM 7.5.1
+- UI Library: Radix UI components with Tailwind CSS
+- State Management: React Context API (AuthContext)
+- Build Tool: Create React App (CRA) with CRACO configuration
+- Pages: 25+ dashboard pages (Dashboard, Vehicles, Drivers, Maintenance, Reports, etc.)
+
+Database:
+- Type: MongoDB-compatible (document-oriented NoSQL)
+- Schema: 20+ collections with complex relationships
+- Key Collections: vehicles, drivers, maintenance_records, fuel_transactions,
+  expenditures, users, alerts, compliance_checks, inventory, documents
+- Multi-tenancy: Country-scoped data (GHANA | LIBERIA | SAO_TOME)
+
+================================================================================
+KEY DEPENDENCIES & EXTERNAL SERVICES
+================================================================================
+
+Backend Python Packages (requirements.txt - 131 lines):
+- FastAPI 0.110.1 - Web framework
+- Motor - Async MongoDB driver
+- PyJWT 2.10.1 - JWT token handling
+- bcrypt 4.1.3 - Password hashing
+- boto3 1.42.21 - AWS SDK (for S3 object storage)
+- resend 2.21.0 - Transactional email (Resend API)
+- google-generativeai 0.8.6 - Google Gemini AI integration
+- huggingface_hub 1.2.4 - Hugging Face model integration
+- forex-python 1.9.2 - Real-time currency conversion
+- email-validator 2.3.0 - Email validation
+- dnspython 2.8.0 - DNS utilities
+- cryptography 46.0.3 - Security utilities
+
+Frontend NPM Packages (package.json - 60+ dependencies):
+- React 19.0.0 & react-dom
+- react-router-dom 7.5.1
+- axios 1.8.4 - HTTP client
+- 30+ @radix-ui/* components (dialogs, dropdowns, forms, etc.)
+- lucide-react 0.507.0 - Icon library
+- date-fns 4.1.0 - Date manipulation
+- react-hook-form 7.56.2 - Form handling
+- Tailwind CSS - Utility-first styling
+
+External API Dependencies:
+- Google Gemini API: AI-powered predictive maintenance and insights
+- Hugging Face: Machine learning model integration
+- Forex API: Real-time multi-currency conversion (GHS, LRD, USD, STN)
+
+Required API Keys:
+- GOOGLE_GEMINI_API_KEY (environment variable)
+- HUGGING_FACE_TOKEN (environment variable)
+- Forex API access (via forex-python library)
+
+================================================================================
+MULTI-COUNTRY OPERATIONS
+================================================================================
+
+Supported Countries:
+1. Ghana - Currency: GHS (Ghanaian Cedi)
+2. Liberia - Currency: LRD (Liberian Dollar)
+3. São Tomé and Príncipe - Currency: STN (São Tomé and Príncipe Dobra)
+
+Multi-Currency Features:
+- All financial transactions support local currency entry
+- Automatic conversion to USD for consolidated reporting
+- Real-time exchange rate updates via Forex API
+- Country-specific fields: tax_id, permit_number, customs_clearance
+- Localized date formats and regulatory compliance tracking
+
+================================================================================
+AUTHENTICATION & AUTHORIZATION
+================================================================================
+
+User Roles (Hierarchical):
+- SUPER_ADMIN: Full system access, user management
+- GROUP_MANAGER: Multi-country fleet oversight
+- MANAGER: Country-level fleet management
+- FLEET_MANAGER: Operational management (maintenance, drivers, vehicles)
+- DRIVER: Limited access (logbook, pre-trip checklists)
+
+Authentication Flow:
+- JWT token-based authentication
+- Password reset via email (using Resend)
+- Role-based endpoint protection
+- Session management with token expiration
+
+Security Features:
+- bcrypt password hashing
+- JWT token signing with secret key
+- Email verification for password reset
+- Role-based access control on all sensitive endpoints
+
+================================================================================
+CORE FUNCTIONAL MODULES
+================================================================================
+
+1. Vehicle Management
+   - Registration, tracking, disposal
+   - Real-time location tracking (GPS integration ready)
+   - Odometer readings and service history
+   - Multi-country vehicle compliance
+
+2. Maintenance System
+   - Scheduled and unscheduled maintenance
+   - Predictive maintenance using AI (Google Gemini)
+   - Workshop job tracking (internal/external)
+   - Maintenance request approval workflow
+   - Parts inventory integration
+
+3. Driver Management
+   - Driver profiles with license tracking
+   - Safety scoring system (0-100)
+   - Driver logbook entries
+   - Pre-trip inspection checklists
+   - Incident tracking
+
+4. Fuel Management
+   - Fuel transaction recording
+   - Cost tracking per vehicle/driver
+   - Fuel efficiency analytics
+   - Multi-currency support
+
+5. Inventory Management
+   - Parts inventory tracking
+   - Stock level monitoring
+   - Transaction history
+   - Low stock alerts
+
+6. Financial Management
+   - Expenditure tracking by category
+   - Total Cost of Ownership (TCO) calculations
+   - Multi-currency reporting with USD consolidation
+   - Budget vs actual analysis
+
+7. Document Management
+   - File uploads (insurance, registration, permits)
+   - Document categorization
+   - Expiry tracking and alerts
+   - S3 storage integration
+
+8. Safety & Compliance
+   - Incident reporting and tracking
+   - Compliance checks per country regulations
+   - Safety score calculations
+   - Alert system for violations
+
+9. Reporting & Analytics
+   - Fleet performance dashboards
+   - Country-scoped reports
+   - AI-generated insights
+   - Export capabilities
+
+10. Vendor Management
+    - Vendor profiles (workshops, fuel stations, parts suppliers)
+    - Service tracking
+    - Performance evaluation
+
+================================================================================
+DATABASE SCHEMA HIGHLIGHTS
+================================================================================
+
+Key Collections (20+ total):
+
+vehicles:
+- Country-scoped fleet inventory
+- Status tracking (ACTIVE, MAINTENANCE, INACTIVE, DISPOSED)
+- Acquisition costs with currency conversion
+- Country-specific fields for compliance
+
+drivers:
+- License management with expiry tracking
+- Safety scoring (0-100)
+- Status management (ACTIVE, INACTIVE, SUSPENDED)
+
+maintenance_records:
+- Type: SCHEDULED | UNSCHEDULED | PREDICTIVE
+- AI prediction flags
+- Cost tracking with multi-currency support
+- Parts usage tracking
+
+fuel_transactions:
+- Per-transaction fuel costs
+- Vehicle/driver association
+- Odometer readings for efficiency calculations
+
+users:
+- Role-based access (5 role levels)
+- Country assignments
+- Password reset token management
+
+alerts:
+- Type: MAINTENANCE_DUE, LICENSE_EXPIRY, DOCUMENT_EXPIRY, SAFETY_INCIDENT, etc.
+- Severity levels: LOW, MEDIUM, HIGH, CRITICAL
+- Read/unread status
+
+compliance_checks:
+- Country-specific compliance tracking
+- Status: COMPLIANT, NON_COMPLIANT, PENDING
+
+Full schema documentation available in: DATABASE_SCHEMA.md (416 lines)
+
+================================================================================
+API STRUCTURE
+================================================================================
+
+Total Endpoints: 100+ RESTful endpoints
+API Prefix: /api
+Documentation: Auto-generated OpenAPI/Swagger docs
+
+Main Endpoint Groups:
+- /api/countries - Country configurations
+- /api/vehicles - Vehicle CRUD and tracking
+- /api/drivers - Driver management
+- /api/maintenance - Maintenance scheduling and tracking
+- /api/fuel - Fuel transaction management
+- /api/inventory - Parts inventory
+- /api/expenditures - Financial tracking
+- /api/documents - Document management (S3 integration)
+- /api/users - User management and authentication
+- /api/auth - Login, password reset, token management
+- /api/alerts - Alert notifications
+- /api/compliance - Compliance tracking
+- /api/reports - Analytics and reporting
+- /api/vendors - Vendor management
+- /api/ai - AI-powered predictions and insights
+
+Authentication Endpoints:
+- POST /api/auth/login - User authentication
+- POST /api/auth/forgot-password - Password reset request
+- POST /api/auth/reset-password - Password reset confirmation
+- GET /api/auth/me - Current user profile
+
+File Upload Endpoints:
+- POST /api/documents/upload - Document upload (integrates with S3)
+- Supports multiple file types (PDF, images, etc.)
+
+================================================================================
+ENVIRONMENT CONFIGURATION
+================================================================================
+
+Required Environment Variables (backend/.env):
+
+Database:
+- MONGO_URL=mongodb://[connection-string]
+- DB_NAME=fleet_management
+
+Security:
+- JWT_SECRET_KEY=[random-secret-key]
+- JWT_ALGORITHM=HS256
+- ACCESS_TOKEN_EXPIRE_MINUTES=43200
+
+AWS Services (object storage):
+- AWS_ACCESS_KEY_ID=[key]
+- AWS_SECRET_ACCESS_KEY=[secret]
+- AWS_REGION=us-east-1
+- S3_BUCKET_NAME=[document-storage-bucket]
+
+Email (Resend):
+- RESEND_API_KEY=[resend-api-key]
+- SENDER_EMAIL=[verified-sender-address]
+
+AI Services:
+- GOOGLE_GEMINI_API_KEY=[gemini-api-key]
+- HUGGING_FACE_TOKEN=[hf-token]
+
+CORS Configuration:
+- Frontend origin must be whitelisted in CORS middleware
+
+================================================================================
+STORAGE REQUIREMENTS
+================================================================================
+
+Document Storage (S3):
+- Purpose: User-uploaded documents (insurance, permits, licenses, receipts)
+- File Types: PDF, PNG, JPG, JPEG, DOC, DOCX
+- Expected Volume (Pilot): ~5 GB over 6 months
+- Access Pattern: Infrequent (document retrieval on-demand)
+- Security: Bucket policies with restricted access via IAM roles
+
+Static Assets (Frontend):
+- React build artifacts (~1 GB)
+- Served via CDN for performance
+- Expected Traffic (Pilot): ~100 GB/month (700 users)
+
+Database Storage:
+- Initial Size: ~10 GB (pilot phase)
+- Growth Rate: ~2 GB/month estimated
+- Collections: 20+ with indexes on foreign keys and query fields
+
+================================================================================
+NETWORK & INTEGRATION REQUIREMENTS
+================================================================================
+
+Inbound Traffic:
+- Frontend: HTTPS (443) - Public web access
+- Backend API: HTTPS (443) via load balancer - Public API access
+- WebSocket: Not currently required (future consideration for real-time tracking)
+
+Outbound Traffic:
+- Google Gemini API: HTTPS (443) - AI predictions
+- Hugging Face API: HTTPS (443) - ML models
+- Forex API: HTTPS (443) - Currency rates
+- Resend API: HTTPS (443) - Transactional email (password reset, notifications, reports)
+- AWS S3: HTTPS (443) - Document storage
+
+Email Integration:
+- Service: Resend (HTTPS API, resend Python package)
+- Sender: Must match a domain/address verified in Resend (SENDER_EMAIL env)
+- Example domains used in product docs: jrfleetsolutions.com / alerts.jrfleetsolutions.com (verify in Resend dashboard)
+- Use Case: Password resets, maintenance notifications, fleet reports, alerts
+- Volume (Pilot): ~2,000 emails/month
+
+DNS Requirements:
+- Primary Domain: jrfleetsolutions.com (already owned)
+- Pilot Subdomains:
+  * gti.jrfleetsolutions.com (frontend)
+  * api-gti.jrfleetsolutions.com (backend API)
+- SSL/TLS: Required for both subdomains
+
+================================================================================
+PERFORMANCE & CAPACITY EXPECTATIONS
+================================================================================
+
+Pilot Phase Targets:
+- Concurrent Users: 700
+- API Response Time: <1 second (p95) - acceptable for testing
+- Database Connections: ~150 concurrent
+- Uptime Target: 95% (pilot SLA, not production-grade)
+- Peak Usage: Business hours (8am-6pm local time in Ghana/Liberia)
+
+Scaling Considerations:
+- Backend should be horizontally scalable (stateless design)
+- Database read-heavy workload (80% reads, 20% writes)
+- Potential for read replicas in production phase
+- Session storage can use database temporarily (no Redis required for pilot)
+
+Known Performance Characteristics:
+- AI predictions: 2-5 seconds per request (Google Gemini API latency)
+- Document uploads: File size limit 10 MB per document
+- Bulk operations: Some endpoints support batch processing
+
+================================================================================
+MONITORING & OBSERVABILITY NEEDS
+================================================================================
+
+Critical Metrics to Monitor:
+- API endpoint response times (especially AI-heavy endpoints)
+- Database connection pool utilization
+- Document upload success/failure rates
+- Authentication success/failure rates
+- External API dependency health (Gemini, Hugging Face, Forex)
+
+Logging Requirements:
+- Application logs: INFO level minimum
+- Error tracking: All exceptions with stack traces
+- Access logs: API request/response logging
+- Audit logs: User authentication events, data modifications
+
+Alert Thresholds (Suggested):
+- API response time >2 seconds (p95)
+- Database connections >90% of pool
+- Error rate >5% of requests
+- External API failures (Google Gemini, Forex)
+
+Retention Policy (Pilot):
+- Application logs: 3-7 days
+- Error logs: 14-30 days
+- Access logs: 7 days
+
+================================================================================
+SECURITY CONSIDERATIONS
+================================================================================
+
+Data Protection:
+- Database encryption at rest required
+- TLS/SSL for all data in transit
+- JWT tokens for authentication
+- bcrypt for password storage (cost factor: 12)
+
+Access Control:
+- Role-based access control (5 role levels)
+- Country-scoped data isolation
+- IAM roles for AWS service access (no hardcoded credentials in containers)
+
+Compliance:
+- GDPR considerations (user data handling)
+- Multi-country data residency awareness
+- Document retention policies
+
+Network Security:
+- Private subnets for backend compute and database
+- Public subnets for load balancer only
+- Security groups with least-privilege rules
+- No direct internet access from compute layer
+
+Secret Management:
+- Environment variables should use secrets management service
+- API keys rotation capability required
+- Database credentials rotation (manual acceptable for pilot)
+
+Rate Limiting:
+- Consideration for API endpoint protection
+- Authentication endpoint brute-force protection
+
+================================================================================
+DEPLOYMENT ARTIFACTS
+================================================================================
+
+Backend:
+- Language: Python 3.11+
+- Entry Point: backend/server.py
+- Dependencies: backend/requirements.txt (131 packages)
+- Container Port: 8000 (default FastAPI)
+- Health Check: GET /health or GET /api/health
+- Build Command: pip install -r requirements.txt
+- Run Command: uvicorn server:app --host 0.0.0.0 --port 8000
+
+Frontend:
+- Language: JavaScript (React 19.0)
+- Build Tool: npm/yarn
+- Dependencies: frontend/package.json
+- Build Command: npm run build
+- Output Directory: frontend/build/
+- Static Files: HTML, CSS, JS bundles
+- Runtime: Static hosting (no server-side rendering)
+
+Container Considerations:
+- Backend: Single container, stateless
+- Frontend: Static files (no container needed, serve via CDN/S3)
+- Base Image Recommendation: python:3.11-slim for backend
+- Container Registry: AWS ECR or alternative
+
+================================================================================
+TESTING & VALIDATION
+================================================================================
+
+Test Suite:
+- Location: backend/tests/ and tests/
+- Framework: pytest
+- Coverage: Role system, country-scoped dashboards, bug fixes
+- Test Reports: test_reports/ (iterations 1-5)
+
+Test Files:
+- test_role_system.py
+- test_country_scoped_dashboard.py
+- test_bug_fixes_iteration5.py
+- test_fleet_management.py
+
+Pre-Deployment Validation:
+- Backend health check: GET /health returns 200 OK
+- Database connectivity test
+- S3 bucket access verification
+- Resend email sending test (RESEND_API_KEY + verified SENDER_EMAIL)
+- External API connectivity (Gemini, Forex)
+
+Post-Deployment Validation:
+- Frontend loads successfully
+- User login flow works
+- Document upload/download works
+- Multi-currency conversion accurate
+- All 25+ pages render correctly
+
+================================================================================
+PILOT PHASE SUCCESS CRITERIA
+================================================================================
+
+The pilot deployment is considered successful when:
+1. 700 users can access the system concurrently without degradation
+2. All core modules are functional (vehicles, drivers, maintenance, fuel, reports)
+3. Multi-currency conversion operates accurately
+4. AI predictions are delivered within acceptable timeframes
+5. Document uploads/downloads work reliably
+6. Email notifications are delivered successfully
+7. System uptime meets 95% target
+8. No critical data loss or security incidents
+
+Migration to Production:
+- If pilot validates product-market fit, migration to production architecture
+- Production will require higher availability, redundancy, and performance
+- Current cost-optimized architecture can be upgraded with minimal changes
+
+================================================================================
+CONSTRAINTS & LIMITATIONS
+================================================================================
+
+Pilot Phase Acceptable Limitations:
+- Single availability zone deployment acceptable (no multi-AZ)
+- Spot instance interruptions acceptable (2-minute recovery window)
+- Basic monitoring (critical alarms only)
+- No advanced caching layer (document database caching sufficient)
+- Minimal WAF protection (basic rate limiting acceptable)
+- 3-7 day log retention (not long-term archival)
+
+Not Required for Pilot:
+- High availability (HA) database clustering
+- Disaster recovery (DR) site
+- Advanced DDoS protection
+- Real-time analytics dashboard
+- Automated scaling beyond basic thresholds
+- Multi-region deployment
+
+Future Production Requirements:
+- Multi-AZ database with automatic failover
+- Read replicas for performance
+- Redis caching layer
+- Advanced WAF rules
+- Extended log retention (30+ days)
+- Backup retention >7 days
+- Performance optimization (sub-500ms API responses)
+
+================================================================================
+SUPPORT & ESCALATION
+================================================================================
+
+Pilot Phase Support Model:
+- Response Time: Best-effort (not 24/7)
+- Monitoring: Business hours only
+- Incident Response: Email-based escalation
+
+Critical Issue Escalation:
+- Database connection failures
+- Authentication system failures
+- Complete system outages
+- Data corruption incidents
+
+Non-Critical Issues:
+- Slow API responses (if <2 seconds)
+- Individual feature bugs
+- UI rendering issues
+- Minor performance degradation
+
+================================================================================
+DOCUMENTATION REFERENCES
+================================================================================
+
+Included Files:
+- DATABASE_SCHEMA.md - Complete database schema (416 lines)
+- backend/server.py - Main API server (2,617 lines, 100+ endpoints)
+- backend/requirements.txt - Python dependencies (131 packages)
+- frontend/package.json - Frontend dependencies (60+ packages)
+- backend/models.py - Pydantic models for all entities
+- backend/auth_service.py - Authentication logic
+- backend/ai_services.py - AI integration (Google Gemini)
+- backend/email_service.py - Email notification service
+- backend/currency_utils.py - Multi-currency conversion
+
+Test Documentation:
+- test_reports/ - pytest results (iterations 1-5)
+- backend/tests/ - Unit and integration tests
+
+Additional Context:
+- README.md - Project overview
+- DATABASE_SCHEMA.md - Full schema documentation
+- Frontend pages in src/pages/ - 25+ dashboard pages
+
+================================================================================
+CLOUD ENGINEERING GUIDANCE REQUEST
+================================================================================
+
+Please review this system description and use your expertise to:
+
+1. Recommend an appropriate cloud architecture for the pilot phase
+2. Identify any technical risks or concerns with the current application design
+3. Suggest optimal service configurations considering the 700-user target
+4. Propose monitoring and observability strategies
+5. Advise on security hardening measures
+6. Recommend backup and recovery strategies appropriate for pilot phase
+7. Estimate resource requirements (compute, memory, storage, network)
+8. Provide cost optimization suggestions while maintaining functionality
+9. Identify any external dependency risks (Google Gemini, Forex API, etc.)
+10. Suggest deployment automation approaches (IaC, CI/CD considerations)
+
+This is a pilot deployment, so cost-effectiveness is prioritized over
+high availability, but the architecture should be upgradeable to production
+standards once the pilot succeeds.
+
+We value your expertise in structuring this deployment appropriately.
+
+================================================================================
+CONTACT INFORMATION
+================================================================================
+
+Client: GTI Holdings
+Project: JR Fleet Management System Pilot
+Deployment Domain: gti.jrfleetsolutions.com
+Pilot Duration: 3-6 months
+Target Go-Live: As soon as technically feasible
+
+================================================================================
+END OF SYSTEM DESCRIPTION
+================================================================================

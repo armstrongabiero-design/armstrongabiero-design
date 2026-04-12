@@ -1891,7 +1891,7 @@ async def forgot_password(input: ForgotPasswordRequest):
     doc['created_at'] = doc['created_at'].isoformat()
     await db.password_reset_tokens.insert_one(doc)
     
-    # Send email with reset link (if SendGrid is configured)
+    # Send email with reset link (if Resend is configured)
     reset_link = f"{os.environ.get('FRONTEND_URL', 'http://localhost:3000')}/reset-password?token={reset_token}"
     email_service.send_password_reset_email(input.email, reset_link, user.get('full_name', 'User'))
     
