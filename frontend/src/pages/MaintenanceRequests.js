@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useState, useCallback } from 'react';
 import axios from 'axios';
 import { Plus, Check, X, Clock, AlertTriangle } from 'lucide-react';
 import { toast } from 'sonner';
@@ -52,15 +52,10 @@ const MaintenanceRequests = () => {
     country: 'GHANA',
   });
 
-  useEffect(() => {
-    fetchData();
-  }, []);
-
-  const fetchData = async () => {
+  const fetchData = useCallback(async () => {
     try {
       const headers = token ? { Authorization: `Bearer ${token}` } : {};
       
-      // For drivers/users, only fetch their own requests
       const requestsEndpoint = isPersonalView 
         ? `${API}/maintenance-requests?driver_id=${user?.id}`
         : `${API}/maintenance-requests`;
@@ -72,7 +67,6 @@ const MaintenanceRequests = () => {
         axios.get(`${API}/fleet-managers`, { headers }),
       ]);
       
-      // Filter requests for personal view
       let filteredRequests = requestsRes.data;
       if (isPersonalView) {
         filteredRequests = requestsRes.data.filter(r => r.driver_id === user?.id || r.driver_id === user?.driver_id);
@@ -83,16 +77,19 @@ const MaintenanceRequests = () => {
       setDrivers(driversRes.data);
       setManagers(managersRes.data);
       
-      // Auto-set driver_id for personal view
       if (isPersonalView) {
         setFormData(prev => ({ ...prev, driver_id: user?.driver_id || user?.id }));
       }
-    } catch (error) {
+    } catch {
       toast.error('Failed to load data');
     } finally {
       setLoading(false);
     }
-  };
+  }, [token, isPersonalView, user]);
+
+  useEffect(() => {
+    fetchData();
+  }, [fetchData]);
 
   const handleSubmitRequest = async (e) => {
     e.preventDefault();

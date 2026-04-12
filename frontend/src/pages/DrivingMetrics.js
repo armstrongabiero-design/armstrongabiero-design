@@ -1,7 +1,6 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import axios from 'axios';
 import { useAuth } from '../contexts/AuthContext';
-import { toast } from 'sonner';
 import { Gauge, AlertTriangle, TrendingUp, TrendingDown, Activity, Clock } from 'lucide-react';
 
 const BACKEND_URL = process.env.REACT_APP_BACKEND_URL;
@@ -13,24 +12,16 @@ const DrivingMetrics = () => {
   const [loading, setLoading] = useState(true);
   const [period, setPeriod] = useState(30);
 
-  useEffect(() => {
-    fetchMetrics();
-  }, [period]);
-
-  const fetchMetrics = async () => {
+  const fetchMetrics = useCallback(async () => {
     setLoading(true);
     try {
-      const endpoint = isDriverOrUser && isDriverOrUser() 
-        ? `${API}/logbook/summary/${user?.id}?period_days=${period}`
-        : `${API}/logbook/summary/${user?.id}?period_days=${period}`;
+      const endpoint = `${API}/logbook/summary/${user?.id}?period_days=${period}`;
       
       const response = await axios.get(endpoint, {
         headers: { Authorization: `Bearer ${token}` }
       });
       setMetrics(response.data);
-    } catch (error) {
-      console.error('Failed to fetch metrics:', error);
-      // Use placeholder data if no metrics available
+    } catch {
       setMetrics({
         total_trips: 0,
         total_distance_km: 0,
@@ -43,7 +34,11 @@ const DrivingMetrics = () => {
     } finally {
       setLoading(false);
     }
-  };
+  }, [period, user, token]);
+
+  useEffect(() => {
+    fetchMetrics();
+  }, [fetchMetrics]);
 
   if (loading) {
     return (
@@ -58,7 +53,6 @@ const DrivingMetrics = () => {
       title: 'Total Distance',
       value: `${(metrics?.total_distance_km || 0).toLocaleString()} km`,
       icon: Activity,
-      color: 'bg-blue-500',
       bgLight: 'bg-blue-50',
       textColor: 'text-blue-600'
     },
@@ -66,7 +60,6 @@ const DrivingMetrics = () => {
       title: 'Total Trips',
       value: metrics?.total_trips || 0,
       icon: TrendingUp,
-      color: 'bg-green-500',
       bgLight: 'bg-green-50',
       textColor: 'text-green-600'
     },
@@ -74,7 +67,6 @@ const DrivingMetrics = () => {
       title: 'Fuel Efficiency',
       value: `${(metrics?.avg_fuel_efficiency || 0).toFixed(1)} km/L`,
       icon: Gauge,
-      color: 'bg-amber-500',
       bgLight: 'bg-amber-50',
       textColor: 'text-amber-600'
     },
@@ -82,7 +74,6 @@ const DrivingMetrics = () => {
       title: 'Fuel Used',
       value: `${(metrics?.total_fuel_liters || 0).toFixed(1)} L`,
       icon: TrendingDown,
-      color: 'bg-orange-500',
       bgLight: 'bg-orange-50',
       textColor: 'text-orange-600'
     }
@@ -120,13 +111,12 @@ const DrivingMetrics = () => {
           <p className="text-slate-500 mt-1">GPS & Telematics Performance Data</p>
         </div>
         
-        {/* Period Selector */}
         <div className="flex items-center gap-2">
           <Clock size={18} className="text-slate-400" />
           <select
             value={period}
             onChange={(e) => setPeriod(Number(e.target.value))}
-            className="border border-slate-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-purple-500"
+            className="border border-slate-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-amber-500"
             data-testid="period-selector"
           >
             <option value={7}>Last 7 days</option>

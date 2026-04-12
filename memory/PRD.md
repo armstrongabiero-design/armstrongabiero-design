@@ -198,6 +198,17 @@ AI-native Fleet Management System designed for GTI operations globally (with foc
   - Get free key at: https://sendgrid.com
   - Add to `/app/backend/.env` as `SENDGRID_API_KEY=your_key`
 
+## Code Quality Fixes (Jan 2026)
+- [x] Fixed hardcoded secrets in test files → moved to os.environ.get()
+- [x] Fixed potentially undefined variable `v` in server.py (renamed to `vehicle`)
+- [x] Fixed bare `except: pass` → `except Exception: pass`
+- [x] Fixed 29 missing React hook dependencies using useCallback across all pages
+- [x] Fixed 4 index-as-key usages (Sidebar.js, PreTripChecklist.js, VehicleMap.js, Dashboard.js)
+- [x] Removed 14 console.log/console.error statements from production code
+- [ ] Token storage uses localStorage (consider httpOnly cookies for production)
+- [ ] Backend monolith refactoring (server.py/models.py → modular structure)
+- [ ] Complex function refactoring (get_dashboard_alerts, Dashboard components)
+
 ## Future/Backlog Tasks
 - [ ] Add graphs/charts to dashboards (charting library)
 - [ ] Complete UI for empty modules: TireManagement, VendorManagement, Reports/TCO, Vehicle Map

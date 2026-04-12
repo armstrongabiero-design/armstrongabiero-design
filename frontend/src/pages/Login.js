@@ -8,7 +8,7 @@ import { Input } from '../components/ui/input';
 import { Label } from '../components/ui/label';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '../components/ui/select';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '../components/ui/tabs';
-import { Truck, Users, UserCog, User, Search } from 'lucide-react';
+import { Users, UserCog, User, Search, ShieldCheck, KeyRound, Truck } from 'lucide-react';
 import PasswordInput from '../components/PasswordInput';
 
 const BACKEND_URL = process.env.REACT_APP_BACKEND_URL;
@@ -21,6 +21,12 @@ const Login = () => {
   const [loading, setLoading] = useState(false);
   const [countries, setCountries] = useState([]);
   const [countrySearch, setCountrySearch] = useState('');
+  
+  // OTP verification state
+  const [showOtpForm, setShowOtpForm] = useState(false);
+  const [otpCode, setOtpCode] = useState('');
+  const [otpEmail, setOtpEmail] = useState('');
+  const [otpSending, setOtpSending] = useState(false);
 
   const [loginData, setLoginData] = useState({ email: '', password: '' });
   const [registerData, setRegisterData] = useState({
@@ -39,7 +45,6 @@ const Login = () => {
         const response = await axios.get(`${API}/countries/all-list`);
         setCountries(response.data.countries || []);
       } catch (error) {
-        console.error('Failed to fetch countries:', error);
         setCountries([
           { code: 'GH', name: 'Ghana' },
           { code: 'LR', name: 'Liberia' },
@@ -65,13 +70,64 @@ const Login = () => {
     e.preventDefault();
     setLoading(true);
     try {
+      const response = await axios.post(`${API}/auth/login`, loginData);
+      
+      // Check if OTP verification is required (Group Fleet Manager)
+      if (response.data.requires_otp) {
+        setOtpEmail(response.data.email);
+        setOtpSending(true);
+        
+        // Send OTP
+        await axios.post(`${API}/auth/send-otp`, loginData);
+        toast.success('Verification code sent to your email');
+        setShowOtpForm(true);
+        setOtpSending(false);
+        return;
+      }
+      
+      // Normal login flow
       await login(loginData.email, loginData.password);
       toast.success('Login successful!');
       navigate('/', { replace: true });
     } catch (error) {
       toast.error(error.response?.data?.detail || 'Login failed');
+      setOtpSending(false);
     } finally {
       setLoading(false);
+    }
+  };
+
+  const handleOtpVerify = async (e) => {
+    e.preventDefault();
+    setLoading(true);
+    try {
+      const response = await axios.post(`${API}/auth/verify-otp`, {
+        email: otpEmail,
+        otp: otpCode
+      });
+      
+      // Store token and user data
+      localStorage.setItem('token', response.data.access_token);
+      localStorage.setItem('user', JSON.stringify(response.data.user));
+      
+      toast.success('Login successful!');
+      window.location.href = '/'; // Force reload to update auth state
+    } catch (error) {
+      toast.error(error.response?.data?.detail || 'Invalid verification code');
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const handleResendOtp = async () => {
+    setOtpSending(true);
+    try {
+      await axios.post(`${API}/auth/send-otp`, loginData);
+      toast.success('New verification code sent');
+    } catch (error) {
+      toast.error('Failed to resend code');
+    } finally {
+      setOtpSending(false);
     }
   };
 
@@ -156,11 +212,79 @@ const Login = () => {
           <p className="text-slate-400">Fleet Solutions</p>
         </div>
 
-        {/* Auth Card */}
-        <div className="bg-white rounded-2xl shadow-2xl p-8 max-h-[80vh] overflow-y-auto">
-          <Tabs value={activeTab} onValueChange={setActiveTab}>
-            <TabsList className="grid w-full grid-cols-2 mb-6">
-              <TabsTrigger value="login">Sign In</TabsTrigger>
+        {/* OTP Verification Form */}
+        {showOtpForm ? (
+          <div className="bg-white rounded-2xl shadow-2xl p-8">
+            <div className="text-center mb-6">
+              <div className="inline-flex items-center justify-center w-16 h-16 rounded-full mb-4" style={{backgroundColor: '#fef8eb'}}>
+                <ShieldCheck size={32} style={{color: '#e3aa27'}} />
+              </div>
+              <h2 className="text-2xl font-bold text-slate-800">Verify Your Identity</h2>
+              <p className="text-slate-500 text-sm mt-2">
+                A 6-digit verification code has been sent to<br />
+                <span className="font-medium text-slate-700">{otpEmail}</span>
+              </p>
+            </div>
+
+            <form onSubmit={handleOtpVerify} className="space-y-4">
+              <div>
+                <Label>Verification Code</Label>
+                <div className="relative">
+                  <KeyRound className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" size={18} />
+                  <Input
+                    type="text"
+                    value={otpCode}
+                    onChange={(e) => setOtpCode(e.target.value.replace(/\D/g, '').slice(0, 6))}
+                    placeholder="Enter 6-digit code"
+                    className="pl-10 text-center text-xl tracking-widest font-mono"
+                    maxLength={6}
+                    required
+                    data-testid="otp-input"
+                  />
+                </div>
+              </div>
+
+              <Button 
+                type="submit" 
+                className="w-full" 
+                disabled={loading || otpCode.length !== 6}
+                style={{backgroundColor: '#e3aa27', color: 'white'}}
+                data-testid="verify-otp-btn"
+              >
+                {loading ? 'Verifying...' : 'Verify & Sign In'}
+              </Button>
+
+              <div className="text-center text-sm">
+                <span className="text-slate-500">Didn&apos;t receive the code? </span>
+                <button
+                  type="button"
+                  onClick={handleResendOtp}
+                  disabled={otpSending}
+                  className="font-medium hover:underline"
+                  style={{color: '#e3aa27'}}
+                >
+                  {otpSending ? 'Sending...' : 'Resend'}
+                </button>
+              </div>
+
+              <button
+                type="button"
+                onClick={() => {
+                  setShowOtpForm(false);
+                  setOtpCode('');
+                }}
+                className="w-full text-sm text-slate-500 hover:text-slate-700"
+              >
+                ← Back to Sign In
+              </button>
+            </form>
+          </div>
+        ) : (
+          /* Auth Card */
+          <div className="bg-white rounded-2xl shadow-2xl p-8 max-h-[80vh] overflow-y-auto">
+            <Tabs value={activeTab} onValueChange={setActiveTab}>
+              <TabsList className="grid w-full grid-cols-2 mb-6">
+                <TabsTrigger value="login">Sign In</TabsTrigger>
               <TabsTrigger value="register">Register</TabsTrigger>
             </TabsList>
 
@@ -325,19 +449,7 @@ const Login = () => {
             </TabsContent>
           </Tabs>
         </div>
-
-        {/* Admin link */}
-        <div className="mt-6 text-center">
-          <Link 
-            to="/admin-register" 
-            className="text-slate-400 text-sm transition-colors"
-            style={{'--tw-text-opacity': 1}}
-            onMouseOver={(e) => e.target.style.color = '#e3aa27'}
-            onMouseOut={(e) => e.target.style.color = '#94a3b8'}
-          >
-            Group Fleet Manager Registration →
-          </Link>
-        </div>
+        )}
       </div>
     </div>
   );

@@ -36,8 +36,8 @@ const ResetPassword = () => {
           setTokenValid(true);
           setEmail(response.data.email);
         }
-      } catch (error) {
-        console.error('Token verification failed:', error);
+      } catch {
+        // Token verification failed
       } finally {
         setVerifying(false);
       }

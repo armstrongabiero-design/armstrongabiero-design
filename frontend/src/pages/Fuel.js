@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useState, useCallback } from 'react';
 import axios from 'axios';
 import { Plus, AlertCircle, Droplet, AlertTriangle } from 'lucide-react';
 import { toast } from 'sonner';
@@ -31,18 +31,7 @@ const Fuel = () => {
     location: '',
   });
 
-  useEffect(() => {
-    fetchData();
-  }, []);
-
-  // Check pre-trip checklist status when vehicle and driver change
-  useEffect(() => {
-    if (formData.vehicle_id && formData.driver_id) {
-      checkPreTripStatus();
-    }
-  }, [formData.vehicle_id, formData.driver_id]);
-
-  const fetchData = async () => {
+  const fetchData = useCallback(async () => {
     try {
       const [fuelRes, vehiclesRes, driversRes] = await Promise.all([
         axios.get(`${API}/fuel`),
@@ -52,26 +41,35 @@ const Fuel = () => {
       setTransactions(fuelRes.data);
       setVehicles(vehiclesRes.data);
       setDrivers(driversRes.data);
-    } catch (error) {
+    } catch {
       toast.error('Failed to load fuel data');
     } finally {
       setLoading(false);
     }
-  };
+  }, []);
 
-  const checkPreTripStatus = async () => {
+  const checkPreTripStatus = useCallback(async (vehicleId, driverId) => {
     try {
-      const response = await axios.get(`${API}/pre-trip-checklists/today/${formData.driver_id}/${formData.vehicle_id}`);
+      const response = await axios.get(`${API}/pre-trip-checklists/today/${driverId}/${vehicleId}`);
       setChecklistStatus(response.data);
-    } catch (error) {
+    } catch {
       setChecklistStatus(null);
     }
-  };
+  }, []);
+
+  useEffect(() => {
+    fetchData();
+  }, [fetchData]);
+
+  useEffect(() => {
+    if (formData.vehicle_id && formData.driver_id) {
+      checkPreTripStatus(formData.vehicle_id, formData.driver_id);
+    }
+  }, [formData.vehicle_id, formData.driver_id, checkPreTripStatus]);
 
   const handleSubmit = async (e) => {
     e.preventDefault();
     
-    // Check if pre-trip checklist is completed
     if (!checklistStatus?.can_log_trips) {
       toast.error('Please complete the pre-trip checklist before logging fuel');
       return;
@@ -88,7 +86,7 @@ const Fuel = () => {
       toast.success('Fuel transaction recorded!');
       setDialogOpen(false);
       fetchData();
-    } catch (error) {
+    } catch {
       toast.error('Failed to record transaction');
     }
   };
@@ -115,7 +113,6 @@ const Fuel = () => {
               <DialogDescription>Log a fuel purchase to track consumption and detect anomalies.</DialogDescription>
             </DialogHeader>
             
-            {/* Pre-trip checklist warning */}
             {formData.vehicle_id && formData.driver_id && !checklistStatus?.can_log_trips && (
               <div className="bg-amber-50 border border-amber-200 rounded-lg p-3 mb-4">
                 <div className="flex items-start gap-2">
@@ -124,7 +121,7 @@ const Fuel = () => {
                     <p className="font-semibold text-amber-800 text-sm">Pre-Trip Checklist Required</p>
                     <p className="text-xs text-amber-700">Complete the checklist before logging fuel.</p>
                     <Link to="/pre-trip-checklist" className="text-xs text-amber-600 underline mt-1 inline-block">
-                      Go to Pre-Trip Checklist →
+                      Go to Pre-Trip Checklist
                     </Link>
                   </div>
                 </div>

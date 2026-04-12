@@ -1,6 +1,6 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useState, useCallback } from 'react';
 import axios from 'axios';
-import { MapPin, RefreshCw, Navigation, Clock } from 'lucide-react';
+import { MapPin, RefreshCw, Clock } from 'lucide-react';
 import { toast } from 'sonner';
 import { Button } from '../components/ui/button';
 import { Input } from '../components/ui/input';
@@ -38,13 +38,7 @@ const VehicleMap = () => {
     driver_id: '',
   });
 
-  useEffect(() => {
-    fetchData();
-    const interval = setInterval(fetchData, 30000); // Refresh every 30 seconds
-    return () => clearInterval(interval);
-  }, []);
-
-  const fetchData = async () => {
+  const fetchData = useCallback(async () => {
     try {
       const [locationsRes, vehiclesRes, driversRes] = await Promise.all([
         axios.get(`${API}/vehicle-locations`),
@@ -54,17 +48,23 @@ const VehicleMap = () => {
       setLocations(locationsRes.data);
       setVehicles(vehiclesRes.data);
       setDrivers(driversRes.data);
-    } catch (error) {
-      console.error('Failed to load location data', error);
+    } catch {
+      // Silent fail for background refresh
     } finally {
       setLoading(false);
     }
-  };
+  }, []);
+
+  useEffect(() => {
+    fetchData();
+    const interval = setInterval(fetchData, 30000);
+    return () => clearInterval(interval);
+  }, [fetchData]);
 
   const handleSubmit = async (e) => {
     e.preventDefault();
     
-    const vehicle = vehicles.find(v => v.id === formData.vehicle_id);
+    const vehicle = vehicles.find(item => item.id === formData.vehicle_id);
     
     try {
       await axios.post(`${API}/vehicle-locations`, {
@@ -77,7 +77,7 @@ const VehicleMap = () => {
       toast.success('Vehicle location updated!');
       setDialogOpen(false);
       fetchData();
-    } catch (error) {
+    } catch {
       toast.error('Failed to update location');
     }
   };
@@ -133,8 +133,8 @@ const VehicleMap = () => {
                   <Select value={formData.vehicle_id} onValueChange={(value) => setFormData({...formData, vehicle_id: value})}>
                     <SelectTrigger><SelectValue placeholder="Select vehicle" /></SelectTrigger>
                     <SelectContent>
-                      {vehicles.map(v => (
-                        <SelectItem key={v.id} value={v.id}>{v.registration_number} - {v.country}</SelectItem>
+                      {vehicles.map(veh => (
+                        <SelectItem key={veh.id} value={veh.id}>{veh.registration_number} - {veh.country}</SelectItem>
                       ))}
                     </SelectContent>
                   </Select>
@@ -188,19 +188,19 @@ const VehicleMap = () => {
 
       {/* Country Summary Cards */}
       <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mb-6">
-        {Object.entries(COUNTRY_COORDS).map(([country, coords]) => {
+        {Object.entries(COUNTRY_COORDS).map(([country]) => {
           const countryLocations = locations.filter(l => l.country === country);
           const countryName = country === 'SAO_TOME' ? 'São Tomé' : country.charAt(0) + country.slice(1).toLowerCase();
           
           return (
-            <div key={country} className={`fleet-card cursor-pointer hover:shadow-lg transition-shadow ${selectedCountry === country ? 'ring-2 ring-purple-500' : ''}`} onClick={() => setSelectedCountry(selectedCountry === country ? '' : country)}>
+            <div key={country} className={`fleet-card cursor-pointer hover:shadow-lg transition-shadow ${selectedCountry === country ? 'ring-2 ring-amber-500' : ''}`} onClick={() => setSelectedCountry(selectedCountry === country ? '' : country)}>
               <div className="flex items-center justify-between">
                 <div>
                   <h3 className="font-semibold text-lg">{countryName}</h3>
                   <p className="text-slate-500 text-sm">{countryLocations.length} vehicles tracked</p>
                 </div>
                 <div className="text-4xl">
-                  {country === 'GHANA' ? '🇬🇭' : country === 'LIBERIA' ? '🇱🇷' : '🇸🇹'}
+                  {country === 'GHANA' ? '\u{1F1EC}\u{1F1ED}' : country === 'LIBERIA' ? '\u{1F1F1}\u{1F1F7}' : '\u{1F1F8}\u{1F1F9}'}
                 </div>
               </div>
             </div>
@@ -208,7 +208,7 @@ const VehicleMap = () => {
         })}
       </div>
 
-      {/* Map Placeholder - In production, integrate with Google Maps or Mapbox */}
+      {/* Map Placeholder */}
       <div className="fleet-card mb-6">
         <div className="bg-slate-100 rounded-lg h-96 flex items-center justify-center relative overflow-hidden">
           <div className="absolute inset-0 bg-gradient-to-br from-blue-100 to-green-100 opacity-50"></div>
@@ -225,8 +225,8 @@ const VehicleMap = () => {
           
           {/* Mini vehicle indicators */}
           <div className="absolute bottom-4 left-4 right-4 flex gap-2 flex-wrap">
-            {filteredLocations.slice(0, 10).map((loc, i) => (
-              <div key={i} className="bg-white rounded-full px-2 py-1 text-xs shadow flex items-center gap-1">
+            {filteredLocations.slice(0, 10).map((loc) => (
+              <div key={loc.vehicle_id} className="bg-white rounded-full px-2 py-1 text-xs shadow flex items-center gap-1">
                 <div className={`w-2 h-2 rounded-full ${loc.status === 'ACTIVE' ? 'bg-green-500' : 'bg-slate-400'}`}></div>
                 {loc.registration_number}
               </div>

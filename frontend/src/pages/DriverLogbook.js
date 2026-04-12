@@ -1,6 +1,6 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useState, useCallback } from 'react';
 import axios from 'axios';
-import { Plus, Book, AlertTriangle, TrendingUp } from 'lucide-react';
+import { Plus, Book } from 'lucide-react';
 import { toast } from 'sonner';
 import { useAuth } from '../contexts/AuthContext';
 import { Button } from '../components/ui/button';
@@ -41,18 +41,7 @@ const DriverLogbook = () => {
     notes: '',
   });
 
-  useEffect(() => {
-    fetchData();
-  }, []);
-
-  useEffect(() => {
-    const driverId = isPersonalView ? (user?.driver_id || user?.id) : selectedDriver;
-    if (driverId) {
-      fetchDriverSummary(driverId);
-    }
-  }, [selectedDriver, isPersonalView, user]);
-
-  const fetchData = async () => {
+  const fetchData = useCallback(async () => {
     try {
       const headers = token ? { Authorization: `Bearer ${token}` } : {};
       const [entriesRes, driversRes, vehiclesRes] = await Promise.all([
@@ -61,7 +50,6 @@ const DriverLogbook = () => {
         axios.get(`${API}/vehicles`, { headers }),
       ]);
       
-      // Filter entries for personal view
       let filteredEntries = entriesRes.data;
       if (isPersonalView) {
         const userId = user?.driver_id || user?.id;
@@ -71,22 +59,33 @@ const DriverLogbook = () => {
       setEntries(filteredEntries);
       setDrivers(driversRes.data);
       setVehicles(vehiclesRes.data);
-    } catch (error) {
+    } catch {
       toast.error('Failed to load logbook data');
     } finally {
       setLoading(false);
     }
-  };
+  }, [token, isPersonalView, user]);
 
-  const fetchDriverSummary = async (driverId) => {
+  const fetchDriverSummary = useCallback(async (driverId) => {
     try {
       const headers = token ? { Authorization: `Bearer ${token}` } : {};
       const response = await axios.get(`${API}/logbook/summary/${driverId}`, { headers });
       setDriverSummary(response.data);
-    } catch (error) {
-      console.error('Failed to fetch driver summary');
+    } catch {
+      // Silent fail
     }
-  };
+  }, [token]);
+
+  useEffect(() => {
+    fetchData();
+  }, [fetchData]);
+
+  useEffect(() => {
+    const driverId = isPersonalView ? (user?.driver_id || user?.id) : selectedDriver;
+    if (driverId) {
+      fetchDriverSummary(driverId);
+    }
+  }, [selectedDriver, isPersonalView, user, fetchDriverSummary]);
 
   const handleSubmit = async (e) => {
     e.preventDefault();
@@ -125,7 +124,7 @@ const DriverLogbook = () => {
         fuel_used_liters: '',
         notes: '',
       });
-    } catch (error) {
+    } catch {
       toast.error('Failed to add logbook entry');
     }
   };
@@ -148,7 +147,6 @@ const DriverLogbook = () => {
           </p>
         </div>
         <div className="flex gap-2 flex-wrap">
-          {/* Only show driver filter for staff */}
           {!isPersonalView && (
             <Select value={selectedDriver || "ALL"} onValueChange={(v) => setSelectedDriver(v === "ALL" ? "" : v)}>
               <SelectTrigger className="w-48">
@@ -178,7 +176,6 @@ const DriverLogbook = () => {
               </DialogHeader>
               <form onSubmit={handleSubmit} className="space-y-4">
                 <div className="grid grid-cols-2 gap-4">
-                  {/* Only show driver selection for staff */}
                   {!isPersonalView ? (
                     <div>
                       <Label>Driver *</Label>
@@ -272,7 +269,7 @@ const DriverLogbook = () => {
         </div>
       </div>
 
-      {/* Driver Summary - shown for personal view or when a driver is selected */}
+      {/* Driver Summary */}
       {driverSummary && (isPersonalView || selectedDriver) && (
         <div className="grid grid-cols-1 md:grid-cols-4 gap-4 mb-6">
           <div className="bg-blue-50 rounded-lg p-4">
@@ -285,7 +282,7 @@ const DriverLogbook = () => {
           </div>
           <div className="bg-amber-50 rounded-lg p-4">
             <p className="text-amber-600 text-sm font-medium">Fuel Used</p>
-            <p className="text-2xl font-bold text-purple-800">{(driverSummary.total_fuel_liters || 0).toFixed(1)} L</p>
+            <p className="text-2xl font-bold text-amber-800">{(driverSummary.total_fuel_liters || 0).toFixed(1)} L</p>
           </div>
           <div className="bg-amber-50 rounded-lg p-4">
             <p className="text-amber-600 text-sm font-medium">Avg Efficiency</p>
@@ -328,7 +325,7 @@ const DriverLogbook = () => {
                     {!isPersonalView && <td>{driver?.first_name} {driver?.last_name}</td>}
                     <td className="font-semibold">{vehicle?.registration_number || 'N/A'}</td>
                     <td className="text-sm">
-                      {entry.start_location} → {entry.end_location || '...'}
+                      {entry.start_location} &rarr; {entry.end_location || '...'}
                     </td>
                     <td>{distance} km</td>
                     <td className="text-sm max-w-xs truncate">{entry.purpose}</td>

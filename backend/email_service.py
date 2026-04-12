@@ -129,7 +129,7 @@ class EmailService:
         html_content = f"""
         <html>
         <body style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
-            <div style="background: linear-gradient(135deg, #6366f1, #8b5cf6); color: white; padding: 20px; border-radius: 8px 8px 0 0;">
+            <div style="background: linear-gradient(135deg, #e3aa27, #c4912a); color: white; padding: 20px; border-radius: 8px 8px 0 0;">
                 <h2 style="margin: 0;">GTI Fleet Solutions - Password Reset</h2>
             </div>
             <div style="padding: 20px; border: 1px solid #e5e7eb; border-top: none; border-radius: 0 0 8px 8px;">
@@ -137,7 +137,7 @@ class EmailService:
                 <p>We received a request to reset your password for your GTI Fleet Solutions account.</p>
                 
                 <div style="text-align: center; margin: 30px 0;">
-                    <a href="{reset_link}" style="background: linear-gradient(135deg, #6366f1, #8b5cf6); color: white; padding: 15px 30px; text-decoration: none; border-radius: 8px; font-weight: bold; display: inline-block;">
+                    <a href="{reset_link}" style="background: linear-gradient(135deg, #e3aa27, #c4912a); color: white; padding: 15px 30px; text-decoration: none; border-radius: 8px; font-weight: bold; display: inline-block;">
                         Reset Password
                     </a>
                 </div>
@@ -145,7 +145,7 @@ class EmailService:
                 <p style="color: #6b7280; font-size: 14px;">Or copy and paste this link into your browser:</p>
                 <p style="background: #f3f4f6; padding: 10px; border-radius: 4px; word-break: break-all; font-size: 12px;">{reset_link}</p>
                 
-                <div style="background: #fef3c7; border-left: 4px solid #f59e0b; padding: 15px; margin: 20px 0;">
+                <div style="background: #fef3c7; border-left: 4px solid #e3aa27; padding: 15px; margin: 20px 0;">
                     <strong>Important:</strong>
                     <ul style="margin: 10px 0; padding-left: 20px;">
                         <li>This link will expire in 1 hour</li>
@@ -155,6 +155,41 @@ class EmailService:
                 </div>
                 
                 <p style="color: #6b7280; font-size: 14px;">If you need help, contact your system administrator.</p>
+            </div>
+        </body>
+        </html>
+        """
+        return self.send_email(email, subject, html_content)
+    
+    def send_otp_email(self, email: str, user_name: str, otp_code: str) -> bool:
+        """Send OTP verification email for Group Fleet Manager login"""
+        subject = "GTI Fleet Solutions - Login Verification Code"
+        html_content = f"""
+        <html>
+        <body style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
+            <div style="background: linear-gradient(135deg, #e3aa27, #c4912a); color: white; padding: 20px; border-radius: 8px 8px 0 0;">
+                <h2 style="margin: 0;">GTI Fleet Solutions - Login Verification</h2>
+            </div>
+            <div style="padding: 20px; border: 1px solid #e5e7eb; border-top: none; border-radius: 0 0 8px 8px;">
+                <p>Hello <strong>{user_name}</strong>,</p>
+                <p>You are logging in as a <strong>Group Fleet Manager</strong>. For your security, please use the verification code below to complete your login:</p>
+                
+                <div style="text-align: center; margin: 30px 0;">
+                    <div style="background: #fef8eb; border: 2px dashed #e3aa27; padding: 20px; border-radius: 8px; display: inline-block;">
+                        <div style="font-size: 36px; font-weight: bold; letter-spacing: 8px; color: #c4912a;">{otp_code}</div>
+                    </div>
+                </div>
+                
+                <div style="background: #fef3c7; border-left: 4px solid #e3aa27; padding: 15px; margin: 20px 0;">
+                    <strong>Security Notice:</strong>
+                    <ul style="margin: 10px 0; padding-left: 20px;">
+                        <li>This code expires in <strong>5 minutes</strong></li>
+                        <li>Never share this code with anyone</li>
+                        <li>If you didn't request this, please secure your account immediately</li>
+                    </ul>
+                </div>
+                
+                <p style="color: #6b7280; font-size: 14px;">If you did not attempt to log in, please contact your system administrator immediately.</p>
             </div>
         </body>
         </html>

@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useState, useCallback } from 'react';
 import axios from 'axios';
 import { Truck, Users, Wrench, DollarSign, TrendingUp, AlertCircle, AlertTriangle, 
   CheckCircle, XCircle, Clock, Bell, ClipboardCheck, Book, FileCheck, Gauge, Activity, Shield, UserPlus } from 'lucide-react';
@@ -16,32 +16,32 @@ const PersonalDashboard = ({ user, token }) => {
   const [stats, setStats] = useState(null);
   const [loading, setLoading] = useState(true);
 
-  useEffect(() => {
-    const fetchPersonalData = async () => {
-      try {
-        const response = await axios.get(`${API}/dashboard/personal`, {
-          headers: { Authorization: `Bearer ${token}` }
-        });
-        setStats(response.data);
-      } catch (error) {
-        console.error('Failed to fetch personal dashboard:', error);
-        setStats({
-          total_trips: 0,
-          total_distance_km: 0,
-          pending_requests: 0,
-          approved_requests: 0,
-          today_checklist_completed: false,
-          assigned_vehicle: null,
-          recent_requests: [],
-          safety_score: 100,
-          speed_violations: 0
-        });
-      } finally {
-        setLoading(false);
-      }
-    };
-    fetchPersonalData();
+  const fetchPersonalData = useCallback(async () => {
+    try {
+      const response = await axios.get(`${API}/dashboard/personal`, {
+        headers: { Authorization: `Bearer ${token}` }
+      });
+      setStats(response.data);
+    } catch {
+      setStats({
+        total_trips: 0,
+        total_distance_km: 0,
+        pending_requests: 0,
+        approved_requests: 0,
+        today_checklist_completed: false,
+        assigned_vehicle: null,
+        recent_requests: [],
+        safety_score: 100,
+        speed_violations: 0
+      });
+    } finally {
+      setLoading(false);
+    }
   }, [token]);
+
+  useEffect(() => {
+    fetchPersonalData();
+  }, [fetchPersonalData]);
 
   if (loading) {
     return (
@@ -177,8 +177,8 @@ const PersonalDashboard = ({ user, token }) => {
           </h3>
           {stats?.recent_requests?.length > 0 ? (
             <div className="space-y-3">
-              {stats.recent_requests.map((request, idx) => (
-                <div key={idx} className="flex items-center justify-between p-3 bg-slate-50 rounded-lg">
+              {stats.recent_requests.map((request) => (
+                <div key={request.id || request.request_type} className="flex items-center justify-between p-3 bg-slate-50 rounded-lg">
                   <div>
                     <p className="text-sm font-medium text-slate-800">{request.request_type || 'Maintenance'}</p>
                     <p className="text-xs text-slate-500">{request.description?.substring(0, 50)}...</p>
@@ -238,11 +238,7 @@ const StaffDashboard = ({ user, token, isGroupManager }) => {
   const [showAllPendingUsers, setShowAllPendingUsers] = useState(false);
   const [showAllPendingRequests, setShowAllPendingRequests] = useState(false);
 
-  useEffect(() => {
-    fetchDashboardData();
-  }, [selectedCountry, token]);
-
-  const fetchDashboardData = async () => {
+  const fetchDashboardData = useCallback(async () => {
     try {
       const headers = { Authorization: `Bearer ${token}` };
       const countryParam = selectedCountry ? `?country=${selectedCountry}` : '';
@@ -256,13 +252,16 @@ const StaffDashboard = ({ user, token, isGroupManager }) => {
       setStats(staffRes.data);
       setAlerts(alertsRes.data);
       setCompliance(complianceRes.data);
-    } catch (error) {
+    } catch {
       toast.error('Failed to load dashboard data');
-      console.error(error);
     } finally {
       setLoading(false);
     }
-  };
+  }, [selectedCountry, token]);
+
+  useEffect(() => {
+    fetchDashboardData();
+  }, [fetchDashboardData]);
 
   const handleApproveUser = async (userId) => {
     try {
@@ -277,19 +276,15 @@ const StaffDashboard = ({ user, token, isGroupManager }) => {
   };
 
   const getSeverityIcon = (severity) => {
-    switch (severity) {
-      case 'CRITICAL': return <XCircle className="text-red-500" size={18} />;
-      case 'WARNING': return <AlertTriangle className="text-amber-500" size={18} />;
-      default: return <AlertCircle className="text-blue-500" size={18} />;
-    }
+    if (severity === 'CRITICAL') return <XCircle className="text-red-500" size={18} />;
+    if (severity === 'WARNING') return <AlertTriangle className="text-amber-500" size={18} />;
+    return <AlertCircle className="text-blue-500" size={18} />;
   };
 
   const getSeverityBg = (severity) => {
-    switch (severity) {
-      case 'CRITICAL': return 'bg-red-50 border-red-200';
-      case 'WARNING': return 'bg-amber-50 border-amber-200';
-      default: return 'bg-blue-50 border-blue-200';
-    }
+    if (severity === 'CRITICAL') return 'bg-red-50 border-red-200';
+    if (severity === 'WARNING') return 'bg-amber-50 border-amber-200';
+    return 'bg-blue-50 border-blue-200';
   };
 
   if (loading) {
@@ -334,7 +329,6 @@ const StaffDashboard = ({ user, token, isGroupManager }) => {
           </p>
         </div>
         
-        {/* Country Filter (Group Manager only) */}
         {isGroupManager && isGroupManager() && (
           <Select value={selectedCountry || "ALL"} onValueChange={(v) => setSelectedCountry(v === "ALL" ? "" : v)}>
             <SelectTrigger className="w-48" data-testid="country-filter">
@@ -350,7 +344,6 @@ const StaffDashboard = ({ user, token, isGroupManager }) => {
         )}
       </div>
 
-      {/* Critical Alerts (Keep at top) */}
       {alerts && alerts.critical_count > 0 && (
         <div className="bg-red-50 border border-red-200 rounded-lg p-4 mb-6 flex items-start gap-3">
           <Bell className="text-red-600 mt-0.5" size={20} />
@@ -436,7 +429,7 @@ const StaffDashboard = ({ user, token, isGroupManager }) => {
           <div className="flex items-start justify-between">
             <div>
               <p className="text-white/80 text-sm font-medium">Maintenance Cost</p>
-              <h3 className="text-4xl font-bold mt-2">GH₵{(stats?.total_maintenance_cost_ghs || 0).toLocaleString()}</h3>
+              <h3 className="text-4xl font-bold mt-2">GH&#x20B5;{(stats?.total_maintenance_cost_ghs || 0).toLocaleString()}</h3>
               <p className="text-white/70 text-xs mt-1">Rate: 1 USD = {stats?.ghs_exchange_rate || 12} GHS</p>
             </div>
             <div className="bg-white/20 p-3 rounded-lg">
@@ -460,8 +453,8 @@ const StaffDashboard = ({ user, token, isGroupManager }) => {
                 <p>No active alerts</p>
               </div>
             ) : (
-              alerts?.alerts?.slice(0, 8).map((alert, index) => (
-                <div key={index} className={`p-3 rounded-lg border ${getSeverityBg(alert.severity)}`}>
+              alerts?.alerts?.slice(0, 8).map((alert) => (
+                <div key={alert.id || alert.title} className={`p-3 rounded-lg border ${getSeverityBg(alert.severity)}`}>
                   <div className="flex items-start gap-2">
                     {getSeverityIcon(alert.severity)}
                     <div className="flex-1">
@@ -518,7 +511,7 @@ const StaffDashboard = ({ user, token, isGroupManager }) => {
         </div>
       </div>
 
-      {/* Pending Accounts Section (Below Compliance) */}
+      {/* Pending Accounts Section */}
       {stats?.pending_users_count > 0 && (
         <div className="fleet-card mb-6">
           <div className="flex items-center justify-between mb-4">
@@ -541,7 +534,7 @@ const StaffDashboard = ({ user, token, isGroupManager }) => {
               <div key={pendingUser.id} className="flex items-center justify-between bg-amber-50 p-3 rounded-lg">
                 <div>
                   <p className="font-medium text-slate-800">{pendingUser.full_name}</p>
-                  <p className="text-sm text-slate-500">{pendingUser.email} • {getRoleDisplay(pendingUser.role)} • {pendingUser.country}</p>
+                  <p className="text-sm text-slate-500">{pendingUser.email} - {getRoleDisplay(pendingUser.role)} - {pendingUser.country}</p>
                 </div>
                 <Button size="sm" onClick={() => handleApproveUser(pendingUser.id)}>
                   Approve
@@ -552,7 +545,7 @@ const StaffDashboard = ({ user, token, isGroupManager }) => {
         </div>
       )}
 
-      {/* Pending Maintenance Requests Section (Below Pending Accounts) */}
+      {/* Pending Maintenance Requests Section */}
       {stats?.pending_requests_count > 0 && (
         <div className="fleet-card">
           <div className="flex items-center justify-between mb-4">
@@ -585,7 +578,7 @@ const StaffDashboard = ({ user, token, isGroupManager }) => {
           </div>
           {stats.pending_requests_count > 0 && (
             <Link to="/maintenance-requests" className="text-amber-700 text-sm mt-4 inline-block hover:underline">
-              Manage all requests →
+              Manage all requests
             </Link>
           )}
         </div>
@@ -596,7 +589,7 @@ const StaffDashboard = ({ user, token, isGroupManager }) => {
 
 // Main Dashboard Component
 const Dashboard = () => {
-  const { user, token, isDriverOrUser, isGroupManager, isStaff } = useAuth();
+  const { user, token, isDriverOrUser, isGroupManager } = useAuth();
 
   if (isDriverOrUser && isDriverOrUser()) {
     return <PersonalDashboard user={user} token={token} />;
