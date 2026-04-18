@@ -1,4 +1,4 @@
-from pydantic import BaseModel, Field, ConfigDict, EmailStr
+from pydantic import BaseModel, Field, ConfigDict, EmailStr, field_validator
 from typing import Optional, List, Dict, Any
 from datetime import datetime, timezone
 from enum import Enum
@@ -113,12 +113,37 @@ class User(BaseModel):
 
 
 class UserCreate(BaseModel):
+    """Admin / internal user creation (privileged roles allowed)."""
     email: str
     password: str
     full_name: str
     role: UserRole
     country: Optional[str] = None
     driver_id: Optional[str] = None
+
+
+class UserSelfRegister(BaseModel):
+    """Public self-registration: only USER or DRIVER; awaits manager approval."""
+    email: str
+    password: str = Field(..., min_length=8)
+    full_name: str
+    country: Optional[str] = None
+    driver_id: Optional[str] = None
+    role: UserRole = UserRole.USER
+
+    @field_validator("role")
+    @classmethod
+    def self_register_roles_only(cls, v: UserRole) -> UserRole:
+        if v not in (UserRole.USER, UserRole.DRIVER):
+            raise ValueError("Self-registration is only allowed for USER or DRIVER roles")
+        return v
+
+
+class BootstrapGroupFleetManagerRequest(BaseModel):
+    """One-time bootstrap when no Group Fleet Manager exists (requires BOOTSTRAP_TOKEN)."""
+    email: EmailStr
+    password: str = Field(..., min_length=8)
+    full_name: str
 
 
 class UserLogin(BaseModel):
@@ -734,6 +759,30 @@ class TireCreate(BaseModel):
     notes: Optional[str] = None
 
 
+class TireUpdate(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    serial_number: Optional[str] = None
+    brand: Optional[str] = None
+    model: Optional[str] = None
+    size: Optional[str] = None
+    vehicle_id: Optional[str] = None
+    position: Optional[TirePosition] = None
+    status: Optional[TireStatus] = None
+    country: Optional[CountryEnum] = None
+    purchase_date: Optional[datetime] = None
+    purchase_cost: Optional[float] = None
+    currency: Optional[CurrencyEnum] = None
+    mileage_at_install: Optional[float] = None
+    current_mileage: Optional[float] = None
+    max_mileage: Optional[float] = None
+    tread_depth_mm: Optional[float] = None
+    min_tread_depth: Optional[float] = None
+    last_rotation_date: Optional[datetime] = None
+    next_rotation_due: Optional[datetime] = None
+    rotation_interval_km: Optional[float] = None
+    notes: Optional[str] = None
+
+
 class TireRotation(BaseModel):
     model_config = ConfigDict(extra="ignore")
     id: str = Field(default_factory=lambda: str(uuid.uuid4()))
@@ -847,6 +896,27 @@ class VendorCreate(BaseModel):
     payment_terms: str = "NET30"
     is_preferred: bool = False
     currency: CurrencyEnum
+    notes: Optional[str] = None
+
+
+class VendorUpdate(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    name: Optional[str] = None
+    category: Optional[VendorCategory] = None
+    country: Optional[CountryEnum] = None
+    address: Optional[str] = None
+    city: Optional[str] = None
+    contact_person: Optional[str] = None
+    phone: Optional[str] = None
+    email: Optional[str] = None
+    tax_id: Optional[str] = None
+    payment_terms: Optional[str] = None
+    is_preferred: Optional[bool] = None
+    is_active: Optional[bool] = None
+    rating: Optional[float] = None
+    total_transactions: Optional[int] = None
+    total_spent: Optional[float] = None
+    currency: Optional[CurrencyEnum] = None
     notes: Optional[str] = None
 
 

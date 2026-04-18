@@ -45,3 +45,24 @@ class VendorCreate(BaseModel):
     is_preferred: bool = False
     currency: CurrencyEnum
     notes: Optional[str] = None
+
+
+class VendorUpdate(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    name: Optional[str] = None
+    category: Optional[VendorCategory] = None
+    country: Optional[CountryEnum] = None
+    address: Optional[str] = None
+    city: Optional[str] = None
+    contact_person: Optional[str] = None
+    phone: Optional[str] = None
+    email: Optional[str] = None
+    tax_id: Optional[str] = None
+    payment_terms: Optional[str] = None
+    is_preferred: Optional[bool] = None
+    is_active: Optional[bool] = None
+    rating: Optional[float] = None
+    total_transactions: Optional[int] = None
+    total_spent: Optional[float] = None
+    currency: Optional[CurrencyEnum] = None
+    notes: Optional[str] = None

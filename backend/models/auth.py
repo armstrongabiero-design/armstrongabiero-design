@@ -1,8 +1,10 @@
 """Authentication and User models"""
-from pydantic import BaseModel, Field, ConfigDict
+from pydantic import BaseModel, Field, ConfigDict, EmailStr, field_validator
 from typing import Optional, Dict, Any
 from datetime import datetime, timezone
 import uuid
+
+from auth_service import validate_password_strength
 
 from .enums import UserRole
 
@@ -19,17 +21,64 @@ class User(BaseModel):
     is_approved: bool = False
     approved_by: Optional[str] = None
     driver_id: Optional[str] = None
+    token_version: int = Field(
+        default=0,
+        description="Incremented on password change to invalidate outstanding JWTs.",
+    )
     created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
     last_login: Optional[datetime] = None
 
 
 class UserCreate(BaseModel):
+    """Admin / internal creation (any role). Prefer bootstrap or admin flows for privileged roles."""
     email: str
-    password: str
+    password: str = Field(..., min_length=8)
     full_name: str
     role: UserRole
     country: Optional[str] = None
     driver_id: Optional[str] = None
+
+    @field_validator("password")
+    @classmethod
+    def password_strength(cls, v: str) -> str:
+        validate_password_strength(v)
+        return v
+
+
+class UserSelfRegister(BaseModel):
+    """Public self-registration: only USER or DRIVER; awaits manager approval."""
+    email: str
+    password: str = Field(..., min_length=8)
+    full_name: str
+    country: Optional[str] = None
+    driver_id: Optional[str] = None
+    role: UserRole = UserRole.USER
+
+    @field_validator("password")
+    @classmethod
+    def password_strength(cls, v: str) -> str:
+        validate_password_strength(v)
+        return v
+
+    @field_validator("role")
+    @classmethod
+    def self_register_roles_only(cls, v: UserRole) -> UserRole:
+        if v not in (UserRole.USER, UserRole.DRIVER):
+            raise ValueError("Self-registration is only allowed for USER or DRIVER roles")
+        return v
+
+
+class BootstrapGroupFleetManagerRequest(BaseModel):
+    """First Group Fleet Manager when no GFM exists (requires BOOTSTRAP_TOKEN)."""
+    email: EmailStr
+    password: str = Field(..., min_length=8)
+    full_name: str
+
+    @field_validator("password")
+    @classmethod
+    def password_strength(cls, v: str) -> str:
+        validate_password_strength(v)
+        return v
 
 
 class UserLogin(BaseModel):
@@ -56,7 +105,13 @@ class ForgotPasswordRequest(BaseModel):
 
 class ResetPasswordRequest(BaseModel):
     token: str
-    new_password: str
+    new_password: str = Field(..., min_length=8)
+
+    @field_validator("new_password")
+    @classmethod
+    def password_strength(cls, v: str) -> str:
+        validate_password_strength(v)
+        return v
 
 
 class PasswordResetToken(BaseModel):

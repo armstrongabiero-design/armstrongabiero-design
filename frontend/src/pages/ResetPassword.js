@@ -5,6 +5,7 @@ import { toast } from 'sonner';
 import { Button } from '../components/ui/button';
 import { Label } from '../components/ui/label';
 import PasswordInput from '../components/PasswordInput';
+import { getPasswordPolicyError, PASSWORD_POLICY_HINT } from '../utils/passwordPolicy';
 import { Truck, ArrowLeft, Lock, CheckCircle, XCircle } from 'lucide-react';
 
 const BACKEND_URL = process.env.REACT_APP_BACKEND_URL;
@@ -54,8 +55,9 @@ const ResetPassword = () => {
       return;
     }
     
-    if (password.length < 6) {
-      toast.error('Password must be at least 6 characters');
+    const pwErr = getPasswordPolicyError(password);
+    if (pwErr) {
+      toast.error(pwErr);
       return;
     }
 
@@ -136,6 +138,7 @@ const ResetPassword = () => {
               <form onSubmit={handleSubmit} className="space-y-4">
                 <div>
                   <Label>New Password</Label>
+                  <p className="text-xs text-slate-500 mb-1">{PASSWORD_POLICY_HINT}</p>
                   <PasswordInput
                     value={password}
                     onChange={(e) => setPassword(e.target.value)}

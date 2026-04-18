@@ -10,6 +10,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '.
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '../components/ui/tabs';
 import { Users, UserCog, User, Search, ShieldCheck, KeyRound, Truck } from 'lucide-react';
 import PasswordInput from '../components/PasswordInput';
+import { getPasswordPolicyError, PASSWORD_POLICY_HINT } from '../utils/passwordPolicy';
 
 const BACKEND_URL = process.env.REACT_APP_BACKEND_URL;
 const API = `${BACKEND_URL}/api`;
@@ -139,8 +140,9 @@ const Login = () => {
       return;
     }
     
-    if (registerData.password.length < 6) {
-      toast.error('Password must be at least 6 characters');
+    const pwErr = getPasswordPolicyError(registerData.password);
+    if (pwErr) {
+      toast.error(pwErr);
       return;
     }
 
@@ -350,6 +352,7 @@ const Login = () => {
                 </div>
                 <div>
                   <Label>Password</Label>
+                  <p className="text-xs text-slate-500 mb-1">{PASSWORD_POLICY_HINT}</p>
                   <PasswordInput
                     value={registerData.password}
                     onChange={(e) => setRegisterData({ ...registerData, password: e.target.value })}
@@ -379,28 +382,16 @@ const Login = () => {
                       <SelectValue placeholder="Select your role" />
                     </SelectTrigger>
                     <SelectContent>
-                      <SelectItem value="FLEET_MANAGER">
+                      <SelectItem value="USER">
                         <div className="flex items-center gap-2">
-                          {getRoleIcon('FLEET_MANAGER')}
-                          <span>Fleet Manager</span>
-                        </div>
-                      </SelectItem>
-                      <SelectItem value="FLEET_OFFICER">
-                        <div className="flex items-center gap-2">
-                          {getRoleIcon('FLEET_OFFICER')}
-                          <span>Fleet Officer</span>
+                          {getRoleIcon('USER')}
+                          <span>User</span>
                         </div>
                       </SelectItem>
                       <SelectItem value="DRIVER">
                         <div className="flex items-center gap-2">
                           {getRoleIcon('DRIVER')}
                           <span>Driver</span>
-                        </div>
-                      </SelectItem>
-                      <SelectItem value="USER">
-                        <div className="flex items-center gap-2">
-                          {getRoleIcon('USER')}
-                          <span>User</span>
                         </div>
                       </SelectItem>
                     </SelectContent>

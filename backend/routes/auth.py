@@ -7,35 +7,53 @@ from datetime import datetime, timezone, timedelta
 
 from database import db
 from models import (
-    User, UserCreate, UserLogin, UserUpdate, Token,
+    User, UserSelfRegister, UserLogin, UserUpdate, Token,
     UserRole, ForgotPasswordRequest, ResetPasswordRequest, PasswordResetToken,
 )
 from auth_service import (
-    get_password_hash, verify_password, create_access_token,
-    get_current_user, require_group_manager,
+    access_token_payload_from_user_record,
+    get_password_hash,
+    verify_password,
+    create_access_token,
+    get_current_user,
+    require_group_manager,
 )
 import email_service
 
 router = APIRouter()
 
 
-@router.post("/auth/register", response_model=Token)
-async def register_user(input: UserCreate):
+@router.post("/auth/register", status_code=201)
+async def register_user(input: UserSelfRegister):
     existing = await db.users.find_one({"email": input.email})
     if existing:
         raise HTTPException(status_code=400, detail="Email already registered")
     user = User(
-        email=input.email, hashed_password=get_password_hash(input.password),
-        full_name=input.full_name, role=input.role, country=input.country,
-        driver_id=input.driver_id, is_approved=input.role == UserRole.GROUP_FLEET_MANAGER
+        email=input.email,
+        hashed_password=get_password_hash(input.password),
+        full_name=input.full_name,
+        role=input.role,
+        country=input.country,
+        driver_id=input.driver_id,
+        is_approved=False,
     )
     doc = user.model_dump()
-    doc['created_at'] = doc['created_at'].isoformat()
-    if doc.get('last_login'):
-        doc['last_login'] = doc['last_login'].isoformat()
+    doc["created_at"] = doc["created_at"].isoformat()
+    if doc.get("last_login"):
+        doc["last_login"] = doc["last_login"].isoformat()
     await db.users.insert_one(doc)
-    access_token = create_access_token(data={"sub": user.id, "email": user.email, "role": user.role.value, "country": user.country if user.country else None, "full_name": user.full_name})
-    return Token(access_token=access_token, token_type="bearer", user={"id": user.id, "email": user.email, "full_name": user.full_name, "role": user.role.value, "country": user.country if user.country else None, "is_approved": user.is_approved})
+    return {
+        "status": "pending_approval",
+        "message": "Registration successful. A fleet manager must approve your account before you can log in.",
+        "user": {
+            "id": user.id,
+            "email": user.email,
+            "full_name": user.full_name,
+            "role": user.role.value,
+            "country": user.country if user.country else None,
+            "is_approved": False,
+        },
+    }
 
 
 @router.post("/auth/login")
@@ -47,12 +65,12 @@ async def login(input: UserLogin):
         raise HTTPException(status_code=401, detail="Invalid email or password")
     if not user.get('is_active', True):
         raise HTTPException(status_code=403, detail="Account is deactivated")
-    if not user.get('is_approved', False):
+    if user.get("role") != "GROUP_FLEET_MANAGER" and not user.get("is_approved", False):
         raise HTTPException(status_code=403, detail="Account pending approval by Group Fleet Manager")
     if user['role'] == 'GROUP_FLEET_MANAGER':
         return {"requires_otp": True, "email": user['email'], "message": "OTP verification required for Group Fleet Manager login"}
     await db.users.update_one({"id": user['id']}, {"$set": {"last_login": datetime.now(timezone.utc).isoformat()}})
-    access_token = create_access_token(data={"sub": user['id'], "email": user['email'], "role": user['role'], "country": user.get('country'), "full_name": user['full_name']})
+    access_token = create_access_token(data=access_token_payload_from_user_record(user))
     return Token(access_token=access_token, token_type="bearer", user={"id": user['id'], "email": user['email'], "full_name": user['full_name'], "role": user['role'], "country": user.get('country'), "is_approved": user.get('is_approved', False)})
 
 
@@ -92,7 +110,7 @@ async def verify_otp(email: str = Body(...), otp: str = Body(...)):
     if not user:
         raise HTTPException(status_code=401, detail="User not found")
     await db.users.update_one({"id": user['id']}, {"$set": {"last_login": datetime.now(timezone.utc).isoformat()}})
-    access_token = create_access_token(data={"sub": user['id'], "email": user['email'], "role": user['role'], "country": user.get('country'), "full_name": user['full_name']})
+    access_token = create_access_token(data=access_token_payload_from_user_record(user))
     return Token(access_token=access_token, token_type="bearer", user={"id": user['id'], "email": user['email'], "full_name": user['full_name'], "role": user['role'], "country": user.get('country'), "is_approved": user.get('is_approved', False)})
 
 
@@ -198,7 +216,15 @@ async def reset_password(input: ResetPasswordRequest):
     if expires_at < datetime.now(timezone.utc):
         raise HTTPException(status_code=400, detail="Reset token has expired")
     hashed_password = get_password_hash(input.new_password)
-    result = await db.users.update_one({"id": token_doc['user_id']}, {"$set": {"hashed_password": hashed_password}})
+    current = await db.users.find_one(
+        {"id": token_doc['user_id']},
+        {"_id": 0, "token_version": 1},
+    )
+    next_tv = int(current.get("token_version", 0)) + 1 if current else 1
+    result = await db.users.update_one(
+        {"id": token_doc['user_id']},
+        {"$set": {"hashed_password": hashed_password, "token_version": next_tv}},
+    )
     if result.modified_count == 0:
         raise HTTPException(status_code=404, detail="User not found")
     await db.password_reset_tokens.update_one({"token": input.token}, {"$set": {"used": True}})

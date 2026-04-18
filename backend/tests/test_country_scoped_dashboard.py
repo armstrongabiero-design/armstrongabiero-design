@@ -10,13 +10,22 @@ import requests
 import os
 import uuid
 
-BASE_URL = os.environ.get('REACT_APP_BACKEND_URL', '').rstrip('/')
+from tests.http_helpers import get_backend_base_url
+
+BASE_URL = get_backend_base_url()
 
 # Test credentials from environment variables
 GROUP_MANAGER_EMAIL = os.environ.get("TEST_GROUP_MANAGER_EMAIL", "admin@gti.com")
 GROUP_MANAGER_PASSWORD = os.environ.get("TEST_GROUP_MANAGER_PASSWORD", "admin123")
 DRIVER_EMAIL = os.environ.get("TEST_DRIVER_EMAIL", "driver1@gti.com")
 DRIVER_PASSWORD = os.environ.get("TEST_DRIVER_PASSWORD", "Test123!")
+
+
+@pytest.fixture(scope="module", autouse=True)
+def _sync_base_url(backend_base_url):
+    """Align module BASE_URL with session fixture (skips entire module if URL unset)."""
+    global BASE_URL
+    BASE_URL = backend_base_url
 
 
 class TestAuthentication:
@@ -343,16 +352,19 @@ class TestComplianceDashboard:
 class TestDashboardAlerts:
     """Test alerts on dashboard"""
     
-    def test_alerts_endpoint(self):
-        """Test /api/dashboard/alerts endpoint"""
+    def test_alerts_endpoint_requires_auth(self):
+        """Unauthenticated access to alerts returns 401."""
         response = requests.get(f"{BASE_URL}/api/dashboard/alerts")
         print(f"Alerts Response: {response.status_code}")
-        
+        assert response.status_code == 401
+
+    def test_alerts_endpoint_with_staff_token(self, staff_bearer_token):
+        """Authenticated staff can load alerts."""
+        headers = {"Authorization": f"Bearer {staff_bearer_token}"}
+        response = requests.get(f"{BASE_URL}/api/dashboard/alerts", headers=headers)
+        print(f"Alerts Response: {response.status_code}")
         assert response.status_code == 200
         data = response.json()
-        print(f"Alerts Data: {data}")
-        
-        # Verify alerts structure
         assert "alerts" in data
         assert "total_count" in data
         assert "critical_count" in data

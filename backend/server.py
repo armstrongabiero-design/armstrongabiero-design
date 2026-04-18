@@ -1,16 +1,36 @@
-from fastapi import FastAPI, APIRouter, HTTPException, UploadFile, File, Depends, Query, Body
-from fastapi.responses import Response
-from dotenv import load_dotenv
-from starlette.middleware.cors import CORSMiddleware
-from motor.motor_asyncio import AsyncIOMotorClient
-import os
+from contextlib import asynccontextmanager
+import base64
 import logging
+import os
+import uuid
+from datetime import datetime, timezone, timedelta
 from pathlib import Path
 from typing import List, Optional
-from datetime import datetime, timezone, timedelta
-import base64
-import uuid
 
+from dotenv import load_dotenv
+
+ROOT_DIR = Path(__file__).parent
+load_dotenv(ROOT_DIR / ".env")
+from fastapi import FastAPI, APIRouter, HTTPException, UploadFile, File, Depends, Query, Body, Request, Header
+from fastapi.responses import Response
+from slowapi import Limiter, _rate_limit_exceeded_handler
+from slowapi.errors import RateLimitExceeded
+from slowapi.middleware import SlowAPIMiddleware
+from slowapi.util import get_remote_address
+from starlette.middleware.cors import CORSMiddleware
+
+from auth_deps import get_current_user, get_current_user_validated, require_group_manager
+from auth_service import (
+    assert_jwt_configuration,
+    access_token_payload_from_user_record,
+    get_password_hash,
+    verify_password,
+    create_access_token,
+)
+from currency_utils import currency_converter
+from ai_services import ai_service
+from email_service import email_service
+from database import db, client
 from models import (
     Country, CountryCreate, CountryEnum,
     Vehicle, VehicleCreate, VehicleUpdate,
@@ -30,34 +50,42 @@ from models import (
     MaintenanceRequest, MaintenanceRequestCreate, MaintenanceRequestApproval,
     PreTripChecklist, PreTripChecklistCreate, ChecklistItem, ChecklistItemStatus,
     FleetManager, FleetManagerCreate, RequestStatus, RequestPriority,
-    User, UserCreate, UserLogin, UserUpdate, UserRole, Token,
-    Tire, TireCreate, TireRotation, TireRotationCreate, TirePosition, TireStatus,
+    User, UserSelfRegister, UserLogin, UserUpdate, UserRole, Token,
+    BootstrapGroupFleetManagerRequest,
+    Tire, TireCreate, TireUpdate, TireRotation, TireRotationCreate, TirePosition, TireStatus,
     LogbookEntry, LogbookEntryCreate,
-    Vendor, VendorCreate, VendorCategory,
+    Vendor, VendorCreate, VendorUpdate, VendorCategory,
     VehicleLocation, VehicleLocationCreate,
     Alert, AlertType, AlertSeverity,
     TCORecord, ComplianceCheck, ComplianceStatus, ExpenseCategory,
     ForgotPasswordRequest, ResetPasswordRequest, PasswordResetToken
 )
-from currency_utils import currency_converter
-from ai_services import ai_service
-from email_service import email_service
-from auth_service import (
-    get_password_hash, verify_password, create_access_token,
-    get_current_user, require_role, require_group_manager, require_manager
-)
+from security_middleware import JWTAuthMiddleware
+
+limiter = Limiter(key_func=get_remote_address)
+
+_ENV = os.environ.get("ENVIRONMENT", "development").lower()
+_IS_PRODUCTION = _ENV == "production"
 
 
-ROOT_DIR = Path(__file__).parent
-load_dotenv(ROOT_DIR / '.env')
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    assert_jwt_configuration()
+    yield
+    client.close()
 
-# MongoDB connection
-mongo_url = os.environ['MONGO_URL']
-client = AsyncIOMotorClient(mongo_url)
-db = client[os.environ['DB_NAME']]
 
 # Create the main app without a prefix
-app = FastAPI(title="Fleet Management System")
+app = FastAPI(
+    title="Fleet Management System",
+    lifespan=lifespan,
+    docs_url=None if _IS_PRODUCTION else "/docs",
+    redoc_url=None if _IS_PRODUCTION else "/redoc",
+    openapi_url=None if _IS_PRODUCTION else "/openapi.json",
+)
+app.state.limiter = limiter
+app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
+app.add_middleware(SlowAPIMiddleware)
 
 # Create a router with the /api prefix
 api_router = APIRouter(prefix="/api")
@@ -1356,7 +1384,9 @@ async def get_compliance_status(country: Optional[str] = None):
 
 # ============= FLEET MANAGER ROUTES =============
 @api_router.post("/fleet-managers", response_model=FleetManager)
-async def create_fleet_manager(input: FleetManagerCreate, current_user: dict = Depends(get_current_user)):
+async def create_fleet_manager(
+    input: FleetManagerCreate, current_user: dict = Depends(get_current_user_validated)
+):
     """Create a new fleet manager - only Group Fleet Manager and Fleet Manager can create"""
     user_role = current_user.get('role')
     
@@ -1467,7 +1497,11 @@ async def get_maintenance_request(request_id: str):
 
 
 @api_router.post("/maintenance-requests/{request_id}/approve")
-async def approve_maintenance_request(request_id: str, approval: MaintenanceRequestApproval, current_user: dict = Depends(get_current_user)):
+async def approve_maintenance_request(
+    request_id: str,
+    approval: MaintenanceRequestApproval,
+    current_user: dict = Depends(get_current_user_validated),
+):
     """Approve or reject a maintenance request - auto-fills approving manager"""
     request = await db.maintenance_requests.find_one({"id": request_id}, {"_id": 0})
     if not request:
@@ -1617,57 +1651,70 @@ async def check_today_checklist(driver_id: str, vehicle_id: str):
     }
 
 
+# Max upload size for damage photos (bytes)
+_DAMAGE_PHOTO_MAX_BYTES = 5 * 1024 * 1024
+_ALLOWED_IMAGE_CONTENT_TYPES = frozenset(
+    {"image/jpeg", "image/png", "image/webp", "image/gif"}
+)
+
+
 @api_router.post("/pre-trip-checklists/upload-photo")
-async def upload_damage_photo(file: UploadFile = File(...)):
-    """Upload a damage photo and return the URL"""
-    # Read file content
+async def upload_damage_photo(
+    file: UploadFile = File(...),
+    current_user: dict = Depends(get_current_user),
+):
+    """Upload a damage photo (authenticated; size and image type validated)."""
+    ct = (file.content_type or "").split(";")[0].strip().lower()
+    if ct not in _ALLOWED_IMAGE_CONTENT_TYPES:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Invalid file type. Allowed: {', '.join(sorted(_ALLOWED_IMAGE_CONTENT_TYPES))}",
+        )
     content = await file.read()
-    
-    # For now, store as base64 in a simple format
-    # In production, this would upload to cloud storage (S3, GCS, etc.)
-    file_extension = file.filename.split('.')[-1] if file.filename else 'jpg'
+    if len(content) > _DAMAGE_PHOTO_MAX_BYTES:
+        raise HTTPException(
+            status_code=400,
+            detail=f"File too large (max {_DAMAGE_PHOTO_MAX_BYTES // (1024 * 1024)} MB)",
+        )
+
     photo_id = str(uuid.uuid4())
-    
-    # Store photo metadata in database
     photo_doc = {
         "id": photo_id,
         "filename": file.filename,
-        "content_type": file.content_type,
-        "data": base64.b64encode(content).decode('utf-8'),
-        "created_at": datetime.now(timezone.utc).isoformat()
+        "content_type": ct,
+        "uploaded_by": current_user.get("id"),
+        "data": base64.b64encode(content).decode("utf-8"),
+        "created_at": datetime.now(timezone.utc).isoformat(),
     }
     await db.damage_photos.insert_one(photo_doc)
-    
+
     return {
         "photo_id": photo_id,
         "url": f"/api/damage-photos/{photo_id}",
-        "message": "Photo uploaded successfully"
+        "message": "Photo uploaded successfully",
     }
 
 
 @api_router.get("/damage-photos/{photo_id}")
-async def get_damage_photo(photo_id: str):
-    """Get a damage photo by ID"""
-    from fastapi.responses import Response
-    
+async def get_damage_photo(photo_id: str, current_user: dict = Depends(get_current_user)):
+    """Get a damage photo by ID (authenticated)."""
     photo = await db.damage_photos.find_one({"id": photo_id}, {"_id": 0})
     if not photo:
         raise HTTPException(status_code=404, detail="Photo not found")
-    
-    content = base64.b64decode(photo['data'])
-    return Response(content=content, media_type=photo.get('content_type', 'image/jpeg'))
+
+    content = base64.b64decode(photo["data"])
+    return Response(content=content, media_type=photo.get("content_type", "image/jpeg"))
 
 
 # ============= AUTHENTICATION ROUTES =============
-@api_router.post("/auth/register", response_model=Token)
-async def register_user(input: UserCreate):
-    """Register a new user"""
-    # Check if email already exists
+@api_router.post("/auth/register", status_code=201)
+@limiter.limit("10/minute")
+async def register_user(request: Request, input: UserSelfRegister):
+    """Public self-registration (USER or DRIVER only). No JWT until a manager approves the account."""
     existing = await db.users.find_one({"email": input.email})
     if existing:
         raise HTTPException(status_code=400, detail="Email already registered")
-    
-    # Create user - Only Group Fleet Manager is auto-approved
+
     user = User(
         email=input.email,
         hashed_password=get_password_hash(input.password),
@@ -1675,27 +1722,71 @@ async def register_user(input: UserCreate):
         role=input.role,
         country=input.country,
         driver_id=input.driver_id,
-        is_approved=input.role == UserRole.GROUP_FLEET_MANAGER
+        is_approved=False,
     )
-    
+
     doc = user.model_dump()
-    doc['created_at'] = doc['created_at'].isoformat()
-    if doc.get('last_login'):
-        doc['last_login'] = doc['last_login'].isoformat()
-    
+    doc["created_at"] = doc["created_at"].isoformat()
+    if doc.get("last_login"):
+        doc["last_login"] = doc["last_login"].isoformat()
+
     await db.users.insert_one(doc)
-    
-    # Create token
-    access_token = create_access_token(
-        data={
-            "sub": user.id,
+
+    return {
+        "status": "pending_approval",
+        "message": "Registration successful. A fleet manager must approve your account before you can log in.",
+        "user": {
+            "id": user.id,
             "email": user.email,
+            "full_name": user.full_name,
             "role": user.role.value,
             "country": user.country if user.country else None,
-            "full_name": user.full_name
-        }
+            "is_approved": False,
+        },
+    }
+
+
+@api_router.post("/auth/bootstrap", response_model=Token)
+@limiter.limit("5/minute")
+async def bootstrap_group_fleet_manager(
+    request: Request,
+    input: BootstrapGroupFleetManagerRequest,
+    x_bootstrap_token: Optional[str] = Header(None, alias="X-Bootstrap-Token"),
+):
+    """
+    One-time creation of the first Group Fleet Manager when no GFM exists.
+    Requires BOOTSTRAP_TOKEN env var and matching X-Bootstrap-Token header.
+    """
+    expected = os.environ.get("BOOTSTRAP_TOKEN", "").strip()
+    if not expected or not x_bootstrap_token or x_bootstrap_token != expected:
+        raise HTTPException(status_code=404, detail="Not found")
+
+    existing_gfm = await db.users.find_one({"role": "GROUP_FLEET_MANAGER"})
+    if existing_gfm:
+        raise HTTPException(
+            status_code=400,
+            detail="A Group Fleet Manager already exists. Bootstrap is disabled.",
+        )
+
+    existing_email = await db.users.find_one({"email": input.email})
+    if existing_email:
+        raise HTTPException(status_code=400, detail="Email already registered")
+
+    user = User(
+        email=input.email,
+        hashed_password=get_password_hash(input.password),
+        full_name=input.full_name,
+        role=UserRole.GROUP_FLEET_MANAGER,
+        country=None,
+        is_approved=True,
     )
-    
+    doc = user.model_dump()
+    doc["created_at"] = doc["created_at"].isoformat()
+    await db.users.insert_one(doc)
+
+    access_token = create_access_token(
+        data=access_token_payload_from_user_record(user.model_dump())
+    )
     return Token(
         access_token=access_token,
         token_type="bearer",
@@ -1704,14 +1795,15 @@ async def register_user(input: UserCreate):
             "email": user.email,
             "full_name": user.full_name,
             "role": user.role.value,
-            "country": user.country if user.country else None,
-            "is_approved": user.is_approved
-        }
+            "country": None,
+            "is_approved": True,
+        },
     )
 
 
 @api_router.post("/auth/login")
-async def login(input: UserLogin):
+@limiter.limit("30/minute")
+async def login(request: Request, input: UserLogin):
     """Login and get access token"""
     user = await db.users.find_one({"email": input.email}, {"_id": 0})
     if not user:
@@ -1723,9 +1815,9 @@ async def login(input: UserLogin):
     if not user.get('is_active', True):
         raise HTTPException(status_code=403, detail="Account is deactivated")
     
-    if not user.get('is_approved', False):
+    if user.get("role") != "GROUP_FLEET_MANAGER" and not user.get("is_approved", False):
         raise HTTPException(status_code=403, detail="Account pending approval by Group Fleet Manager")
-    
+
     # Check if user is Group Fleet Manager - require OTP verification
     if user['role'] == 'GROUP_FLEET_MANAGER':
         # Return a response indicating OTP is required
@@ -1741,17 +1833,10 @@ async def login(input: UserLogin):
         {"$set": {"last_login": datetime.now(timezone.utc).isoformat()}}
     )
     
-    # Create token
     access_token = create_access_token(
-        data={
-            "sub": user['id'],
-            "email": user['email'],
-            "role": user['role'],
-            "country": user.get('country'),
-            "full_name": user['full_name']
-        }
+        data=access_token_payload_from_user_record(user)
     )
-    
+
     return Token(
         access_token=access_token,
         token_type="bearer",
@@ -1767,7 +1852,8 @@ async def login(input: UserLogin):
 
 
 @api_router.post("/auth/send-otp")
-async def send_otp(input: UserLogin):
+@limiter.limit("10/minute")
+async def send_otp(request: Request, input: UserLogin):
     """Send OTP to Group Fleet Manager email for verification"""
     user = await db.users.find_one({"email": input.email}, {"_id": 0})
     if not user:
@@ -1803,7 +1889,8 @@ async def send_otp(input: UserLogin):
 
 
 @api_router.post("/auth/verify-otp")
-async def verify_otp(email: str = Body(...), otp: str = Body(...)):
+@limiter.limit("30/minute")
+async def verify_otp(request: Request, email: str = Body(...), otp: str = Body(...)):
     """Verify OTP and complete Group Fleet Manager login"""
     # Find OTP record
     otp_record = await db.otp_codes.find_one({"email": email}, {"_id": 0})
@@ -1834,17 +1921,10 @@ async def verify_otp(email: str = Body(...), otp: str = Body(...)):
         {"$set": {"last_login": datetime.now(timezone.utc).isoformat()}}
     )
     
-    # Create token
     access_token = create_access_token(
-        data={
-            "sub": user['id'],
-            "email": user['email'],
-            "role": user['role'],
-            "country": user.get('country'),
-            "full_name": user['full_name']
-        }
+        data=access_token_payload_from_user_record(user)
     )
-    
+
     return Token(
         access_token=access_token,
         token_type="bearer",
@@ -1880,7 +1960,7 @@ async def get_all_users(current_user: dict = Depends(require_group_manager())):
 
 
 @api_router.put("/auth/users/{user_id}/approve")
-async def approve_user(user_id: str, current_user: dict = Depends(get_current_user)):
+async def approve_user(user_id: str, current_user: dict = Depends(get_current_user_validated)):
     """Approve a user based on role hierarchy and country"""
     # Get the user to be approved
     user_to_approve = await db.users.find_one({"id": user_id}, {"_id": 0})
@@ -1968,7 +2048,8 @@ async def update_user(user_id: str, input: UserUpdate, current_user: dict = Depe
 
 
 @api_router.post("/auth/forgot-password")
-async def forgot_password(input: ForgotPasswordRequest):
+@limiter.limit("5/minute")
+async def forgot_password(request: Request, input: ForgotPasswordRequest):
     """Request a password reset token"""
     user = await db.users.find_one({"email": input.email}, {"_id": 0})
     
@@ -2001,7 +2082,8 @@ async def forgot_password(input: ForgotPasswordRequest):
 
 
 @api_router.post("/auth/reset-password")
-async def reset_password(input: ResetPasswordRequest):
+@limiter.limit("10/minute")
+async def reset_password(request: Request, input: ResetPasswordRequest):
     """Reset password using a reset token"""
     # Find valid token
     token_doc = await db.password_reset_tokens.find_one({
@@ -2020,11 +2102,15 @@ async def reset_password(input: ResetPasswordRequest):
     if expires_at < datetime.now(timezone.utc):
         raise HTTPException(status_code=400, detail="Reset token has expired")
     
-    # Update user's password
     hashed_password = get_password_hash(input.new_password)
+    current = await db.users.find_one(
+        {"id": token_doc['user_id']},
+        {"_id": 0, "token_version": 1},
+    )
+    next_tv = int(current.get("token_version", 0)) + 1 if current else 1
     result = await db.users.update_one(
         {"id": token_doc['user_id']},
-        {"$set": {"hashed_password": hashed_password}}
+        {"$set": {"hashed_password": hashed_password, "token_version": next_tv}},
     )
     
     if result.modified_count == 0:
@@ -2105,9 +2191,18 @@ async def get_tire(tire_id: str):
 
 
 @api_router.put("/tires/{tire_id}")
-async def update_tire(tire_id: str, update_data: dict):
+async def update_tire(tire_id: str, input: TireUpdate):
     """Update a tire"""
-    update_data['updated_at'] = datetime.now(timezone.utc).isoformat()
+    update_data = input.model_dump(exclude_none=True)
+    if not update_data:
+        raise HTTPException(status_code=400, detail="No fields to update")
+    update_data["updated_at"] = datetime.now(timezone.utc).isoformat()
+    # Serialize datetime / enum fields for MongoDB
+    for key, val in list(update_data.items()):
+        if hasattr(val, "isoformat"):
+            update_data[key] = val.isoformat()
+        elif hasattr(val, "value"):
+            update_data[key] = val.value
     result = await db.tires.update_one({"id": tire_id}, {"$set": update_data})
     if result.modified_count == 0:
         raise HTTPException(status_code=404, detail="Tire not found")
@@ -2291,9 +2386,17 @@ async def get_vendor(vendor_id: str):
 
 
 @api_router.put("/vendors/{vendor_id}")
-async def update_vendor(vendor_id: str, update_data: dict):
+async def update_vendor(vendor_id: str, input: VendorUpdate):
     """Update a vendor"""
-    update_data['updated_at'] = datetime.now(timezone.utc).isoformat()
+    update_data = input.model_dump(exclude_none=True)
+    if not update_data:
+        raise HTTPException(status_code=400, detail="No fields to update")
+    update_data["updated_at"] = datetime.now(timezone.utc).isoformat()
+    for key, val in list(update_data.items()):
+        if hasattr(val, "isoformat"):
+            update_data[key] = val.isoformat()
+        elif hasattr(val, "value"):
+            update_data[key] = val.value
     result = await db.vendors.update_one({"id": vendor_id}, {"$set": update_data})
     if result.modified_count == 0:
         raise HTTPException(status_code=404, detail="Vendor not found")
@@ -2701,18 +2804,32 @@ async def send_weekly_report(current_user: dict = Depends(require_group_manager(
     return {"status": "error", "message": "User email not found"}
 
 
+def _cors_allow_origins() -> list:
+    raw = os.environ.get("CORS_ORIGINS", "").strip()
+    if _IS_PRODUCTION:
+        if not raw:
+            raise RuntimeError(
+                "CORS_ORIGINS must be set in production (comma-separated origins, e.g. https://app.example.com)"
+            )
+        return [o.strip() for o in raw.split(",") if o.strip()]
+    if raw:
+        return [o.strip() for o in raw.split(",") if o.strip()]
+    return ["http://localhost:3000", "http://127.0.0.1:3000"]
+
+
+@app.get("/health")
+async def health():
+    return {"status": "ok"}
+
+
 # Include the router in the main app
 app.include_router(api_router)
 
+app.add_middleware(JWTAuthMiddleware)
 app.add_middleware(
     CORSMiddleware,
     allow_credentials=True,
-    allow_origins=os.environ.get('CORS_ORIGINS', '*').split(','),
-    allow_methods=["*"],
-    allow_headers=["*"],
+    allow_origins=_cors_allow_origins(),
+    allow_methods=["GET", "POST", "PUT", "DELETE", "PATCH", "OPTIONS"],
+    allow_headers=["Authorization", "Content-Type", "X-Bootstrap-Token"],
 )
-
-
-@app.on_event("shutdown")
-async def shutdown_db_client():
-    client.close()

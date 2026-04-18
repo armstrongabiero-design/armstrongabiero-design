@@ -10,7 +10,8 @@ from .enums import (
 
 # Auth models
 from .auth import (
-    User, UserCreate, UserLogin, UserUpdate, Token,
+    User, UserCreate, UserSelfRegister, UserLogin, UserUpdate, Token,
+    BootstrapGroupFleetManagerRequest,
     ForgotPasswordRequest, ResetPasswordRequest, PasswordResetToken,
 )
 
@@ -54,10 +55,10 @@ from .assets import (
 )
 
 # Tire models
-from .tires import Tire, TireCreate, TireRotation, TireRotationCreate
+from .tires import Tire, TireCreate, TireUpdate, TireRotation, TireRotationCreate
 
 # Vendor models
-from .vendors import Vendor, VendorCreate
+from .vendors import Vendor, VendorCreate, VendorUpdate
 
 # Location models
 from .locations import VehicleLocation, VehicleLocationCreate

@@ -1,469 +1,391 @@
 """
 Fleet Management System - Role System & New Features Tests
-Tests for: 
-- New 5-role system (GROUP_FLEET_MANAGER, FLEET_MANAGER, FLEET_OFFICER, DRIVER, USER)
-- Country selection with 100+ countries
-- Personal dashboard for drivers/users
-- Forgot password flow
-- Role-based approval workflow
+
+Security model (integration):
+- Public self-registration: USER or DRIVER only; 201 + pending_approval; no JWT until approved.
+- Staff roles (GFM/FM/FO): created via bootstrap or admin workflows — not via /auth/register.
+- Protected /api routes require Bearer JWT (session staff_bearer_token from root conftest).
 """
-import pytest
-import requests
 import os
 import uuid
-from datetime import datetime, timedelta
 
-BASE_URL = os.environ.get('REACT_APP_BACKEND_URL', 'https://gti-fleet-solutions.preview.emergentagent.com')
-API = f"{BASE_URL}/api"
+import pytest
+import requests
 
-# Test data storage
-test_data = {
-    "group_manager_token": None,
-    "fleet_manager_token": None,
-    "fleet_officer_token": None,
-    "driver_token": None,
-    "user_token": None,
-    "driver_user_id": None,
-}
+from tests.http_helpers import (
+    approve_user,
+    auth_headers,
+    register_self_service,
+)
+
+
+@pytest.fixture(scope="module")
+def module_variables():
+    return {"API": "", "STAFF_TOKEN": ""}
+
+
+@pytest.fixture(scope="module", autouse=True)
+def _api(api_url, staff_bearer_token, module_variables):
+    module_variables["API"] = api_url
+    module_variables["STAFF_TOKEN"] = staff_bearer_token
 
 
 class TestCountriesEndpoint:
-    """Test countries endpoint for registration - 100+ countries with search"""
-    
-    def test_get_all_countries_list(self):
-        """Verify /api/countries/all-list returns 100+ countries"""
-        response = requests.get(f"{API}/countries/all-list")
-        
+    """Countries list for registration — public GET /api/countries/all-list."""
+
+    def test_get_all_countries_list(self, module_variables):
+        api = module_variables["API"]
+        response = requests.get(f"{api}/countries/all-list")
+
         assert response.status_code == 200, f"Get countries failed: {response.text}"
         data = response.json()
-        
+
         assert "countries" in data
         countries = data["countries"]
-        
-        # Verify we have 100+ countries
+
         assert len(countries) >= 100, f"Expected 100+ countries, got {len(countries)}"
-        
-        # Verify structure
+
         for country in countries[:5]:
             assert "code" in country
             assert "name" in country
-        
-        # Verify some specific countries exist
+
         country_names = [c["name"] for c in countries]
         assert "Ghana" in country_names
         assert "United States" in country_names
         assert "Nigeria" in country_names
         assert "Kenya" in country_names
         assert "South Africa" in country_names
-        
+
         print(f"✓ Countries endpoint returns {len(countries)} countries")
-    
-    def test_countries_have_codes(self):
-        """Verify all countries have proper codes"""
-        response = requests.get(f"{API}/countries/all-list")
+
+    def test_countries_have_codes(self, module_variables):
+        api = module_variables["API"]
+        response = requests.get(f"{api}/countries/all-list")
         data = response.json()
-        
+
         for country in data["countries"]:
             assert len(country["code"]) == 2, f"Invalid code for {country['name']}: {country['code']}"
-        
+
         print("✓ All countries have valid 2-letter codes")
 
 
-class TestNewRoleRegistration:
-    """Test registration with all 5 new roles"""
-    
-    def test_register_group_fleet_manager(self):
-        """Register Group Fleet Manager - should be auto-approved"""
-        unique_email = f"TEST_gfm_{uuid.uuid4().hex[:8]}@gti.com"
-        response = requests.post(f"{API}/auth/register", json={
-            "email": unique_email,
-            "password": "Test123!",
-            "full_name": "TEST Group Fleet Manager",
-            "role": "GROUP_FLEET_MANAGER"
-        })
-        
-        assert response.status_code == 200, f"Registration failed: {response.text}"
-        data = response.json()
-        
-        assert data["user"]["role"] == "GROUP_FLEET_MANAGER"
-        assert data["user"]["is_approved"] == True, "Group Fleet Manager should be auto-approved"
-        assert data["user"]["country"] is None, "Group Fleet Manager should not have country restriction"
-        
-        test_data["group_manager_token"] = data["access_token"]
-        print(f"✓ Group Fleet Manager registered and auto-approved: {unique_email}")
-    
-    def test_register_fleet_manager(self):
-        """Register Fleet Manager - requires country, needs approval"""
-        unique_email = f"TEST_fm_{uuid.uuid4().hex[:8]}@gti.com"
-        response = requests.post(f"{API}/auth/register", json={
-            "email": unique_email,
-            "password": "Test123!",
-            "full_name": "TEST Fleet Manager",
-            "role": "FLEET_MANAGER",
-            "country": "Ghana"
-        })
-        
-        assert response.status_code == 200, f"Registration failed: {response.text}"
-        data = response.json()
-        
-        assert data["user"]["role"] == "FLEET_MANAGER"
-        assert data["user"]["country"] == "Ghana"
-        # Fleet Manager needs approval from Group Manager
-        
-        test_data["fleet_manager_token"] = data["access_token"]
-        print(f"✓ Fleet Manager registered: {unique_email}")
-    
-    def test_register_fleet_officer(self):
-        """Register Fleet Officer - requires country, needs approval"""
-        unique_email = f"TEST_fo_{uuid.uuid4().hex[:8]}@gti.com"
-        response = requests.post(f"{API}/auth/register", json={
-            "email": unique_email,
-            "password": "Test123!",
-            "full_name": "TEST Fleet Officer",
-            "role": "FLEET_OFFICER",
-            "country": "Nigeria"
-        })
-        
-        assert response.status_code == 200, f"Registration failed: {response.text}"
-        data = response.json()
-        
-        assert data["user"]["role"] == "FLEET_OFFICER"
-        assert data["user"]["country"] == "Nigeria"
-        
-        test_data["fleet_officer_token"] = data["access_token"]
-        print(f"✓ Fleet Officer registered: {unique_email}")
-    
-    def test_register_driver(self):
-        """Register Driver - requires country, needs approval"""
+class TestSelfRegistrationPolicy:
+    """Public register accepts only USER/DRIVER; staff roles are rejected at validation."""
+
+    def test_register_rejects_group_fleet_manager(self, module_variables):
+        api = module_variables["API"]
+        r = requests.post(
+            f"{api}/auth/register",
+            json={
+                "email": f"TEST_gfm_{uuid.uuid4().hex[:8]}@gti.com",
+                "password": "Test12345!",
+                "full_name": "TEST GFM",
+                "role": "GROUP_FLEET_MANAGER",
+            },
+        )
+        assert r.status_code == 422, f"Expected validation error, got {r.status_code}: {r.text}"
+
+    def test_register_rejects_fleet_manager(self, module_variables):
+        api = module_variables["API"]
+        r = requests.post(
+            f"{api}/auth/register",
+            json={
+                "email": f"TEST_fm_{uuid.uuid4().hex[:8]}@gti.com",
+                "password": "Test12345!",
+                "full_name": "TEST FM",
+                "role": "FLEET_MANAGER",
+                "country": "Ghana",
+            },
+        )
+        assert r.status_code == 422, f"Expected validation error, got {r.status_code}: {r.text}"
+
+    def test_register_rejects_fleet_officer(self, module_variables):
+        api = module_variables["API"]
+        r = requests.post(
+            f"{api}/auth/register",
+            json={
+                "email": f"TEST_fo_{uuid.uuid4().hex[:8]}@gti.com",
+                "password": "Test12345!",
+                "full_name": "TEST FO",
+                "role": "FLEET_OFFICER",
+                "country": "Nigeria",
+            },
+        )
+        assert r.status_code == 422, f"Expected validation error, got {r.status_code}: {r.text}"
+
+    def test_register_driver_pending_no_token(self, module_variables):
+        api = module_variables["API"]
         unique_email = f"TEST_driver_{uuid.uuid4().hex[:8]}@gti.com"
-        response = requests.post(f"{API}/auth/register", json={
-            "email": unique_email,
-            "password": "Test123!",
-            "full_name": "TEST Driver",
-            "role": "DRIVER",
-            "country": "Kenya"
-        })
-        
-        assert response.status_code == 200, f"Registration failed: {response.text}"
+        response = register_self_service(
+            api,
+            email=unique_email,
+            password="Test12345!",
+            full_name="TEST Driver",
+            role="DRIVER",
+            country="Kenya",
+        )
+        assert response.status_code == 201, response.text
         data = response.json()
-        
         assert data["user"]["role"] == "DRIVER"
         assert data["user"]["country"] == "Kenya"
-        
-        test_data["driver_token"] = data["access_token"]
-        test_data["driver_user_id"] = data["user"]["id"]
-        print(f"✓ Driver registered: {unique_email}")
-    
-    def test_register_user(self):
-        """Register User - requires country, needs approval"""
+        assert "access_token" not in data
+        assert data["user"]["is_approved"] is False
+
+    def test_register_user_pending_no_token(self, module_variables):
+        api = module_variables["API"]
         unique_email = f"TEST_user_{uuid.uuid4().hex[:8]}@gti.com"
-        response = requests.post(f"{API}/auth/register", json={
-            "email": unique_email,
-            "password": "Test123!",
-            "full_name": "TEST User",
-            "role": "USER",
-            "country": "South Africa"
-        })
-        
-        assert response.status_code == 200, f"Registration failed: {response.text}"
+        response = register_self_service(
+            api,
+            email=unique_email,
+            password="Test12345!",
+            full_name="TEST User",
+            role="USER",
+            country="South Africa",
+        )
+        assert response.status_code == 201, response.text
         data = response.json()
-        
         assert data["user"]["role"] == "USER"
-        assert data["user"]["country"] == "South Africa"
-        
-        test_data["user_token"] = data["access_token"]
-        print(f"✓ User registered: {unique_email}")
+        assert "access_token" not in data
 
 
 class TestForgotPasswordFlow:
-    """Test forgot password functionality"""
-    
-    def test_forgot_password_request(self):
-        """Test forgot password request endpoint"""
-        # First register a user to test with
+    """Forgot password remains public."""
+
+    def test_forgot_password_request(self, module_variables):
+        api = module_variables["API"]
         unique_email = f"TEST_forgot_{uuid.uuid4().hex[:8]}@gti.com"
-        reg_response = requests.post(f"{API}/auth/register", json={
-            "email": unique_email,
-            "password": "Test123!",
-            "full_name": "TEST Forgot Password User",
-            "role": "DRIVER",
-            "country": "Ghana"
-        })
-        
-        if reg_response.status_code != 200:
+        reg_response = register_self_service(
+            api,
+            email=unique_email,
+            password="Test12345!",
+            full_name="TEST Forgot Password User",
+            role="DRIVER",
+            country="Ghana",
+        )
+        if reg_response.status_code != 201:
             pytest.skip("Could not create test user")
-        
-        # Request password reset
-        response = requests.post(f"{API}/auth/forgot-password", json={
-            "email": unique_email
-        })
-        
-        # Should return 200 even if email doesn't exist (security best practice)
+
+        response = requests.post(f"{api}/auth/forgot-password", json={"email": unique_email})
         assert response.status_code == 200, f"Forgot password failed: {response.text}"
         data = response.json()
-        
         assert "message" in data
         print(f"✓ Forgot password request successful for: {unique_email}")
-    
-    def test_forgot_password_nonexistent_email(self):
-        """Test forgot password with non-existent email - should still return 200"""
-        response = requests.post(f"{API}/auth/forgot-password", json={
-            "email": "nonexistent_email_12345@test.com"
-        })
-        
-        # Should return 200 for security (don't reveal if email exists)
+
+    def test_forgot_password_nonexistent_email(self, module_variables):
+        api = module_variables["API"]
+        response = requests.post(
+            f"{api}/auth/forgot-password",
+            json={"email": "nonexistent_email_12345@test.com"},
+        )
         assert response.status_code == 200, f"Forgot password failed: {response.text}"
         print("✓ Forgot password handles non-existent email correctly")
 
 
 class TestPersonalDashboard:
-    """Test personal dashboard for drivers/users"""
-    
-    def test_personal_dashboard_requires_auth(self):
-        """Personal dashboard should require authentication"""
-        response = requests.get(f"{API}/dashboard/personal")
-        
-        # 401 or 403 are both valid for unauthorized access
-        assert response.status_code in [401, 403], f"Personal dashboard should require auth, got {response.status_code}"
+    """Personal dashboard requires JWT; driver must be approved before login."""
+
+    def test_personal_dashboard_requires_auth(self, module_variables):
+        api = module_variables["API"]
+        response = requests.get(f"{api}/dashboard/personal")
+        assert response.status_code == 401, f"Expected 401, got {response.status_code}"
         print("✓ Personal dashboard requires authentication")
-    
-    def test_personal_dashboard_with_driver_token(self):
-        """Test personal dashboard with driver token"""
-        # First login as the test driver or use existing credentials
-        login_response = requests.post(f"{API}/auth/login", json={
-            "email": "driver1@gti.com",
-            "password": "Test123!"
-        })
-        
-        if login_response.status_code != 200:
-            # Try to register a driver
-            reg_response = requests.post(f"{API}/auth/register", json={
-                "email": f"TEST_pd_driver_{uuid.uuid4().hex[:6]}@gti.com",
-                "password": "Test123!",
-                "full_name": "TEST Personal Dashboard Driver",
-                "role": "DRIVER",
-                "country": "Ghana"
-            })
-            if reg_response.status_code == 200:
-                token = reg_response.json()["access_token"]
-            else:
-                pytest.skip("Could not get driver token")
-        else:
-            token = login_response.json()["access_token"]
-        
-        headers = {"Authorization": f"Bearer {token}"}
-        response = requests.get(f"{API}/dashboard/personal", headers=headers)
-        
+
+    def test_personal_dashboard_with_approved_driver(self, module_variables):
+        api = module_variables["API"]
+        staff = module_variables["STAFF_TOKEN"]
+        unique_email = f"TEST_pd_driver_{uuid.uuid4().hex[:6]}@gti.com"
+        reg = register_self_service(
+            api,
+            email=unique_email,
+            password="Test12345!",
+            full_name="TEST Personal Dashboard Driver",
+            role="DRIVER",
+            country="Ghana",
+        )
+        if reg.status_code != 201:
+            pytest.skip("Could not register driver")
+        user_id = reg.json()["user"]["id"]
+        appr = approve_user(api, staff, user_id)
+        assert appr.status_code == 200, appr.text
+
+        login = requests.post(
+            f"{api}/auth/login",
+            json={"email": unique_email, "password": "Test12345!"},
+        )
+        assert login.status_code == 200, login.text
+        token = login.json()["access_token"]
+        response = requests.get(f"{api}/dashboard/personal", headers=auth_headers(token))
         assert response.status_code == 200, f"Personal dashboard failed: {response.text}"
         data = response.json()
-        
-        # Verify personal dashboard fields
         assert "user_id" in data
         assert "total_trips" in data
-        assert "total_distance_km" in data
-        assert "pending_requests" in data
-        assert "approved_requests" in data
-        assert "today_checklist_completed" in data
-        assert "recent_requests" in data
-        
-        print(f"✓ Personal dashboard loaded: {data['total_trips']} trips, {data['total_distance_km']} km")
-    
-    def test_personal_dashboard_fields(self):
-        """Verify personal dashboard returns expected fields"""
-        # Use test credentials
-        login_response = requests.post(f"{API}/auth/login", json={
-            "email": "test@gti.com",
-            "password": "Test123!"
-        })
-        
-        if login_response.status_code != 200:
-            pytest.skip("Could not login with test credentials")
-        
-        token = login_response.json()["access_token"]
-        headers = {"Authorization": f"Bearer {token}"}
-        
-        response = requests.get(f"{API}/dashboard/personal", headers=headers)
-        
-        if response.status_code == 200:
-            data = response.json()
-            
-            # Check all expected fields
-            expected_fields = [
-                "user_id", "driver_id", "period_days", "total_trips",
-                "total_distance_km", "total_fuel_liters", "avg_fuel_efficiency",
-                "pending_requests", "approved_requests", "total_requests",
-                "recent_requests", "today_checklist_completed", "assigned_vehicle"
-            ]
-            
-            for field in expected_fields:
-                assert field in data, f"Missing field: {field}"
-            
-            print(f"✓ Personal dashboard has all expected fields")
+        print(f"✓ Personal dashboard loaded for approved driver: {unique_email}")
+
+    def test_personal_dashboard_fields(self, module_variables):
+        api = module_variables["API"]
+        staff = module_variables["STAFF_TOKEN"]
+        email = os.environ.get("TEST_DRIVER_EMAIL")
+        password = os.environ.get("TEST_DRIVER_PASSWORD")
+        token = None
+        if email and password:
+            login = requests.post(f"{api}/auth/login", json={"email": email, "password": password})
+            if login.status_code == 200 and not login.json().get("requires_otp"):
+                token = login.json().get("access_token")
+        if not token:
+            unique_email = f"TEST_pd_fields_{uuid.uuid4().hex[:6]}@gti.com"
+            reg = register_self_service(
+                api,
+                email=unique_email,
+                password="Test12345!",
+                full_name="TEST PD Fields",
+                role="USER",
+                country="Ghana",
+            )
+            if reg.status_code != 201:
+                pytest.skip("Could not register user")
+            uid = reg.json()["user"]["id"]
+            assert approve_user(api, staff, uid).status_code == 200
+            login = requests.post(
+                f"{api}/auth/login",
+                json={"email": unique_email, "password": "Test12345!"},
+            )
+            if login.status_code != 200:
+                pytest.skip("Could not login after approval")
+            token = login.json()["access_token"]
+
+        response = requests.get(f"{api}/dashboard/personal", headers=auth_headers(token))
+        if response.status_code != 200:
+            pytest.skip(f"Personal dashboard not available: {response.status_code}")
+        data = response.json()
+        expected_fields = [
+            "user_id",
+            "driver_id",
+            "period_days",
+            "total_trips",
+            "total_distance_km",
+            "total_fuel_liters",
+            "avg_fuel_efficiency",
+            "pending_requests",
+            "approved_requests",
+            "total_requests",
+            "recent_requests",
+            "today_checklist_completed",
+            "assigned_vehicle",
+        ]
+        for field in expected_fields:
+            assert field in data, f"Missing field: {field}"
+        print("✓ Personal dashboard has all expected fields")
 
 
 class TestRoleBasedApproval:
-    """Test role-based approval workflow"""
-    
-    def test_get_pending_users(self):
-        """Get list of users pending approval"""
-        # Login as group manager
-        login_response = requests.post(f"{API}/auth/login", json={
-            "email": "test@gti.com",
-            "password": "Test123!"
-        })
-        
-        if login_response.status_code != 200:
-            pytest.skip("Could not login as manager")
-        
-        token = login_response.json()["access_token"]
-        headers = {"Authorization": f"Bearer {token}"}
-        
-        response = requests.get(f"{API}/users/pending", headers=headers)
-        
-        # May return 200 or 404 depending on implementation
-        if response.status_code == 200:
-            data = response.json()
-            assert isinstance(data, list)
-            print(f"✓ Retrieved {len(data)} pending users")
-        else:
-            print(f"✓ Pending users endpoint returned: {response.status_code}")
-    
-    def test_approve_user(self):
-        """Test approving a user"""
-        # First register a user that needs approval
+    """Pending users and approval under /api/auth/users/...."""
+
+    def test_get_pending_users(self, module_variables):
+        api = module_variables["API"]
+        staff = module_variables["STAFF_TOKEN"]
+        response = requests.get(f"{api}/auth/users/pending", headers=auth_headers(staff))
+        assert response.status_code == 200, response.text
+        data = response.json()
+        assert isinstance(data, list)
+        print(f"✓ Retrieved {len(data)} pending users")
+
+    def test_approve_user(self, module_variables):
+        api = module_variables["API"]
+        staff = module_variables["STAFF_TOKEN"]
         unique_email = f"TEST_approve_{uuid.uuid4().hex[:8]}@gti.com"
-        reg_response = requests.post(f"{API}/auth/register", json={
-            "email": unique_email,
-            "password": "Test123!",
-            "full_name": "TEST User To Approve",
-            "role": "DRIVER",
-            "country": "Ghana"
-        })
-        
-        if reg_response.status_code != 200:
-            pytest.skip("Could not create user to approve")
-        
-        user_id = reg_response.json()["user"]["id"]
-        
-        # Login as manager
-        login_response = requests.post(f"{API}/auth/login", json={
-            "email": "test@gti.com",
-            "password": "Test123!"
-        })
-        
-        if login_response.status_code != 200:
-            pytest.skip("Could not login as manager")
-        
-        token = login_response.json()["access_token"]
-        headers = {"Authorization": f"Bearer {token}"}
-        
-        # Approve the user
-        response = requests.post(
-            f"{API}/users/{user_id}/approve",
-            headers=headers,
-            json={"approved": True}
+        reg = register_self_service(
+            api,
+            email=unique_email,
+            password="Test12345!",
+            full_name="TEST User To Approve",
+            role="DRIVER",
+            country="Ghana",
         )
-        
-        if response.status_code == 200:
-            print(f"✓ User approved successfully")
-        else:
-            print(f"✓ Approve endpoint returned: {response.status_code}")
+        if reg.status_code != 201:
+            pytest.skip("Could not create user to approve")
+        user_id = reg.json()["user"]["id"]
+
+        response = approve_user(api, staff, user_id)
+        assert response.status_code == 200, response.text
+        assert response.json().get("status") == "success"
+        print("✓ User approved successfully")
+
+    def test_login_blocked_until_approval(self, module_variables):
+        api = module_variables["API"]
+        unique_email = f"TEST_pending_login_{uuid.uuid4().hex[:8]}@gti.com"
+        reg = register_self_service(
+            api,
+            email=unique_email,
+            password="Test12345!",
+            full_name="TEST Pending",
+            role="USER",
+            country="Ghana",
+        )
+        assert reg.status_code == 201
+        login = requests.post(
+            f"{api}/auth/login",
+            json={"email": unique_email, "password": "Test12345!"},
+        )
+        assert login.status_code == 403, login.text
 
 
 class TestLoginWithCredentials:
-    """Test login with provided credentials"""
-    
-    def test_login_group_manager(self):
-        """Test login with Group Manager credentials"""
-        response = requests.post(f"{API}/auth/login", json={
-            "email": "test@gti.com",
-            "password": "Test123!"
-        })
-        
-        if response.status_code == 200:
-            data = response.json()
-            assert "access_token" in data
-            assert data["user"]["role"] == "GROUP_FLEET_MANAGER"
-            print(f"✓ Group Manager login successful: {data['user']['email']}")
-        else:
-            # Try to register if doesn't exist
-            reg_response = requests.post(f"{API}/auth/register", json={
-                "email": "test@gti.com",
-                "password": "Test123!",
-                "full_name": "Test Group Manager",
-                "role": "GROUP_FLEET_MANAGER"
-            })
-            assert reg_response.status_code == 200, f"Could not create test user: {reg_response.text}"
-            print("✓ Created test Group Manager account")
-    
-    def test_login_driver(self):
-        """Test login with Driver credentials"""
-        response = requests.post(f"{API}/auth/login", json={
-            "email": "driver1@gti.com",
-            "password": "Test123!"
-        })
-        
-        if response.status_code == 200:
-            data = response.json()
-            assert "access_token" in data
-            print(f"✓ Driver login successful: {data['user']['email']}")
-        else:
-            # Create driver if doesn't exist
-            reg_response = requests.post(f"{API}/auth/register", json={
-                "email": "driver1@gti.com",
-                "password": "Test123!",
-                "full_name": "Test Driver 1",
-                "role": "DRIVER",
-                "country": "Ghana"
-            })
-            if reg_response.status_code == 200:
-                print("✓ Created test Driver account")
-            else:
-                print(f"Driver login/registration status: {response.status_code}")
+    """Optional env-based logins (skip if OTP or missing creds)."""
+
+    def test_login_group_manager_env(self, module_variables):
+        api = module_variables["API"]
+        email = os.environ.get("TEST_ADMIN_EMAIL") or os.environ.get("TEST_GROUP_MANAGER_EMAIL")
+        password = os.environ.get("TEST_ADMIN_PASSWORD") or os.environ.get(
+            "TEST_GROUP_MANAGER_PASSWORD"
+        )
+        if not email or not password:
+            pytest.skip("Set TEST_ADMIN_EMAIL/TEST_ADMIN_PASSWORD or TEST_GROUP_MANAGER_*")
+        response = requests.post(f"{api}/auth/login", json={"email": email, "password": password})
+        if response.status_code != 200:
+            pytest.skip(f"Login failed: {response.text}")
+        data = response.json()
+        if data.get("requires_otp"):
+            pytest.skip("GFM OTP flow not automated here")
+        assert "access_token" in data
+        assert data["user"]["role"] == "GROUP_FLEET_MANAGER"
+        print(f"✓ Group Fleet Manager login: {data['user']['email']}")
+
+    def test_login_driver_env_or_skip(self, module_variables):
+        api = module_variables["API"]
+        email = os.environ.get("TEST_DRIVER_EMAIL", "driver1@gti.com")
+        password = os.environ.get("TEST_DRIVER_PASSWORD", "Test123!")
+        response = requests.post(f"{api}/auth/login", json={"email": email, "password": password})
+        if response.status_code != 200:
+            pytest.skip(f"Driver login not available: {response.text}")
+        data = response.json()
+        assert "access_token" in data
+        print(f"✓ Driver login: {data['user']['email']}")
 
 
 class TestDrivingMetricsEndpoint:
-    """Test driving metrics endpoint"""
-    
-    def test_logbook_summary_endpoint(self):
-        """Test logbook summary endpoint used by Driving Metrics page"""
-        # Get a driver ID first
-        login_response = requests.post(f"{API}/auth/login", json={
-            "email": "driver1@gti.com",
-            "password": "Test123!"
-        })
-        
-        if login_response.status_code != 200:
-            # Create driver
-            reg_response = requests.post(f"{API}/auth/register", json={
-                "email": f"TEST_metrics_{uuid.uuid4().hex[:6]}@gti.com",
-                "password": "Test123!",
-                "full_name": "TEST Metrics Driver",
-                "role": "DRIVER",
-                "country": "Ghana"
-            })
-            if reg_response.status_code == 200:
-                user_id = reg_response.json()["user"]["id"]
-            else:
-                pytest.skip("Could not get driver")
-        else:
-            user_id = login_response.json()["user"]["id"]
-        
-        # Test logbook summary endpoint
-        response = requests.get(f"{API}/logbook/summary/{user_id}?period_days=30")
-        
+    """Logbook summary is a protected route."""
+
+    def test_logbook_summary_endpoint(self, module_variables):
+        api = module_variables["API"]
+        staff = module_variables["STAFF_TOKEN"]
+        drivers_resp = requests.get(f"{api}/drivers", headers=auth_headers(staff))
+        assert drivers_resp.status_code == 200, drivers_resp.text
+        drivers = drivers_resp.json()
+        if not drivers:
+            pytest.skip("No drivers in fleet for summary test")
+        driver_id = drivers[0]["id"]
+        response = requests.get(
+            f"{api}/logbook/summary/{driver_id}?period_days=30",
+            headers=auth_headers(staff),
+        )
         assert response.status_code == 200, f"Logbook summary failed: {response.text}"
         data = response.json()
-        
-        # Verify expected fields for driving metrics
         assert "total_trips" in data
         assert "total_distance_km" in data
         assert "total_fuel_liters" in data
         assert "speed_violations" in data
-        
-        print(f"✓ Driving metrics data: {data['total_trips']} trips, {data['total_distance_km']} km")
+        print(f"✓ Driving metrics: {data['total_trips']} trips, {data['total_distance_km']} km")
 
 
-# Run tests
 if __name__ == "__main__":
     pytest.main([__file__, "-v", "--tb=short"])

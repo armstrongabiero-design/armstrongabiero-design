@@ -57,12 +57,24 @@ export const AuthProvider = ({ children }) => {
   const register = async (data) => {
     const response = await axios.post(`${API}/auth/register`, data);
     const { access_token, user: userData } = response.data;
-    
+    if (access_token) {
+      localStorage.setItem('token', access_token);
+      axios.defaults.headers.common['Authorization'] = `Bearer ${access_token}`;
+      setToken(access_token);
+      setUser(userData);
+    }
+    return userData ?? response.data.user;
+  };
+
+  const bootstrapAdmin = async (data, bootstrapToken) => {
+    const response = await axios.post(`${API}/auth/bootstrap`, data, {
+      headers: { 'X-Bootstrap-Token': bootstrapToken },
+    });
+    const { access_token, user: userData } = response.data;
     localStorage.setItem('token', access_token);
     axios.defaults.headers.common['Authorization'] = `Bearer ${access_token}`;
     setToken(access_token);
     setUser(userData);
-    
     return userData;
   };
 
@@ -88,6 +100,7 @@ export const AuthProvider = ({ children }) => {
     loading,
     login,
     register,
+    bootstrapAdmin,
     logout,
     isGroupManager,
     isFleetManager,
