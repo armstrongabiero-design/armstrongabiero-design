@@ -1,5 +1,5 @@
 """Authentication and User models"""
-from pydantic import BaseModel, Field, ConfigDict, EmailStr, field_validator
+from pydantic import BaseModel, Field, ConfigDict, EmailStr, field_validator, model_validator
 from typing import Optional, Dict, Any
 from datetime import datetime, timezone
 import uuid
@@ -46,7 +46,7 @@ class UserCreate(BaseModel):
 
 
 class UserSelfRegister(BaseModel):
-    """Public self-registration: only USER or DRIVER; awaits manager approval."""
+    """Public self-registration: USER, DRIVER, FLEET_MANAGER, or FLEET_OFFICER; awaits approval."""
     email: str
     password: str = Field(..., min_length=8)
     full_name: str
@@ -63,9 +63,26 @@ class UserSelfRegister(BaseModel):
     @field_validator("role")
     @classmethod
     def self_register_roles_only(cls, v: UserRole) -> UserRole:
-        if v not in (UserRole.USER, UserRole.DRIVER):
-            raise ValueError("Self-registration is only allowed for USER or DRIVER roles")
+        allowed = (
+            UserRole.USER,
+            UserRole.DRIVER,
+            UserRole.FLEET_MANAGER,
+            UserRole.FLEET_OFFICER,
+        )
+        if v not in allowed:
+            raise ValueError(
+                "Self-registration is only allowed for User, Driver, Fleet Manager, or Fleet Officer roles"
+            )
         return v
+
+    @model_validator(mode="after")
+    def staff_roles_require_country(self):
+        if self.role in (UserRole.FLEET_MANAGER, UserRole.FLEET_OFFICER):
+            if not self.country or not str(self.country).strip():
+                raise ValueError(
+                    "Country is required for Fleet Manager and Fleet Officer registration"
+                )
+        return self
 
 
 class BootstrapGroupFleetManagerRequest(BaseModel):

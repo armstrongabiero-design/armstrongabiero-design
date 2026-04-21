@@ -1710,7 +1710,7 @@ async def get_damage_photo(photo_id: str, current_user: dict = Depends(get_curre
 @api_router.post("/auth/register", status_code=201)
 @limiter.limit("10/minute")
 async def register_user(request: Request, input: UserSelfRegister):
-    """Public self-registration (USER or DRIVER only). No JWT until a manager approves the account."""
+    """Public self-registration (USER, DRIVER, FLEET_MANAGER, FLEET_OFFICER). No JWT until a manager approves."""
     existing = await db.users.find_one({"email": input.email})
     if existing:
         raise HTTPException(status_code=400, detail="Email already registered")
@@ -1734,7 +1734,7 @@ async def register_user(request: Request, input: UserSelfRegister):
 
     return {
         "status": "pending_approval",
-        "message": "Registration successful. A fleet manager must approve your account before you can log in.",
+        "message": "Registration successful. An authorized manager must approve your account before you can log in.",
         "user": {
             "id": user.id,
             "email": user.email,

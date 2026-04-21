@@ -2,8 +2,8 @@
 Fleet Management System - Role System & New Features Tests
 
 Security model (integration):
-- Public self-registration: USER or DRIVER only; 201 + pending_approval; no JWT until approved.
-- Staff roles (GFM/FM/FO): created via bootstrap or admin workflows — not via /auth/register.
+- Public self-registration: USER, DRIVER, FLEET_MANAGER, or FLEET_OFFICER; 201 + pending_approval; no JWT until approved.
+- GROUP_FLEET_MANAGER: bootstrap only — not via /auth/register.
 - Protected /api routes require Bearer JWT (session staff_bearer_token from root conftest).
 """
 import os
@@ -70,7 +70,7 @@ class TestCountriesEndpoint:
 
 
 class TestSelfRegistrationPolicy:
-    """Public register accepts only USER/DRIVER; staff roles are rejected at validation."""
+    """Public register accepts USER, DRIVER, FLEET_MANAGER, FLEET_OFFICER; rejects GFM and missing country for staff."""
 
     def test_register_rejects_group_fleet_manager(self, module_variables):
         api = module_variables["API"]
@@ -85,7 +85,7 @@ class TestSelfRegistrationPolicy:
         )
         assert r.status_code == 422, f"Expected validation error, got {r.status_code}: {r.text}"
 
-    def test_register_rejects_fleet_manager(self, module_variables):
+    def test_register_fleet_manager_requires_country(self, module_variables):
         api = module_variables["API"]
         r = requests.post(
             f"{api}/auth/register",
@@ -94,12 +94,29 @@ class TestSelfRegistrationPolicy:
                 "password": "Test12345!",
                 "full_name": "TEST FM",
                 "role": "FLEET_MANAGER",
-                "country": "Ghana",
             },
         )
         assert r.status_code == 422, f"Expected validation error, got {r.status_code}: {r.text}"
 
-    def test_register_rejects_fleet_officer(self, module_variables):
+    def test_register_fleet_manager_pending_no_token(self, module_variables):
+        api = module_variables["API"]
+        unique_email = f"TEST_fm_{uuid.uuid4().hex[:8]}@gti.com"
+        response = register_self_service(
+            api,
+            email=unique_email,
+            password="Test12345!",
+            full_name="TEST FM Reg",
+            role="FLEET_MANAGER",
+            country="Ghana",
+        )
+        assert response.status_code == 201, response.text
+        data = response.json()
+        assert data["user"]["role"] == "FLEET_MANAGER"
+        assert data["user"]["country"] == "Ghana"
+        assert data["user"]["is_approved"] is False
+        assert "access_token" not in data
+
+    def test_register_fleet_officer_requires_country(self, module_variables):
         api = module_variables["API"]
         r = requests.post(
             f"{api}/auth/register",
@@ -108,10 +125,27 @@ class TestSelfRegistrationPolicy:
                 "password": "Test12345!",
                 "full_name": "TEST FO",
                 "role": "FLEET_OFFICER",
-                "country": "Nigeria",
             },
         )
         assert r.status_code == 422, f"Expected validation error, got {r.status_code}: {r.text}"
+
+    def test_register_fleet_officer_pending_no_token(self, module_variables):
+        api = module_variables["API"]
+        unique_email = f"TEST_fo_{uuid.uuid4().hex[:8]}@gti.com"
+        response = register_self_service(
+            api,
+            email=unique_email,
+            password="Test12345!",
+            full_name="TEST FO Reg",
+            role="FLEET_OFFICER",
+            country="Nigeria",
+        )
+        assert response.status_code == 201, response.text
+        data = response.json()
+        assert data["user"]["role"] == "FLEET_OFFICER"
+        assert data["user"]["country"] == "Nigeria"
+        assert data["user"]["is_approved"] is False
+        assert "access_token" not in data
 
     def test_register_driver_pending_no_token(self, module_variables):
         api = module_variables["API"]

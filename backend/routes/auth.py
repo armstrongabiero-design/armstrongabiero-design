@@ -44,7 +44,7 @@ async def register_user(input: UserSelfRegister):
     await db.users.insert_one(doc)
     return {
         "status": "pending_approval",
-        "message": "Registration successful. A fleet manager must approve your account before you can log in.",
+        "message": "Registration successful. An authorized manager must approve your account before you can log in.",
         "user": {
             "id": user.id,
             "email": user.email,

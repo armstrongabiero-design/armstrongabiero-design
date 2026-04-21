@@ -394,6 +394,18 @@ const Login = () => {
                           <span>Driver</span>
                         </div>
                       </SelectItem>
+                      <SelectItem value="FLEET_OFFICER">
+                        <div className="flex items-center gap-2">
+                          {getRoleIcon('FLEET_OFFICER')}
+                          <span>Fleet Officer</span>
+                        </div>
+                      </SelectItem>
+                      <SelectItem value="FLEET_MANAGER">
+                        <div className="flex items-center gap-2">
+                          {getRoleIcon('FLEET_MANAGER')}
+                          <span>Fleet Manager</span>
+                        </div>
+                      </SelectItem>
                     </SelectContent>
                   </Select>
                   <p className="text-xs text-slate-500 mt-1">{getRoleDescription(registerData.role)}</p>
@@ -434,7 +446,9 @@ const Login = () => {
                   {loading ? 'Registering...' : 'Register'}
                 </Button>
                 <p className="text-xs text-slate-500 text-center">
-                  Your account will need approval from a manager.
+                  Your account stays pending until an authorized manager approves it (Group Fleet Manager for
+                  new Fleet Managers; Fleet Manager or Group Fleet Manager for Fleet Officers, drivers, and
+                  users).
                 </p>
               </form>
             </TabsContent>
