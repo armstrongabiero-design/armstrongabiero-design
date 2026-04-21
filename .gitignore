@@ -115,3 +115,8 @@ credentials.json
 *.pem
 *.key
 .credentials
+
+# Tracked templates only
+!.env.example
+!backend/.env.example
+!frontend/.env.example

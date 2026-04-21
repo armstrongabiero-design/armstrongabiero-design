@@ -47,6 +47,14 @@ const webpackConfig = {
       '@': path.resolve(__dirname, 'src'),
     },
     configure: (webpackConfig) => {
+      // Ajv: package.json overrides — ajv 8 for webpack schema-utils@4; ajv 6 under babel-loader, file-loader,
+      // fork-ts-checker, eslint, and @eslint/eslintrc (ESLint 8 + config validator expect Ajv 6 internals).
+      // react-scripts loads fork-ts-checker before this runs; nested ajv 6 avoids formats.date. Optional: strip plugin below.
+      const ctor = (p) => p && p.constructor && p.constructor.name;
+      webpackConfig.plugins = (webpackConfig.plugins || []).filter((plugin) => {
+        const name = ctor(plugin);
+        return !name || !name.includes("ForkTsChecker");
+      });
 
       // Add ignored patterns to reduce watched directories
         webpackConfig.watchOptions = {

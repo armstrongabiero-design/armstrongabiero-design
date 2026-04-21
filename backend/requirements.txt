@@ -11,7 +11,7 @@ annotated-types==0.7.0
 anyio==4.12.0
 attrs==25.4.0
 bcrypt==4.1.3
-black==25.12.0
+black==25.11.0
 boto3==1.42.21
 botocore==1.42.21
 certifi==2026.1.4
@@ -23,7 +23,8 @@ distro==1.9.0
 dnspython==2.8.0
 ecdsa==0.19.1
 email-validator==2.3.0
-emergentintegrations==0.1.0
+# Optional proprietary LLM bridge (not on PyPI). For local dev without AI routes, omit.
+# Install from your vendor wheel if available: pip install emergentintegrations==0.1.0
 fastapi==0.110.1
 fastuuid==0.14.0
 filelock==3.20.2
@@ -65,7 +66,8 @@ motor==3.3.1
 multidict==6.7.0
 mypy==1.19.1
 mypy_extensions==1.1.0
-numpy==2.4.0
+# 2.4.0 was yanked on PyPI; keep 2.2.x for broad wheel compatibility
+numpy==2.2.6
 oauthlib==3.3.1
 openai==1.99.9
 packaging==25.0
