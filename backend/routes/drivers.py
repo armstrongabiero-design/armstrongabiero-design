@@ -1,12 +1,22 @@
 """Driver routes"""
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Depends
 from typing import Optional, List
-from datetime import datetime
+from datetime import datetime, timezone
 
 from database import db
 from models import Driver, DriverCreate, DriverUpdate
+from auth_deps import get_current_user
+from audit_service import assert_can_hard_delete, write_audit_log
 
 router = APIRouter()
+
+_STAFF_ROLES = frozenset({"GROUP_FLEET_MANAGER", "FLEET_MANAGER", "FLEET_OFFICER"})
+
+
+def _require_staff(current_user: dict = Depends(get_current_user)) -> dict:
+    if current_user.get("role") not in _STAFF_ROLES:
+        raise HTTPException(status_code=403, detail="Staff access required")
+    return current_user
 
 
 @router.post("/drivers", response_model=Driver)
@@ -45,17 +55,46 @@ async def get_driver(driver_id: str):
 
 
 @router.put("/drivers/{driver_id}", response_model=Driver)
-async def update_driver(driver_id: str, input: DriverUpdate):
+async def update_driver(
+    driver_id: str,
+    input: DriverUpdate,
+    current_user: dict = Depends(_require_staff),
+):
     driver = await db.drivers.find_one({"id": driver_id}, {"_id": 0})
     if not driver:
         raise HTTPException(status_code=404, detail="Driver not found")
     update_data = {k: v for k, v in input.model_dump().items() if v is not None}
-    if 'license_expiry' in update_data and isinstance(update_data['license_expiry'], datetime):
-        update_data['license_expiry'] = update_data['license_expiry'].isoformat()
-    update_data['updated_at'] = datetime.utcnow().isoformat()
+    if "license_expiry" in update_data and isinstance(update_data["license_expiry"], datetime):
+        update_data["license_expiry"] = update_data["license_expiry"].isoformat()
+    update_data["updated_at"] = datetime.now(timezone.utc).isoformat()
     await db.drivers.update_one({"id": driver_id}, {"$set": update_data})
     updated_driver = await db.drivers.find_one({"id": driver_id}, {"_id": 0})
-    for date_field in ['license_expiry', 'created_at', 'updated_at']:
+    for date_field in ["license_expiry", "created_at", "updated_at"]:
         if isinstance(updated_driver.get(date_field), str):
             updated_driver[date_field] = datetime.fromisoformat(updated_driver[date_field])
     return Driver(**updated_driver)
+
+
+@router.delete("/drivers/{driver_id}")
+async def delete_driver(
+    driver_id: str,
+    current_user: dict = Depends(get_current_user),
+):
+    assert_can_hard_delete(current_user, "driver")
+    driver = await db.drivers.find_one({"id": driver_id}, {"_id": 0})
+    if not driver:
+        raise HTTPException(status_code=404, detail="Driver not found")
+    await db.drivers.delete_one({"id": driver_id})
+    await write_audit_log(
+        action="hard_delete",
+        entity_type="driver",
+        entity_id=driver_id,
+        actor_id=current_user["id"],
+        actor_role=current_user.get("role", ""),
+        actor_email=current_user.get("email"),
+        details={
+            "first_name": driver.get("first_name"),
+            "last_name": driver.get("last_name"),
+        },
+    )
+    return {"message": "Driver deleted successfully"}

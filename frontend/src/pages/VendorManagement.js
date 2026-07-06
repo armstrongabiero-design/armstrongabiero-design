@@ -1,16 +1,53 @@
 import React, { useEffect, useState } from 'react';
 import axios from 'axios';
-import { Plus, Star, Phone, Mail, Building } from 'lucide-react';
+import { Plus, Star, Phone, Mail, Building, Pencil, Trash2 } from 'lucide-react';
 import { toast } from 'sonner';
+import { useAuth } from '../contexts/AuthContext';
 import { Button } from '../components/ui/button';
 import { Input } from '../components/ui/input';
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle, DialogTrigger } from '../components/ui/dialog';
 import { Label } from '../components/ui/label';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '../components/ui/select';
 import { Textarea } from '../components/ui/textarea';
+import CountrySelect, { DEFAULT_COUNTRY_CODE, getCountryBadgeClass, getCountryLabel, countryMatchesFilter, normalizeCountryCode } from '../components/CountrySelect';
+import ConfirmDeleteDialog from '../components/ConfirmDeleteDialog';
+import { completeDialogSubmit } from '../utils/formUtils';
+import { canEditFleetRecord, canHardDelete } from '../utils/permissions';
 
 const BACKEND_URL = process.env.REACT_APP_BACKEND_URL;
 const API = `${BACKEND_URL}/api`;
+
+const createInitialFormData = () => ({
+  name: '',
+  category: 'PARTS',
+  country: DEFAULT_COUNTRY_CODE,
+  address: '',
+  city: '',
+  contact_person: '',
+  phone: '',
+  email: '',
+  tax_id: '',
+  payment_terms: 'NET30',
+  is_preferred: false,
+  currency: 'GHS',
+  notes: '',
+});
+
+const vendorToFormData = (vendor) => ({
+  name: vendor.name,
+  category: vendor.category,
+  country: normalizeCountryCode(vendor.country),
+  address: vendor.address,
+  city: vendor.city,
+  contact_person: vendor.contact_person,
+  phone: vendor.phone,
+  email: vendor.email || '',
+  tax_id: vendor.tax_id || '',
+  payment_terms: vendor.payment_terms || 'NET30',
+  is_preferred: vendor.is_preferred || false,
+  currency: vendor.currency,
+  notes: vendor.notes || '',
+});
 
 const CATEGORIES = [
   { value: 'FUEL', label: 'Fuel Supplier' },
@@ -22,27 +59,20 @@ const CATEGORIES = [
 ];
 
 const VendorManagement = () => {
+  const { user } = useAuth();
+  const canEdit = canEditFleetRecord(user?.role);
+  const canDelete = canHardDelete(user?.role, 'vendor');
+
   const [vendors, setVendors] = useState([]);
   const [loading, setLoading] = useState(true);
   const [dialogOpen, setDialogOpen] = useState(false);
+  const [editingId, setEditingId] = useState(null);
+  const [deleteTarget, setDeleteTarget] = useState(null);
+  const [deleting, setDeleting] = useState(false);
   const [selectedCategory, setSelectedCategory] = useState('');
   const [selectedCountry, setSelectedCountry] = useState('');
 
-  const [formData, setFormData] = useState({
-    name: '',
-    category: 'PARTS',
-    country: 'GHANA',
-    address: '',
-    city: '',
-    contact_person: '',
-    phone: '',
-    email: '',
-    tax_id: '',
-    payment_terms: 'NET30',
-    is_preferred: false,
-    currency: 'GHS',
-    notes: '',
-  });
+  const [formData, setFormData] = useState(createInitialFormData);
 
   useEffect(() => {
     fetchVendors();
@@ -59,30 +89,55 @@ const VendorManagement = () => {
     }
   };
 
+  const handleDialogOpenChange = (open) => {
+    setDialogOpen(open);
+    if (!open) {
+      setEditingId(null);
+      setFormData(createInitialFormData());
+    }
+  };
+
+  const openCreateDialog = () => {
+    setEditingId(null);
+    setFormData(createInitialFormData());
+    setDialogOpen(true);
+  };
+
+  const openEditDialog = (vendor) => {
+    setEditingId(vendor.id);
+    setFormData(vendorToFormData(vendor));
+    setDialogOpen(true);
+  };
+
   const handleSubmit = async (e) => {
     e.preventDefault();
+    await completeDialogSubmit({
+      submit: () =>
+        editingId
+          ? axios.put(`${API}/vendors/${editingId}`, formData)
+          : axios.post(`${API}/vendors`, formData),
+      setDialogOpen: handleDialogOpenChange,
+      setFormData,
+      initialFormData: createInitialFormData,
+      onSuccess: fetchVendors,
+      successMessage: editingId ? 'Vendor updated successfully!' : 'Vendor added successfully!',
+      errorMessage: editingId ? 'Failed to update vendor' : 'Failed to add vendor',
+    });
+    setEditingId(null);
+  };
+
+  const handleConfirmDelete = async () => {
+    if (!deleteTarget) return;
+    setDeleting(true);
     try {
-      await axios.post(`${API}/vendors`, formData);
-      toast.success('Vendor added successfully!');
-      setDialogOpen(false);
+      await axios.delete(`${API}/vendors/${deleteTarget.id}`);
+      toast.success('Vendor deleted');
+      setDeleteTarget(null);
       fetchVendors();
-      setFormData({
-        name: '',
-        category: 'PARTS',
-        country: 'GHANA',
-        address: '',
-        city: '',
-        contact_person: '',
-        phone: '',
-        email: '',
-        tax_id: '',
-        payment_terms: 'NET30',
-        is_preferred: false,
-        currency: 'GHS',
-        notes: '',
-      });
     } catch (error) {
-      toast.error('Failed to add vendor');
+      toast.error(error.response?.data?.detail || 'Failed to delete vendor');
+    } finally {
+      setDeleting(false);
     }
   };
 
@@ -98,7 +153,7 @@ const VendorManagement = () => {
 
   const filteredVendors = vendors.filter(v => {
     if (selectedCategory && v.category !== selectedCategory) return false;
-    if (selectedCountry && v.country !== selectedCountry) return false;
+    if (selectedCountry && !countryMatchesFilter(v.country, selectedCountry)) return false;
     return true;
   });
 
@@ -123,27 +178,24 @@ const VendorManagement = () => {
               ))}
             </SelectContent>
           </Select>
-          <Select value={selectedCountry || "ALL"} onValueChange={(v) => setSelectedCountry(v === "ALL" ? "" : v)}>
-            <SelectTrigger className="w-36">
-              <SelectValue placeholder="All Countries" />
-            </SelectTrigger>
-            <SelectContent>
-              <SelectItem value="ALL">All Countries</SelectItem>
-              <SelectItem value="GHANA">Ghana</SelectItem>
-              <SelectItem value="LIBERIA">Liberia</SelectItem>
-              <SelectItem value="SAO_TOME">São Tomé</SelectItem>
-            </SelectContent>
-          </Select>
-          <Dialog open={dialogOpen} onOpenChange={setDialogOpen}>
+          <CountrySelect
+            value={selectedCountry || 'ALL'}
+            onValueChange={(v) => setSelectedCountry(v === 'ALL' ? '' : v)}
+            includeAllOption
+            allLabel="All Countries"
+            className="w-36"
+          />
+          {canEdit && (
+          <Dialog open={dialogOpen} onOpenChange={handleDialogOpenChange}>
             <DialogTrigger asChild>
-              <Button data-testid="add-vendor-btn">
+              <Button data-testid="add-vendor-btn" onClick={openCreateDialog}>
                 <Plus size={18} className="mr-2" />
                 Add Vendor
               </Button>
             </DialogTrigger>
             <DialogContent className="max-w-lg">
               <DialogHeader>
-                <DialogTitle>Add New Vendor</DialogTitle>
+                <DialogTitle>{editingId ? 'Edit Vendor' : 'Add New Vendor'}</DialogTitle>
                 <DialogDescription>Register a new supplier or service provider.</DialogDescription>
               </DialogHeader>
               <form onSubmit={handleSubmit} className="space-y-4">
@@ -165,14 +217,10 @@ const VendorManagement = () => {
                   </div>
                   <div>
                     <Label>Country *</Label>
-                    <Select value={formData.country} onValueChange={(value) => setFormData({...formData, country: value})}>
-                      <SelectTrigger><SelectValue /></SelectTrigger>
-                      <SelectContent>
-                        <SelectItem value="GHANA">Ghana</SelectItem>
-                        <SelectItem value="LIBERIA">Liberia</SelectItem>
-                        <SelectItem value="SAO_TOME">São Tomé</SelectItem>
-                      </SelectContent>
-                    </Select>
+                    <CountrySelect
+                      value={formData.country}
+                      onValueChange={(value) => setFormData({ ...formData, country: value })}
+                    />
                   </div>
                 </div>
                 <div className="grid grid-cols-2 gap-4">
@@ -236,12 +284,13 @@ const VendorManagement = () => {
                   <Textarea value={formData.notes} onChange={(e) => setFormData({...formData, notes: e.target.value})} />
                 </div>
                 <div className="flex justify-end gap-2 mt-6">
-                  <Button type="button" variant="outline" onClick={() => setDialogOpen(false)}>Cancel</Button>
-                  <Button type="submit">Add Vendor</Button>
+                  <Button type="button" variant="outline" onClick={() => handleDialogOpenChange(false)}>Cancel</Button>
+                  <Button type="submit">{editingId ? 'Save Changes' : 'Add Vendor'}</Button>
                 </div>
               </form>
             </DialogContent>
           </Dialog>
+          )}
         </div>
       </div>
 
@@ -284,7 +333,7 @@ const VendorManagement = () => {
                   <Phone size={14} />
                   {vendor.phone}
                 </div>
-                <span className="country-badge ghana mt-2 inline-block">{vendor.country}</span>
+                <span className={`${getCountryBadgeClass(vendor.country)} mt-2 inline-block`}>{getCountryLabel(vendor.country)}</span>
               </div>
             ))}
           </div>
@@ -305,12 +354,13 @@ const VendorManagement = () => {
                 <th>Payment</th>
                 <th>Country</th>
                 <th>Preferred</th>
+                {canEdit && <th className="w-24">Actions</th>}
               </tr>
             </thead>
             <tbody>
               {filteredVendors.length === 0 ? (
                 <tr>
-                  <td colSpan="7" className="text-center py-8 text-slate-500">No vendors found</td>
+                  <td colSpan={canEdit ? 8 : 7} className="text-center py-8 text-slate-500">No vendors found</td>
                 </tr>
               ) : (
                 filteredVendors.map(vendor => (
@@ -344,14 +394,33 @@ const VendorManagement = () => {
                       </div>
                     </td>
                     <td>{vendor.payment_terms}</td>
-                    <td><span className="country-badge ghana">{vendor.country}</span></td>
+                    <td><span className={getCountryBadgeClass(vendor.country)}>{getCountryLabel(vendor.country)}</span></td>
                     <td>
                       <Star
                         size={20}
                         className={`cursor-pointer ${vendor.is_preferred ? 'text-amber-500 fill-amber-500' : 'text-slate-300'}`}
-                        onClick={() => togglePreferred(vendor.id, vendor.is_preferred)}
+                        onClick={() => canEdit && togglePreferred(vendor.id, vendor.is_preferred)}
                       />
                     </td>
+                    {canEdit && (
+                      <td>
+                        <div className="flex gap-1">
+                          <Button variant="ghost" size="icon" className="h-8 w-8" onClick={() => openEditDialog(vendor)}>
+                            <Pencil size={16} />
+                          </Button>
+                          {canDelete && (
+                            <Button
+                              variant="ghost"
+                              size="icon"
+                              className="h-8 w-8 text-red-600 hover:text-red-700 hover:bg-red-50"
+                              onClick={() => setDeleteTarget(vendor)}
+                            >
+                              <Trash2 size={16} />
+                            </Button>
+                          )}
+                        </div>
+                      </td>
+                    )}
                   </tr>
                 ))
               )}
@@ -359,6 +428,15 @@ const VendorManagement = () => {
           </table>
         </div>
       </div>
+
+      <ConfirmDeleteDialog
+        open={!!deleteTarget}
+        onOpenChange={(open) => !open && setDeleteTarget(null)}
+        onConfirm={handleConfirmDelete}
+        loading={deleting}
+        title="Delete vendor?"
+        description={deleteTarget ? `Permanently delete ${deleteTarget.name}? This cannot be undone.` : undefined}
+      />
     </div>
   );
 };

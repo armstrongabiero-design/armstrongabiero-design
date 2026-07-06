@@ -376,7 +376,7 @@ const StaffDashboard = ({ user, token, isGroupManager }) => {
               <h3 className="text-4xl font-bold mt-2">{stats?.total_drivers || 0}</h3>
               {stats?.vehicles_by_country && Object.keys(stats.vehicles_by_country).length > 0 && (
                 <p className="text-white/70 text-xs mt-1">
-                  GH: {stats.drivers_by_country?.GHANA || 0} | LR: {stats.drivers_by_country?.LIBERIA || 0}
+                  GH: {stats.drivers_by_country?.GH ?? stats.drivers_by_country?.GHANA ?? 0} | LR: {stats.drivers_by_country?.LR ?? stats.drivers_by_country?.LIBERIA ?? 0}
                 </p>
               )}
             </div>

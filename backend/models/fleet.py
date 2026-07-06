@@ -4,13 +4,13 @@ from typing import Optional, Dict, Any
 from datetime import datetime
 import uuid
 
-from .enums import CountryEnum, CurrencyEnum, VehicleStatus
+from .enums import CountryCode, CurrencyEnum, VehicleStatus
 
 
 class Country(BaseModel):
     model_config = ConfigDict(extra="ignore")
     id: str = Field(default_factory=lambda: str(uuid.uuid4()))
-    name: CountryEnum
+    name: CountryCode
     currency: CurrencyEnum
     date_format: str = "DD/MM/YYYY"
     tax_id_label: str
@@ -19,7 +19,7 @@ class Country(BaseModel):
 
 
 class CountryCreate(BaseModel):
-    name: CountryEnum
+    name: CountryCode
     currency: CurrencyEnum
     date_format: str = "DD/MM/YYYY"
     tax_id_label: str
@@ -29,7 +29,7 @@ class CountryCreate(BaseModel):
 class Vehicle(BaseModel):
     model_config = ConfigDict(extra="ignore")
     id: str = Field(default_factory=lambda: str(uuid.uuid4()))
-    country: CountryEnum
+    country: CountryCode
     registration_number: str
     make: str
     model: str
@@ -47,7 +47,7 @@ class Vehicle(BaseModel):
 
 
 class VehicleCreate(BaseModel):
-    country: CountryEnum
+    country: CountryCode
     registration_number: str
     make: str
     model: str
@@ -62,16 +62,24 @@ class VehicleCreate(BaseModel):
 
 
 class VehicleUpdate(BaseModel):
+    country: Optional[CountryCode] = None
     registration_number: Optional[str] = None
+    make: Optional[str] = None
+    model: Optional[str] = None
+    year: Optional[int] = None
+    vin: Optional[str] = None
     status: Optional[VehicleStatus] = None
     odometer_reading: Optional[float] = None
+    acquisition_date: Optional[datetime] = None
+    acquisition_cost: Optional[float] = None
+    acquisition_currency: Optional[CurrencyEnum] = None
     country_specific_fields: Optional[Dict[str, Any]] = None
 
 
 class Driver(BaseModel):
     model_config = ConfigDict(extra="ignore")
     id: str = Field(default_factory=lambda: str(uuid.uuid4()))
-    country: CountryEnum
+    country: CountryCode
     first_name: str
     last_name: str
     license_number: str
@@ -86,7 +94,7 @@ class Driver(BaseModel):
 
 
 class DriverCreate(BaseModel):
-    country: CountryEnum
+    country: CountryCode
     first_name: str
     last_name: str
     license_number: str
@@ -96,6 +104,10 @@ class DriverCreate(BaseModel):
 
 
 class DriverUpdate(BaseModel):
+    country: Optional[CountryCode] = None
+    first_name: Optional[str] = None
+    last_name: Optional[str] = None
+    license_number: Optional[str] = None
     license_expiry: Optional[datetime] = None
     phone: Optional[str] = None
     email: Optional[str] = None

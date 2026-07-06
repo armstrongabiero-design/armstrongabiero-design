@@ -104,4 +104,12 @@ pytest
 | `JWT_SECRET_KEY` warnings | Use a strong secret in `.env`; production requires a non-placeholder secret. |
 | Cannot log in as GFM | Group Fleet Manager flow may require OTP email; configure **Resend** or use non-GFM test paths. |
 
-Further deployment notes live under `on-prem-handoff/` and cloud-oriented docs in the repo root.
+## Production deployment
+
+- **Public URL:** [https://fleet.gtiholding.com](https://fleet.gtiholding.com)
+- **Domain / env / TLS checklist:** [`docs/PRODUCTION_DOMAIN.md`](docs/PRODUCTION_DOMAIN.md)
+- **Push → pull → redeploy:** [`docs/PRODUCTION_UPDATE.md`](docs/PRODUCTION_UPDATE.md)
+- **CentOS runbook:** [`docs/PRODUCTION_DEPLOYMENT_RUNBOOK.md`](docs/PRODUCTION_DEPLOYMENT_RUNBOOK.md)
+- **Overview:** [`deployment-brief.md`](deployment-brief.md)
+
+Further notes: `on-prem-handoff/`, [`docs/DC_DEPLOYMENT_GUIDE.md`](docs/DC_DEPLOYMENT_GUIDE.md).

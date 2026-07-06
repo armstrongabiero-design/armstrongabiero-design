@@ -4,7 +4,7 @@ from typing import Optional
 from datetime import datetime, timezone
 import uuid
 
-from .enums import CountryEnum
+from .enums import CountryCode
 
 
 class VehicleLocation(BaseModel):
@@ -15,7 +15,7 @@ class VehicleLocation(BaseModel):
     longitude: float
     address: Optional[str] = None
     city: Optional[str] = None
-    country: CountryEnum
+    country: CountryCode
     speed_kmh: Optional[float] = None
     heading: Optional[float] = None
     source: str = "GPS"
@@ -29,7 +29,7 @@ class VehicleLocationCreate(BaseModel):
     longitude: float
     address: Optional[str] = None
     city: Optional[str] = None
-    country: CountryEnum
+    country: CountryCode
     speed_kmh: Optional[float] = None
     heading: Optional[float] = None
     source: str = "MANUAL"

@@ -4,6 +4,7 @@ import { Users, Shield, CheckCircle, XCircle, Clock, UserCheck } from 'lucide-re
 import { toast } from 'sonner';
 import { Button } from '../components/ui/button';
 import { useAuth } from '../contexts/AuthContext';
+import CountrySelect, { getCountryFlag, getCountryLabel } from '../components/CountrySelect';
 
 const BACKEND_URL = process.env.REACT_APP_BACKEND_URL;
 const API = `${BACKEND_URL}/api`;
@@ -128,7 +129,7 @@ const UserManagement = () => {
                         </span>
                         {user.country && (
                           <span className="px-2 py-0.5 rounded text-xs font-medium bg-slate-100 text-slate-800">
-                            {user.country === 'SAO_TOME' ? 'São Tomé' : user.country}
+                            {getCountryLabel(user.country)}
                           </span>
                         )}
                       </div>
@@ -180,8 +181,8 @@ const UserManagement = () => {
                     <td>
                       {user.country ? (
                         <span>
-                          {user.country === 'GHANA' ? '🇬🇭' : user.country === 'LIBERIA' ? '🇱🇷' : '🇸🇹'}{' '}
-                          {user.country === 'SAO_TOME' ? 'São Tomé' : user.country}
+                          {getCountryFlag(user.country)}{' '}
+                          {getCountryLabel(user.country)}
                         </span>
                       ) : (
                         <span className="text-slate-400">All Countries</span>

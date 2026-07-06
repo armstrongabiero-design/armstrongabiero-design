@@ -35,7 +35,7 @@ const ForgotPassword = () => {
         {/* Logo */}
         <div className="text-center mb-8">
           <div className="inline-flex items-center gap-3 mb-4">
-            <img src="https://customer-assets.emergentagent.com/job_fleetwizard-3/artifacts/thwmb0am_GTI.png" alt="GTI Fleet" className="h-14" />
+            <img src="/gti-logo.png" alt="GTI Fleet" className="h-14" />
           </div>
           <p className="text-slate-400">Fleet Solutions</p>
         </div>

@@ -5,7 +5,7 @@ from datetime import datetime, timezone
 import uuid
 
 from .enums import (
-    MaintenanceType, WorkshopType, CurrencyEnum, CountryEnum,
+    MaintenanceType, WorkshopType, CurrencyEnum, CountryCode,
     RequestStatus, RequestPriority, ChecklistItemStatus,
 )
 
@@ -111,6 +111,17 @@ class MaintenanceRequestCreate(BaseModel):
     country: Optional[str] = None
 
 
+class MaintenanceRequestUpdate(BaseModel):
+    vehicle_id: Optional[str] = None
+    driver_id: Optional[str] = None
+    request_type: Optional[str] = None
+    description: Optional[str] = None
+    priority: Optional[RequestPriority] = None
+    estimated_cost: Optional[float] = None
+    currency: Optional[CurrencyEnum] = None
+    country: Optional[str] = None
+
+
 class MaintenanceRequestApproval(BaseModel):
     manager_id: str
     approved: bool
@@ -158,13 +169,34 @@ class PreTripChecklistCreate(BaseModel):
     additional_notes: Optional[str] = None
 
 
+class PreTripChecklistUpdate(BaseModel):
+    driver_id: Optional[str] = None
+    vehicle_id: Optional[str] = None
+    engine_oil: Optional[ChecklistItemStatus] = None
+    engine_oil_notes: Optional[str] = None
+    tires: Optional[ChecklistItemStatus] = None
+    tires_notes: Optional[str] = None
+    brakes: Optional[ChecklistItemStatus] = None
+    brakes_notes: Optional[str] = None
+    lights: Optional[ChecklistItemStatus] = None
+    lights_notes: Optional[str] = None
+    fuel_level: Optional[ChecklistItemStatus] = None
+    fuel_level_notes: Optional[str] = None
+    mirrors_wipers: Optional[ChecklistItemStatus] = None
+    mirrors_wipers_notes: Optional[str] = None
+    cleanliness_damage: Optional[ChecklistItemStatus] = None
+    cleanliness_damage_notes: Optional[str] = None
+    damage_photos: Optional[List[str]] = None
+    additional_notes: Optional[str] = None
+
+
 class FleetManager(BaseModel):
     model_config = ConfigDict(extra="ignore")
     id: str = Field(default_factory=lambda: str(uuid.uuid4()))
     name: str
     email: str
     phone: str
-    country: CountryEnum
+    country: CountryCode
     is_active: bool = True
     created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
 
@@ -173,4 +205,4 @@ class FleetManagerCreate(BaseModel):
     name: str
     email: str
     phone: str
-    country: CountryEnum
+    country: CountryCode

@@ -4,7 +4,7 @@ from typing import Optional, Dict, Any
 from datetime import datetime
 import uuid
 
-from .enums import CurrencyEnum, CountryEnum
+from .enums import CurrencyEnum, CountryCode
 
 
 class Asset(BaseModel):
@@ -31,6 +31,17 @@ class AssetCreate(BaseModel):
     acquisition_cost: float
     currency: CurrencyEnum
     depreciation_rate: float = 0.15
+
+
+class AssetUpdate(BaseModel):
+    vehicle_id: Optional[str] = None
+    acquisition_date: Optional[datetime] = None
+    acquisition_cost: Optional[float] = None
+    currency: Optional[CurrencyEnum] = None
+    depreciation_rate: Optional[float] = None
+    current_value: Optional[float] = None
+    disposal_date: Optional[datetime] = None
+    disposal_value: Optional[float] = None
 
 
 class ExchangeRate(BaseModel):
@@ -87,4 +98,4 @@ class TCORecord(BaseModel):
     cost_per_km: float = 0
     cost_per_trip: float = 0
     currency: CurrencyEnum
-    country: CountryEnum
+    country: CountryCode

@@ -1,35 +1,59 @@
 import React, { useEffect, useState, useCallback } from 'react';
 import axios from 'axios';
-import { Plus, AlertCircle, Droplet, AlertTriangle } from 'lucide-react';
+import { Plus, AlertCircle, Pencil, Trash2, AlertTriangle } from 'lucide-react';
 import { toast } from 'sonner';
+import { Link } from 'react-router-dom';
+import { useAuth } from '../contexts/AuthContext';
 import { Button } from '../components/ui/button';
 import { Input } from '../components/ui/input';
-import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle, DialogTrigger } from '../components/ui/dialog';
+import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from '../components/ui/dialog';
 import { Label } from '../components/ui/label';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '../components/ui/select';
-import { Link } from 'react-router-dom';
+import ConfirmDeleteDialog from '../components/ConfirmDeleteDialog';
+import { completeDialogSubmit } from '../utils/formUtils';
+import { canEditFleetRecord, canHardDelete } from '../utils/permissions';
 
 const BACKEND_URL = process.env.REACT_APP_BACKEND_URL;
 const API = `${BACKEND_URL}/api`;
 
+const createInitialFormData = () => ({
+  vehicle_id: '',
+  driver_id: '',
+  date: new Date().toISOString().split('T')[0],
+  quantity_liters: 0,
+  cost: 0,
+  currency: 'GHS',
+  odometer_reading: 0,
+  location: '',
+});
+
+const transactionToFormData = (txn) => ({
+  vehicle_id: txn.vehicle_id,
+  driver_id: txn.driver_id,
+  date: new Date(txn.date).toISOString().split('T')[0],
+  quantity_liters: txn.quantity_liters,
+  cost: txn.cost,
+  currency: txn.currency,
+  odometer_reading: txn.odometer_reading,
+  location: txn.location,
+});
+
 const Fuel = () => {
+  const { user } = useAuth();
+  const canEdit = canEditFleetRecord(user?.role);
+  const canDelete = canHardDelete(user?.role, 'fuel_transaction');
+
   const [transactions, setTransactions] = useState([]);
   const [vehicles, setVehicles] = useState([]);
   const [drivers, setDrivers] = useState([]);
   const [loading, setLoading] = useState(true);
   const [dialogOpen, setDialogOpen] = useState(false);
   const [checklistStatus, setChecklistStatus] = useState(null);
+  const [editingId, setEditingId] = useState(null);
+  const [deleteTarget, setDeleteTarget] = useState(null);
+  const [deleting, setDeleting] = useState(false);
 
-  const [formData, setFormData] = useState({
-    vehicle_id: '',
-    driver_id: '',
-    date: new Date().toISOString().split('T')[0],
-    quantity_liters: 0,
-    cost: 0,
-    currency: 'GHS',
-    odometer_reading: 0,
-    location: '',
-  });
+  const [formData, setFormData] = useState(createInitialFormData);
 
   const fetchData = useCallback(async () => {
     try {
@@ -62,32 +86,74 @@ const Fuel = () => {
   }, [fetchData]);
 
   useEffect(() => {
-    if (formData.vehicle_id && formData.driver_id) {
+    if (formData.vehicle_id && formData.driver_id && !editingId) {
       checkPreTripStatus(formData.vehicle_id, formData.driver_id);
     }
-  }, [formData.vehicle_id, formData.driver_id, checkPreTripStatus]);
+  }, [formData.vehicle_id, formData.driver_id, editingId, checkPreTripStatus]);
+
+  const handleDialogOpenChange = (open) => {
+    setDialogOpen(open);
+    if (!open) {
+      setEditingId(null);
+      setFormData(createInitialFormData());
+      setChecklistStatus(null);
+    }
+  };
+
+  const openCreateDialog = () => {
+    setEditingId(null);
+    setFormData(createInitialFormData());
+    setDialogOpen(true);
+  };
+
+  const openEditDialog = (txn) => {
+    setEditingId(txn.id);
+    setFormData(transactionToFormData(txn));
+    setDialogOpen(true);
+  };
+
+  const buildPayload = () => ({
+    ...formData,
+    date: new Date(formData.date).toISOString(),
+    quantity_liters: parseFloat(formData.quantity_liters),
+    cost: parseFloat(formData.cost),
+    odometer_reading: parseFloat(formData.odometer_reading),
+  });
 
   const handleSubmit = async (e) => {
     e.preventDefault();
-    
-    if (!checklistStatus?.can_log_trips) {
+
+    if (!editingId && !checklistStatus?.can_log_trips) {
       toast.error('Please complete the pre-trip checklist before logging fuel');
       return;
     }
-    
+
+    await completeDialogSubmit({
+      submit: () =>
+        editingId
+          ? axios.put(`${API}/fuel/${editingId}`, buildPayload())
+          : axios.post(`${API}/fuel`, buildPayload()),
+      setDialogOpen: handleDialogOpenChange,
+      setFormData,
+      initialFormData: createInitialFormData,
+      onSuccess: fetchData,
+      successMessage: editingId ? 'Fuel transaction updated!' : 'Fuel transaction recorded!',
+      errorMessage: editingId ? 'Failed to update transaction' : 'Failed to record transaction',
+    });
+  };
+
+  const handleDelete = async () => {
+    if (!deleteTarget) return;
+    setDeleting(true);
     try {
-      await axios.post(`${API}/fuel`, {
-        ...formData,
-        date: new Date(formData.date).toISOString(),
-        quantity_liters: parseFloat(formData.quantity_liters),
-        cost: parseFloat(formData.cost),
-        odometer_reading: parseFloat(formData.odometer_reading),
-      });
-      toast.success('Fuel transaction recorded!');
-      setDialogOpen(false);
+      await axios.delete(`${API}/fuel/${deleteTarget.id}`);
+      toast.success('Fuel transaction deleted');
+      setDeleteTarget(null);
       fetchData();
     } catch {
-      toast.error('Failed to record transaction');
+      toast.error('Failed to delete transaction');
+    } finally {
+      setDeleting(false);
     }
   };
 
@@ -100,110 +166,12 @@ const Fuel = () => {
           <h1 className="text-3xl font-bold text-slate-800">Fuel Management</h1>
           <p className="text-slate-600 mt-1">Track fuel consumption and detect anomalies</p>
         </div>
-        <Dialog open={dialogOpen} onOpenChange={setDialogOpen}>
-          <DialogTrigger asChild>
-            <Button data-testid="add-fuel-btn">
-              <Plus size={18} className="mr-2" />
-              Add Transaction
-            </Button>
-          </DialogTrigger>
-          <DialogContent>
-            <DialogHeader>
-              <DialogTitle>Record Fuel Transaction</DialogTitle>
-              <DialogDescription>Log a fuel purchase to track consumption and detect anomalies.</DialogDescription>
-            </DialogHeader>
-            
-            {formData.vehicle_id && formData.driver_id && !checklistStatus?.can_log_trips && (
-              <div className="bg-amber-50 border border-amber-200 rounded-lg p-3 mb-4">
-                <div className="flex items-start gap-2">
-                  <AlertTriangle className="text-amber-600 mt-0.5" size={18} />
-                  <div>
-                    <p className="font-semibold text-amber-800 text-sm">Pre-Trip Checklist Required</p>
-                    <p className="text-xs text-amber-700">Complete the checklist before logging fuel.</p>
-                    <Link to="/pre-trip-checklist" className="text-xs text-amber-600 underline mt-1 inline-block">
-                      Go to Pre-Trip Checklist
-                    </Link>
-                  </div>
-                </div>
-              </div>
-            )}
-            
-            <form onSubmit={handleSubmit} className="space-y-4">
-              <div>
-                <Label>Vehicle</Label>
-                <Select value={formData.vehicle_id} onValueChange={(value) => setFormData({...formData, vehicle_id: value})}>
-                  <SelectTrigger>
-                    <SelectValue placeholder="Select vehicle" />
-                  </SelectTrigger>
-                  <SelectContent>
-                    {vehicles.map(v => (
-                      <SelectItem key={v.id} value={v.id}>
-                        {v.registration_number} - {v.make} {v.model}
-                      </SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
-              </div>
-              <div>
-                <Label>Driver</Label>
-                <Select value={formData.driver_id} onValueChange={(value) => setFormData({...formData, driver_id: value})}>
-                  <SelectTrigger>
-                    <SelectValue placeholder="Select driver" />
-                  </SelectTrigger>
-                  <SelectContent>
-                    {drivers.map(d => (
-                      <SelectItem key={d.id} value={d.id}>
-                        {d.first_name} {d.last_name}
-                      </SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
-              </div>
-              <div>
-                <Label>Date</Label>
-                <Input type="date" value={formData.date} onChange={(e) => setFormData({...formData, date: e.target.value})} required />
-              </div>
-              <div className="grid grid-cols-2 gap-4">
-                <div>
-                  <Label>Quantity (liters)</Label>
-                  <Input type="number" step="0.01" value={formData.quantity_liters} onChange={(e) => setFormData({...formData, quantity_liters: e.target.value})} required />
-                </div>
-                <div>
-                  <Label>Odometer Reading</Label>
-                  <Input type="number" value={formData.odometer_reading} onChange={(e) => setFormData({...formData, odometer_reading: e.target.value})} required />
-                </div>
-              </div>
-              <div className="grid grid-cols-2 gap-4">
-                <div>
-                  <Label>Cost</Label>
-                  <Input type="number" step="0.01" value={formData.cost} onChange={(e) => setFormData({...formData, cost: e.target.value})} required />
-                </div>
-                <div>
-                  <Label>Currency</Label>
-                  <Select value={formData.currency} onValueChange={(value) => setFormData({...formData, currency: value})}>
-                    <SelectTrigger>
-                      <SelectValue />
-                    </SelectTrigger>
-                    <SelectContent>
-                      <SelectItem value="GHS">GHS</SelectItem>
-                      <SelectItem value="LRD">LRD</SelectItem>
-                      <SelectItem value="USD">USD</SelectItem>
-                      <SelectItem value="STN">STN</SelectItem>
-                    </SelectContent>
-                  </Select>
-                </div>
-              </div>
-              <div>
-                <Label>Location</Label>
-                <Input value={formData.location} onChange={(e) => setFormData({...formData, location: e.target.value})} required />
-              </div>
-              <div className="flex justify-end gap-2 mt-6">
-                <Button type="button" variant="outline" onClick={() => setDialogOpen(false)}>Cancel</Button>
-                <Button type="submit">Record Transaction</Button>
-              </div>
-            </form>
-          </DialogContent>
-        </Dialog>
+        {canEdit && (
+          <Button data-testid="add-fuel-btn" onClick={openCreateDialog}>
+            <Plus size={18} className="mr-2" />
+            Add Transaction
+          </Button>
+        )}
       </div>
 
       {anomalies.length > 0 && (
@@ -215,6 +183,116 @@ const Fuel = () => {
           </div>
         </div>
       )}
+
+      <Dialog open={dialogOpen} onOpenChange={handleDialogOpenChange}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>{editingId ? 'Edit Fuel Transaction' : 'Record Fuel Transaction'}</DialogTitle>
+            <DialogDescription>
+              {editingId ? 'Update fuel transaction details.' : 'Log a fuel purchase to track consumption and detect anomalies.'}
+            </DialogDescription>
+          </DialogHeader>
+
+          {!editingId && formData.vehicle_id && formData.driver_id && !checklistStatus?.can_log_trips && (
+            <div className="bg-amber-50 border border-amber-200 rounded-lg p-3 mb-4">
+              <div className="flex items-start gap-2">
+                <AlertTriangle className="text-amber-600 mt-0.5" size={18} />
+                <div>
+                  <p className="font-semibold text-amber-800 text-sm">Pre-Trip Checklist Required</p>
+                  <p className="text-xs text-amber-700">Complete the checklist before logging fuel.</p>
+                  <Link to="/pre-trip-checklist" className="text-xs text-amber-600 underline mt-1 inline-block">
+                    Go to Pre-Trip Checklist
+                  </Link>
+                </div>
+              </div>
+            </div>
+          )}
+
+          <form onSubmit={handleSubmit} className="space-y-4">
+            <div>
+              <Label>Vehicle</Label>
+              <Select value={formData.vehicle_id} onValueChange={(value) => setFormData({...formData, vehicle_id: value})}>
+                <SelectTrigger>
+                  <SelectValue placeholder="Select vehicle" />
+                </SelectTrigger>
+                <SelectContent>
+                  {vehicles.map(v => (
+                    <SelectItem key={v.id} value={v.id}>
+                      {v.registration_number} - {v.make} {v.model}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+            <div>
+              <Label>Driver</Label>
+              <Select value={formData.driver_id} onValueChange={(value) => setFormData({...formData, driver_id: value})}>
+                <SelectTrigger>
+                  <SelectValue placeholder="Select driver" />
+                </SelectTrigger>
+                <SelectContent>
+                  {drivers.map(d => (
+                    <SelectItem key={d.id} value={d.id}>
+                      {d.first_name} {d.last_name}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+            <div>
+              <Label>Date</Label>
+              <Input type="date" value={formData.date} onChange={(e) => setFormData({...formData, date: e.target.value})} required />
+            </div>
+            <div className="grid grid-cols-2 gap-4">
+              <div>
+                <Label>Quantity (liters)</Label>
+                <Input type="number" step="0.01" value={formData.quantity_liters} onChange={(e) => setFormData({...formData, quantity_liters: e.target.value})} required />
+              </div>
+              <div>
+                <Label>Odometer Reading</Label>
+                <Input type="number" value={formData.odometer_reading} onChange={(e) => setFormData({...formData, odometer_reading: e.target.value})} required />
+              </div>
+            </div>
+            <div className="grid grid-cols-2 gap-4">
+              <div>
+                <Label>Cost</Label>
+                <Input type="number" step="0.01" value={formData.cost} onChange={(e) => setFormData({...formData, cost: e.target.value})} required />
+              </div>
+              <div>
+                <Label>Currency</Label>
+                <Select value={formData.currency} onValueChange={(value) => setFormData({...formData, currency: value})}>
+                  <SelectTrigger>
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="GHS">GHS</SelectItem>
+                    <SelectItem value="LRD">LRD</SelectItem>
+                    <SelectItem value="USD">USD</SelectItem>
+                    <SelectItem value="STN">STN</SelectItem>
+                  </SelectContent>
+                </Select>
+              </div>
+            </div>
+            <div>
+              <Label>Location</Label>
+              <Input value={formData.location} onChange={(e) => setFormData({...formData, location: e.target.value})} required />
+            </div>
+            <div className="flex justify-end gap-2 mt-6">
+              <Button type="button" variant="outline" onClick={() => handleDialogOpenChange(false)}>Cancel</Button>
+              <Button type="submit">{editingId ? 'Save Changes' : 'Record Transaction'}</Button>
+            </div>
+          </form>
+        </DialogContent>
+      </Dialog>
+
+      <ConfirmDeleteDialog
+        open={!!deleteTarget}
+        onOpenChange={(open) => !open && setDeleteTarget(null)}
+        title="Delete fuel transaction?"
+        description="Permanently delete this fuel record? This cannot be undone."
+        onConfirm={handleDelete}
+        loading={deleting}
+      />
 
       <div className="fleet-card table-container">
         <table>
@@ -228,12 +306,13 @@ const Fuel = () => {
               <th>Efficiency</th>
               <th>Location</th>
               <th>Status</th>
+              {(canEdit || canDelete) && <th>Actions</th>}
             </tr>
           </thead>
           <tbody>
             {transactions.length === 0 ? (
               <tr>
-                <td colSpan="8" className="text-center py-8 text-slate-500">No fuel transactions</td>
+                <td colSpan={(canEdit || canDelete) ? 9 : 8} className="text-center py-8 text-slate-500">No fuel transactions</td>
               </tr>
             ) : (
               transactions.map((txn) => {
@@ -258,6 +337,22 @@ const Fuel = () => {
                         <span className="status-badge active">Normal</span>
                       )}
                     </td>
+                    {(canEdit || canDelete) && (
+                      <td>
+                        <div className="flex gap-1">
+                          {canEdit && (
+                            <Button variant="ghost" size="icon" onClick={() => openEditDialog(txn)} aria-label="Edit transaction">
+                              <Pencil size={16} />
+                            </Button>
+                          )}
+                          {canDelete && (
+                            <Button variant="ghost" size="icon" onClick={() => setDeleteTarget(txn)} aria-label="Delete transaction">
+                              <Trash2 size={16} className="text-red-600" />
+                            </Button>
+                          )}
+                        </div>
+                      </td>
+                    )}
                   </tr>
                 );
               })

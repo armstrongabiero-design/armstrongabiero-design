@@ -7,8 +7,11 @@ from database import db
 from models import CurrencyEnum
 from auth_service import get_current_user
 from currency_utils import currency_converter
+from country_utils import normalize_country_code, country_filter_query
 
 router = APIRouter()
+
+PRIMARY_COUNTRIES = ("GH", "LR", "ST")
 
 
 @router.get("/")
@@ -30,7 +33,7 @@ async def root():
 @router.get("/dashboard/stats")
 async def get_dashboard_stats(country: Optional[str] = None):
     """Get dashboard statistics with optional country filter"""
-    country_filter = {"country": country} if country else {}
+    country_filter = country_filter_query(country) if country else {}
     total_vehicles = await db.vehicles.count_documents(country_filter)
     active_vehicles = await db.vehicles.count_documents({**country_filter, "status": "ACTIVE"})
     total_drivers = await db.drivers.count_documents(country_filter)
@@ -46,9 +49,10 @@ async def get_dashboard_stats(country: Optional[str] = None):
     total_maintenance_cost_ghs = total_maintenance_cost_usd * ghs_rate
     vehicles_by_country = {}
     drivers_by_country = {}
-    for c in ['GHANA', 'LIBERIA', 'SAO_TOME']:
-        vehicles_by_country[c] = await db.vehicles.count_documents({"country": c})
-        drivers_by_country[c] = await db.drivers.count_documents({"country": c})
+    for c in PRIMARY_COUNTRIES:
+        q = country_filter_query(c)
+        vehicles_by_country[c] = await db.vehicles.count_documents(q)
+        drivers_by_country[c] = await db.drivers.count_documents(q)
     return {
         "total_vehicles": total_vehicles,
         "active_vehicles": active_vehicles,
@@ -122,21 +126,16 @@ async def get_staff_dashboard(current_user: dict = Depends(get_current_user)):
     def normalize_country(country):
         if not country:
             return None
-        country_upper = country.upper().replace(' ', '_').replace('É', 'E')
-        if 'GHANA' in country_upper:
-            return 'GHANA'
-        if 'LIBERIA' in country_upper:
-            return 'LIBERIA'
-        if 'SAO' in country_upper or 'TOME' in country_upper or 'STP' in country_upper:
-            return 'SAO_TOME'
-        return country_upper
+        try:
+            return normalize_country_code(country)
+        except ValueError:
+            return None
 
     normalized_country = normalize_country(user_country)
     if user_role == 'GROUP_FLEET_MANAGER':
         country_filter = {}
     else:
-        country_regex = {"$regex": f"^{normalized_country}$", "$options": "i"} if normalized_country else {"$exists": False}
-        country_filter = {"country": country_regex}
+        country_filter = country_filter_query(normalized_country) if normalized_country else {"country": {"$exists": False}}
 
     total_vehicles = await db.vehicles.count_documents(country_filter)
     active_vehicles = await db.vehicles.count_documents({**country_filter, "status": "ACTIVE"})
@@ -152,11 +151,11 @@ async def get_staff_dashboard(current_user: dict = Depends(get_current_user)):
         pass
     elif user_role == 'FLEET_MANAGER':
         if normalized_country:
-            pending_users_query['country'] = {"$regex": f"^{normalized_country}$", "$options": "i"}
+            pending_users_query['country'] = country_filter_query(normalized_country)['country']
         pending_users_query['role'] = {"$in": ['FLEET_OFFICER', 'DRIVER', 'USER']}
     elif user_role == 'FLEET_OFFICER':
         if normalized_country:
-            pending_users_query['country'] = {"$regex": f"^{normalized_country}$", "$options": "i"}
+            pending_users_query['country'] = country_filter_query(normalized_country)['country']
         pending_users_query['role'] = {"$in": ['DRIVER', 'USER']}
     else:
         pending_users_query['id'] = 'NONE'
@@ -174,9 +173,10 @@ async def get_staff_dashboard(current_user: dict = Depends(get_current_user)):
     vehicles_by_country = {}
     drivers_by_country = {}
     if user_role == 'GROUP_FLEET_MANAGER':
-        for c in ['GHANA', 'LIBERIA', 'SAO_TOME']:
-            vehicles_by_country[c] = await db.vehicles.count_documents({"country": {"$regex": f"^{c}$", "$options": "i"}})
-            drivers_by_country[c] = await db.drivers.count_documents({"country": {"$regex": f"^{c}$", "$options": "i"}})
+        for c in PRIMARY_COUNTRIES:
+            q = country_filter_query(c)
+            vehicles_by_country[c] = await db.vehicles.count_documents(q)
+            drivers_by_country[c] = await db.drivers.count_documents(q)
 
     return {
         "user_role": user_role, "user_country": user_country,
@@ -198,7 +198,7 @@ async def get_staff_dashboard(current_user: dict = Depends(get_current_user)):
 @router.get("/dashboard/alerts")
 async def get_dashboard_alerts(country: Optional[str] = None):
     """Get all active alerts for the dashboard"""
-    country_filter = {"country": country} if country else {}
+    country_filter = country_filter_query(country) if country else {}
     alerts = []
     now = datetime.now(timezone.utc)
 
@@ -258,7 +258,7 @@ async def get_dashboard_alerts(country: Optional[str] = None):
 @router.get("/dashboard/compliance")
 async def get_compliance_status(country: Optional[str] = None):
     """Get compliance status for all vehicles and drivers"""
-    country_filter = {"country": country} if country else {}
+    country_filter = country_filter_query(country) if country else {}
     now = datetime.now(timezone.utc)
     compliance_items = []
     vehicles = await db.vehicles.find(country_filter, {"_id": 0}).to_list(1000)

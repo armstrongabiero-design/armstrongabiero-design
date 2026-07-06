@@ -4,6 +4,7 @@ from typing import Optional, Dict, Any
 from datetime import datetime, timezone
 import uuid
 
+from country_utils import normalize_country_code
 from auth_service import validate_password_strength
 
 from .enums import UserRole
@@ -59,6 +60,13 @@ class UserSelfRegister(BaseModel):
     def password_strength(cls, v: str) -> str:
         validate_password_strength(v)
         return v
+
+    @field_validator("country")
+    @classmethod
+    def normalize_user_country(cls, v: Optional[str]) -> Optional[str]:
+        if v is None or not str(v).strip():
+            return v
+        return normalize_country_code(v)
 
     @field_validator("role")
     @classmethod

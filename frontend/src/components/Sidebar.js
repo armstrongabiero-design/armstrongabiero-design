@@ -117,7 +117,7 @@ const Sidebar = ({ open, setOpen }) => {
       >
         <div className="p-6 border-b border-amber-100">
           <div className="flex items-center gap-2">
-            <img src="https://customer-assets.emergentagent.com/job_fleetwizard-3/artifacts/thwmb0am_GTI.png" alt="GTI Fleet" className="h-10" />
+            <img src="/gti-logo.png" alt="GTI Fleet" className="h-10" />
           </div>
           <p className="text-xs text-slate-500 mt-1">Fleet Solutions</p>
         </div>

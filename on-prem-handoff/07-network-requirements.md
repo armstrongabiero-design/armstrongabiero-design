@@ -23,7 +23,7 @@ The fleet platform needs **reliable HTTPS** from users to the **frontend** and *
 
 ## DNS and TLS
 
-- **Hostnames** for frontend and API (example pattern from cloud doc: `gti.jrfleetsolutions.com`, `api-gti.jrfleetsolutions.com`) — adjust for on-prem **internal DNS** or **split-horizon**  
+- **Production hostname:** `fleet.gtiholding.com` (UI + `/api` on one host; see `docs/PRODUCTION_DOMAIN.md`). Use a separate UAT hostname if needed — adjust for on-prem **internal DNS** or **split-horizon**  
 - **TLS certificates** on proxy/LB; **TLS everywhere** between tiers where supported (especially DB and S3 TLS)
 
 ## Load balancing

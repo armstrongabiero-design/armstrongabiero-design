@@ -3,6 +3,7 @@ import axios from 'axios';
 import { TrendingUp, DollarSign, Truck, PieChart, BarChart3, User } from 'lucide-react';
 import { useAuth } from '../contexts/AuthContext';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '../components/ui/select';
+import CountrySelect, { countryMatchesFilter } from '../components/CountrySelect';
 
 const BACKEND_URL = process.env.REACT_APP_BACKEND_URL;
 const API = `${BACKEND_URL}/api`;
@@ -127,17 +128,13 @@ const Reports = () => {
           </Select>
           {!isPersonalView && (
             <>
-              <Select value={selectedCountry || "ALL"} onValueChange={(v) => setSelectedCountry(v === "ALL" ? "" : v)}>
-                <SelectTrigger className="w-36">
-                  <SelectValue placeholder="All Countries" />
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="ALL">All Countries</SelectItem>
-                  <SelectItem value="GHANA">Ghana</SelectItem>
-                  <SelectItem value="LIBERIA">Liberia</SelectItem>
-                  <SelectItem value="SAO_TOME">São Tomé</SelectItem>
-                </SelectContent>
-              </Select>
+              <CountrySelect
+                value={selectedCountry || 'ALL'}
+                onValueChange={(v) => setSelectedCountry(v === 'ALL' ? '' : v)}
+                includeAllOption
+                allLabel="All Countries"
+                className="w-36"
+              />
               <Select value={selectedVehicle || "FLEET"} onValueChange={(v) => setSelectedVehicle(v === "FLEET" ? "" : v)}>
                 <SelectTrigger className="w-48">
                   <SelectValue placeholder="Fleet Overview" />

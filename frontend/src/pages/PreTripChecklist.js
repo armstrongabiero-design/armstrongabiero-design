@@ -1,6 +1,6 @@
 import React, { useEffect, useState, useCallback } from 'react';
 import axios from 'axios';
-import { ClipboardCheck, Camera, AlertTriangle, CheckCircle2, XCircle, AlertCircle } from 'lucide-react';
+import { ClipboardCheck, Camera, AlertTriangle, CheckCircle2, XCircle, AlertCircle, Pencil, Trash2 } from 'lucide-react';
 import { toast } from 'sonner';
 import { useAuth } from '../contexts/AuthContext';
 import { Button } from '../components/ui/button';
@@ -9,6 +9,9 @@ import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle, Di
 import { Label } from '../components/ui/label';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '../components/ui/select';
 import { Textarea } from '../components/ui/textarea';
+import ConfirmDeleteDialog from '../components/ConfirmDeleteDialog';
+import { completeDialogSubmit } from '../utils/formUtils';
+import { canEditPreTripChecklist, canHardDelete } from '../utils/permissions';
 
 const BACKEND_URL = process.env.REACT_APP_BACKEND_URL;
 const API = `${BACKEND_URL}/api`;
@@ -23,10 +26,52 @@ const CHECKLIST_ITEMS = [
   { key: 'cleanliness_damage', label: 'Cleanliness & Damage Check', icon: '🚗' },
 ];
 
+const ITEM_NAME_TO_KEY = Object.fromEntries(
+  CHECKLIST_ITEMS.map(({ key, label }) => [label, key])
+);
+
+const createInitialFormData = (user, isPersonalView) => ({
+  driver_id: isPersonalView ? (user?.driver_id || user?.id) : '',
+  vehicle_id: '',
+  engine_oil: 'OK',
+  engine_oil_notes: '',
+  tires: 'OK',
+  tires_notes: '',
+  brakes: 'OK',
+  brakes_notes: '',
+  lights: 'OK',
+  lights_notes: '',
+  fuel_level: 'OK',
+  fuel_level_notes: '',
+  mirrors_wipers: 'OK',
+  mirrors_wipers_notes: '',
+  cleanliness_damage: 'OK',
+  cleanliness_damage_notes: '',
+  damage_photos: [],
+  additional_notes: '',
+});
+
+const checklistToFormData = (checklist, user, isPersonalView) => {
+  const base = createInitialFormData(user, isPersonalView);
+  base.driver_id = checklist.driver_id;
+  base.vehicle_id = checklist.vehicle_id;
+  base.damage_photos = checklist.damage_photos || [];
+  base.additional_notes = checklist.notes || '';
+  (checklist.checklist_items || []).forEach((item) => {
+    const key = ITEM_NAME_TO_KEY[item.item_name];
+    if (key) {
+      base[key] = item.status;
+      base[`${key}_notes`] = item.notes || '';
+    }
+  });
+  return base;
+};
+
 const PreTripChecklist = () => {
   const { user, token, isDriverOrUser } = useAuth();
   const isPersonalView = isDriverOrUser && isDriverOrUser();
-  
+  const canDelete = canHardDelete(user?.role, 'pretrip_checklist');
+
   const [checklists, setChecklists] = useState([]);
   const [drivers, setDrivers] = useState([]);
   const [vehicles, setVehicles] = useState([]);
@@ -34,31 +79,15 @@ const PreTripChecklist = () => {
   const [dialogOpen, setDialogOpen] = useState(false);
   const [checklistStatus, setChecklistStatus] = useState(null);
   const [uploadingPhoto, setUploadingPhoto] = useState(false);
+  const [editingId, setEditingId] = useState(null);
+  const [deleteTarget, setDeleteTarget] = useState(null);
+  const [deleting, setDeleting] = useState(false);
 
   // For personal view, auto-set driver
   const [selectedDriver, setSelectedDriver] = useState(isPersonalView ? (user?.driver_id || user?.id) : '');
   const [selectedVehicle, setSelectedVehicle] = useState('');
   
-  const [formData, setFormData] = useState({
-    driver_id: isPersonalView ? (user?.driver_id || user?.id) : '',
-    vehicle_id: '',
-    engine_oil: 'OK',
-    engine_oil_notes: '',
-    tires: 'OK',
-    tires_notes: '',
-    brakes: 'OK',
-    brakes_notes: '',
-    lights: 'OK',
-    lights_notes: '',
-    fuel_level: 'OK',
-    fuel_level_notes: '',
-    mirrors_wipers: 'OK',
-    mirrors_wipers_notes: '',
-    cleanliness_damage: 'OK',
-    cleanliness_damage_notes: '',
-    damage_photos: [],
-    additional_notes: '',
-  });
+  const [formData, setFormData] = useState(createInitialFormData(user, isPersonalView));
 
   const fetchData = useCallback(async () => {
     try {
@@ -135,30 +164,58 @@ const PreTripChecklist = () => {
     }
   };
 
+  const handleDialogOpenChange = (open) => {
+    setDialogOpen(open);
+    if (!open) {
+      setEditingId(null);
+      setFormData(createInitialFormData(user, isPersonalView));
+    }
+  };
+
   const handleSubmit = async (e) => {
     e.preventDefault();
-    
+
     const driverId = isPersonalView ? (user?.driver_id || user?.id) : formData.driver_id;
-    
+    const payload = { ...formData, driver_id: driverId };
+    const headers = token ? { Authorization: `Bearer ${token}` } : {};
+
+    await completeDialogSubmit({
+      submit: () =>
+        editingId
+          ? axios.put(`${API}/pre-trip-checklists/${editingId}`, payload, { headers })
+          : axios.post(`${API}/pre-trip-checklists`, payload, { headers }),
+      setDialogOpen: handleDialogOpenChange,
+      setFormData,
+      initialFormData: () => createInitialFormData(user, isPersonalView),
+      onSuccess: () => {
+        fetchData();
+        const vehicleId = formData.vehicle_id;
+        if (driverId && vehicleId) {
+          checkTodayStatus(driverId, vehicleId);
+        }
+      },
+      successMessage: editingId ? 'Checklist updated!' : 'Pre-trip checklist completed! You can now log trips and fuel.',
+      errorMessage: editingId ? 'Failed to update checklist' : 'Failed to submit checklist',
+    });
+  };
+
+  const handleDelete = async () => {
+    if (!deleteTarget) return;
+    setDeleting(true);
     try {
       const headers = token ? { Authorization: `Bearer ${token}` } : {};
-      await axios.post(`${API}/pre-trip-checklists`, {
-        ...formData,
-        driver_id: driverId,
-      }, { headers });
-      toast.success('Pre-trip checklist completed! You can now log trips and fuel.');
-      setDialogOpen(false);
+      await axios.delete(`${API}/pre-trip-checklists/${deleteTarget.id}`, { headers });
+      toast.success('Checklist deleted');
+      setDeleteTarget(null);
       fetchData();
-      const vehicleId = formData.vehicle_id;
-      if (driverId && vehicleId) {
-        checkTodayStatus(driverId, vehicleId);
+      const driverId = isPersonalView ? (user?.driver_id || user?.id) : selectedDriver;
+      if (driverId && selectedVehicle) {
+        checkTodayStatus(driverId, selectedVehicle);
       }
     } catch (error) {
-      if (error.response?.data?.detail) {
-        toast.error(error.response.data.detail);
-      } else {
-        toast.error('Failed to submit checklist');
-      }
+      toast.error(error.response?.data?.detail || 'Failed to delete checklist');
+    } finally {
+      setDeleting(false);
     }
   };
 
@@ -187,11 +244,18 @@ const PreTripChecklist = () => {
 
   const openChecklistForm = () => {
     const driverId = isPersonalView ? (user?.driver_id || user?.id) : selectedDriver;
+    setEditingId(null);
     setFormData({
-      ...formData,
+      ...createInitialFormData(user, isPersonalView),
       driver_id: driverId,
       vehicle_id: selectedVehicle,
     });
+    setDialogOpen(true);
+  };
+
+  const openEditDialog = (checklist) => {
+    setEditingId(checklist.id);
+    setFormData(checklistToFormData(checklist, user, isPersonalView));
     setDialogOpen(true);
   };
 
@@ -261,9 +325,17 @@ const PreTripChecklist = () => {
                     Completed at {new Date(checklistStatus.checklist?.created_at || checklistStatus.created_at).toLocaleTimeString()}
                   </p>
                 </div>
-                <span className={getOverallStatusBadge(checklistStatus.checklist?.overall_status || checklistStatus.overall_status)}>
-                  {checklistStatus.checklist?.overall_status || checklistStatus.overall_status}
-                </span>
+                <div className="flex items-center gap-2">
+                  <span className={getOverallStatusBadge(checklistStatus.checklist?.overall_status || checklistStatus.overall_status)}>
+                    {checklistStatus.checklist?.overall_status || checklistStatus.overall_status}
+                  </span>
+                  {checklistStatus.checklist && canEditPreTripChecklist(user?.role, isPersonalView, checklistStatus.checklist, user) && (
+                    <Button variant="outline" size="sm" onClick={() => openEditDialog(checklistStatus.checklist)}>
+                      <Pencil size={14} className="mr-1" />
+                      Edit
+                    </Button>
+                  )}
+                </div>
               </div>
             ) : (
               <div className="flex items-center justify-between">
@@ -285,10 +357,10 @@ const PreTripChecklist = () => {
       </div>
 
       {/* Checklist Form Dialog */}
-      <Dialog open={dialogOpen} onOpenChange={setDialogOpen}>
+      <Dialog open={dialogOpen} onOpenChange={handleDialogOpenChange}>
         <DialogContent className="max-w-2xl max-h-[90vh] overflow-y-auto">
           <DialogHeader>
-            <DialogTitle>Pre-Trip Vehicle Inspection</DialogTitle>
+            <DialogTitle>{editingId ? 'Edit Pre-Trip Inspection' : 'Pre-Trip Vehicle Inspection'}</DialogTitle>
             <DialogDescription>Check each item and note any issues</DialogDescription>
           </DialogHeader>
           <form onSubmit={handleSubmit} className="space-y-4">
@@ -363,12 +435,21 @@ const PreTripChecklist = () => {
             </div>
 
             <div className="flex justify-end gap-2 mt-6">
-              <Button type="button" variant="outline" onClick={() => setDialogOpen(false)}>Cancel</Button>
-              <Button type="submit">Complete Checklist</Button>
+              <Button type="button" variant="outline" onClick={() => handleDialogOpenChange(false)}>Cancel</Button>
+              <Button type="submit">{editingId ? 'Save Changes' : 'Complete Checklist'}</Button>
             </div>
           </form>
         </DialogContent>
       </Dialog>
+
+      <ConfirmDeleteDialog
+        open={!!deleteTarget}
+        onOpenChange={(open) => !open && setDeleteTarget(null)}
+        title="Delete checklist?"
+        description="Permanently delete this pre-trip checklist? This cannot be undone."
+        onConfirm={handleDelete}
+        loading={deleting}
+      />
 
       {/* Recent Checklists */}
       <div className="fleet-card">
@@ -382,6 +463,7 @@ const PreTripChecklist = () => {
             checklists.slice(0, 10).map(checklist => {
               const driver = drivers.find(d => d.id === checklist.driver_id);
               const vehicle = vehicles.find(v => v.id === checklist.vehicle_id);
+              const canEdit = canEditPreTripChecklist(user?.role, isPersonalView, checklist, user);
               return (
                 <div key={checklist.id} className="flex items-center justify-between p-3 bg-slate-50 rounded-lg">
                   <div>
@@ -393,9 +475,21 @@ const PreTripChecklist = () => {
                       {new Date(checklist.date || checklist.created_at).toLocaleDateString()} at {new Date(checklist.created_at).toLocaleTimeString()}
                     </p>
                   </div>
-                  <span className={getOverallStatusBadge(checklist.overall_status)}>
-                    {checklist.overall_status}
-                  </span>
+                  <div className="flex items-center gap-2">
+                    <span className={getOverallStatusBadge(checklist.overall_status)}>
+                      {checklist.overall_status}
+                    </span>
+                    {canEdit && (
+                      <Button variant="ghost" size="icon" onClick={() => openEditDialog(checklist)} aria-label="Edit checklist">
+                        <Pencil size={16} />
+                      </Button>
+                    )}
+                    {canDelete && (
+                      <Button variant="ghost" size="icon" onClick={() => setDeleteTarget(checklist)} aria-label="Delete checklist">
+                        <Trash2 size={16} className="text-red-600" />
+                      </Button>
+                    )}
+                  </div>
                 </div>
               );
             })

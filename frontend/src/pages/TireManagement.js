@@ -1,16 +1,57 @@
 import React, { useEffect, useState } from 'react';
 import axios from 'axios';
-import { Plus, RotateCw, AlertTriangle, CheckCircle } from 'lucide-react';
+import { Plus, RotateCw, AlertTriangle, CheckCircle, Pencil, Trash2 } from 'lucide-react';
 import { toast } from 'sonner';
+import { useAuth } from '../contexts/AuthContext';
 import { Button } from '../components/ui/button';
 import { Input } from '../components/ui/input';
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle, DialogTrigger } from '../components/ui/dialog';
 import { Label } from '../components/ui/label';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '../components/ui/select';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '../components/ui/tabs';
+import CountrySelect, { DEFAULT_COUNTRY_CODE, getCountryBadgeClass, getCountryLabel, normalizeCountryCode } from '../components/CountrySelect';
+import ConfirmDeleteDialog from '../components/ConfirmDeleteDialog';
+import { completeDialogSubmit } from '../utils/formUtils';
+import { canEditFleetRecord, canHardDelete } from '../utils/permissions';
 
 const BACKEND_URL = process.env.REACT_APP_BACKEND_URL;
 const API = `${BACKEND_URL}/api`;
+
+const createInitialFormData = () => ({
+  serial_number: '',
+  brand: '',
+  model: '',
+  size: '',
+  vehicle_id: '',
+  position: '',
+  country: DEFAULT_COUNTRY_CODE,
+  purchase_date: new Date().toISOString().split('T')[0],
+  purchase_cost: '',
+  currency: 'GHS',
+  tread_depth_mm: '',
+  notes: '',
+});
+
+const tireToFormData = (tire) => {
+  const purchaseDate =
+    typeof tire.purchase_date === 'string'
+      ? tire.purchase_date.split('T')[0]
+      : new Date(tire.purchase_date).toISOString().split('T')[0];
+  return {
+    serial_number: tire.serial_number,
+    brand: tire.brand,
+    model: tire.model || '',
+    size: tire.size,
+    vehicle_id: tire.vehicle_id || '',
+    position: tire.position || '',
+    country: normalizeCountryCode(tire.country),
+    purchase_date: purchaseDate,
+    purchase_cost: tire.purchase_cost,
+    currency: tire.currency,
+    tread_depth_mm: tire.tread_depth_mm ?? '',
+    notes: tire.notes || '',
+  };
+};
 
 const POSITIONS = [
   { value: 'FRONT_LEFT', label: 'Front Left (FL)' },
@@ -21,27 +62,21 @@ const POSITIONS = [
 ];
 
 const TireManagement = () => {
+  const { user } = useAuth();
+  const canEdit = canEditFleetRecord(user?.role);
+  const canDelete = canHardDelete(user?.role, 'tire');
+
   const [tires, setTires] = useState([]);
   const [vehicles, setVehicles] = useState([]);
   const [loading, setLoading] = useState(true);
   const [dialogOpen, setDialogOpen] = useState(false);
+  const [editingId, setEditingId] = useState(null);
+  const [deleteTarget, setDeleteTarget] = useState(null);
+  const [deleting, setDeleting] = useState(false);
   const [rotationDialogOpen, setRotationDialogOpen] = useState(false);
   const [selectedVehicle, setSelectedVehicle] = useState(null);
 
-  const [formData, setFormData] = useState({
-    serial_number: '',
-    brand: '',
-    model: '',
-    size: '',
-    vehicle_id: '',
-    position: '',
-    country: 'GHANA',
-    purchase_date: new Date().toISOString().split('T')[0],
-    purchase_cost: '',
-    currency: 'GHS',
-    tread_depth_mm: '',
-    notes: '',
-  });
+  const [formData, setFormData] = useState(createInitialFormData);
 
   useEffect(() => {
     fetchData();
@@ -62,35 +97,64 @@ const TireManagement = () => {
     }
   };
 
+  const handleDialogOpenChange = (open) => {
+    setDialogOpen(open);
+    if (!open) {
+      setEditingId(null);
+      setFormData(createInitialFormData());
+    }
+  };
+
+  const openCreateDialog = () => {
+    setEditingId(null);
+    setFormData(createInitialFormData());
+    setDialogOpen(true);
+  };
+
+  const openEditDialog = (tire) => {
+    setEditingId(tire.id);
+    setFormData(tireToFormData(tire));
+    setDialogOpen(true);
+  };
+
   const handleSubmit = async (e) => {
     e.preventDefault();
+    const payload = {
+      ...formData,
+      purchase_date: new Date(formData.purchase_date).toISOString(),
+      purchase_cost: parseFloat(formData.purchase_cost),
+      tread_depth_mm: formData.tread_depth_mm ? parseFloat(formData.tread_depth_mm) : null,
+      mileage_at_install: formData.vehicle_id ? 0 : null,
+      vehicle_id: formData.vehicle_id || null,
+      position: formData.position || null,
+    };
+    await completeDialogSubmit({
+      submit: () =>
+        editingId
+          ? axios.put(`${API}/tires/${editingId}`, payload)
+          : axios.post(`${API}/tires`, payload),
+      setDialogOpen: handleDialogOpenChange,
+      setFormData,
+      initialFormData: createInitialFormData,
+      onSuccess: fetchData,
+      successMessage: editingId ? 'Tire updated successfully!' : 'Tire added successfully!',
+      errorMessage: editingId ? 'Failed to update tire' : 'Failed to add tire',
+    });
+    setEditingId(null);
+  };
+
+  const handleConfirmDelete = async () => {
+    if (!deleteTarget) return;
+    setDeleting(true);
     try {
-      await axios.post(`${API}/tires`, {
-        ...formData,
-        purchase_date: new Date(formData.purchase_date).toISOString(),
-        purchase_cost: parseFloat(formData.purchase_cost),
-        tread_depth_mm: formData.tread_depth_mm ? parseFloat(formData.tread_depth_mm) : null,
-        mileage_at_install: formData.vehicle_id ? 0 : null,
-      });
-      toast.success('Tire added successfully!');
-      setDialogOpen(false);
+      await axios.delete(`${API}/tires/${deleteTarget.id}`);
+      toast.success('Tire deleted');
+      setDeleteTarget(null);
       fetchData();
-      setFormData({
-        serial_number: '',
-        brand: '',
-        model: '',
-        size: '',
-        vehicle_id: '',
-        position: '',
-        country: 'GHANA',
-        purchase_date: new Date().toISOString().split('T')[0],
-        purchase_cost: '',
-        currency: 'GHS',
-        tread_depth_mm: '',
-        notes: '',
-      });
     } catch (error) {
-      toast.error('Failed to add tire');
+      toast.error(error.response?.data?.detail || 'Failed to delete tire');
+    } finally {
+      setDeleting(false);
     }
   };
 
@@ -126,16 +190,17 @@ const TireManagement = () => {
           <p className="text-slate-600 mt-1">Track tire lifecycle, rotations, and replacements</p>
         </div>
         <div className="flex gap-2">
-          <Dialog open={dialogOpen} onOpenChange={setDialogOpen}>
+          {canEdit && (
+          <Dialog open={dialogOpen} onOpenChange={handleDialogOpenChange}>
             <DialogTrigger asChild>
-              <Button data-testid="add-tire-btn">
+              <Button data-testid="add-tire-btn" onClick={openCreateDialog}>
                 <Plus size={18} className="mr-2" />
                 Add Tire
               </Button>
             </DialogTrigger>
             <DialogContent className="max-w-lg">
               <DialogHeader>
-                <DialogTitle>Add New Tire</DialogTitle>
+                <DialogTitle>{editingId ? 'Edit Tire' : 'Add New Tire'}</DialogTitle>
                 <DialogDescription>Register a new tire with serial number tracking.</DialogDescription>
               </DialogHeader>
               <form onSubmit={handleSubmit} className="space-y-4">
@@ -213,23 +278,20 @@ const TireManagement = () => {
                   </div>
                   <div>
                     <Label>Country</Label>
-                    <Select value={formData.country} onValueChange={(value) => setFormData({...formData, country: value})}>
-                      <SelectTrigger><SelectValue /></SelectTrigger>
-                      <SelectContent>
-                        <SelectItem value="GHANA">Ghana</SelectItem>
-                        <SelectItem value="LIBERIA">Liberia</SelectItem>
-                        <SelectItem value="SAO_TOME">São Tomé</SelectItem>
-                      </SelectContent>
-                    </Select>
+                    <CountrySelect
+                      value={formData.country}
+                      onValueChange={(value) => setFormData({ ...formData, country: value })}
+                    />
                   </div>
                 </div>
                 <div className="flex justify-end gap-2 mt-6">
-                  <Button type="button" variant="outline" onClick={() => setDialogOpen(false)}>Cancel</Button>
-                  <Button type="submit">Add Tire</Button>
+                  <Button type="button" variant="outline" onClick={() => handleDialogOpenChange(false)}>Cancel</Button>
+                  <Button type="submit">{editingId ? 'Save Changes' : 'Add Tire'}</Button>
                 </div>
               </form>
             </DialogContent>
           </Dialog>
+          )}
         </div>
       </div>
 
@@ -272,7 +334,7 @@ const TireManagement = () => {
                     <h3 className="font-semibold text-lg">{vehicle.registration_number}</h3>
                     <p className="text-sm text-slate-500">{vehicle.make} {vehicle.model}</p>
                   </div>
-                  <span className="country-badge ghana">{vehicle.country}</span>
+                  <span className={getCountryBadgeClass(vehicle.country)}>{getCountryLabel(vehicle.country)}</span>
                 </div>
                 
                 {/* Tire Diagram */}
@@ -325,6 +387,7 @@ const TireManagement = () => {
                   <th>Tread</th>
                   <th>Status</th>
                   <th>Country</th>
+                  {canEdit && <th className="w-24">Actions</th>}
                 </tr>
               </thead>
               <tbody>
@@ -350,7 +413,26 @@ const TireManagement = () => {
                           {tire.status}
                         </span>
                       </td>
-                      <td><span className="country-badge ghana">{tire.country}</span></td>
+                      <td><span className={getCountryBadgeClass(tire.country)}>{getCountryLabel(tire.country)}</span></td>
+                      {canEdit && (
+                        <td>
+                          <div className="flex gap-1">
+                            <Button variant="ghost" size="icon" className="h-8 w-8" onClick={() => openEditDialog(tire)}>
+                              <Pencil size={16} />
+                            </Button>
+                            {canDelete && (
+                              <Button
+                                variant="ghost"
+                                size="icon"
+                                className="h-8 w-8 text-red-600 hover:text-red-700 hover:bg-red-50"
+                                onClick={() => setDeleteTarget(tire)}
+                              >
+                                <Trash2 size={16} />
+                              </Button>
+                            )}
+                          </div>
+                        </td>
+                      )}
                     </tr>
                   );
                 })}
@@ -367,7 +449,7 @@ const TireManagement = () => {
                 <p className="text-slate-600">{tire.brand} {tire.model}</p>
                 <p className="text-sm text-slate-500">{tire.size}</p>
                 <div className="flex justify-between mt-2">
-                  <span className="country-badge ghana">{tire.country}</span>
+                  <span className={getCountryBadgeClass(tire.country)}>{getCountryLabel(tire.country)}</span>
                   <span className="text-sm text-slate-500">
                     {tire.tread_depth_mm ? `${tire.tread_depth_mm}mm tread` : 'New'}
                   </span>
@@ -380,6 +462,15 @@ const TireManagement = () => {
           </div>
         </TabsContent>
       </Tabs>
+
+      <ConfirmDeleteDialog
+        open={!!deleteTarget}
+        onOpenChange={(open) => !open && setDeleteTarget(null)}
+        onConfirm={handleConfirmDelete}
+        loading={deleting}
+        title="Delete tire?"
+        description={deleteTarget ? `Permanently delete tire ${deleteTarget.serial_number}? This cannot be undone.` : undefined}
+      />
     </div>
   );
 };

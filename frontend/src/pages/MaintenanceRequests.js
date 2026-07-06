@@ -1,6 +1,6 @@
 import React, { useEffect, useState, useCallback } from 'react';
 import axios from 'axios';
-import { Plus, Check, X, Clock, AlertTriangle } from 'lucide-react';
+import { Plus, Check, X, Clock, AlertTriangle, Pencil, Trash2 } from 'lucide-react';
 import { toast } from 'sonner';
 import { useAuth } from '../contexts/AuthContext';
 import { Button } from '../components/ui/button';
@@ -10,9 +10,33 @@ import { Label } from '../components/ui/label';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '../components/ui/select';
 import { Textarea } from '../components/ui/textarea';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '../components/ui/tabs';
+import CountrySelect, { DEFAULT_COUNTRY_CODE, getCountryBadgeClass, getCountryLabel } from '../components/CountrySelect';
+import ConfirmDeleteDialog from '../components/ConfirmDeleteDialog';
+import { completeDialogSubmit } from '../utils/formUtils';
+import { canEditMaintenanceRequest, canHardDelete } from '../utils/permissions';
 
 const BACKEND_URL = process.env.REACT_APP_BACKEND_URL;
 const API = `${BACKEND_URL}/api`;
+
+const createInitialRequestForm = (user, isPersonalView) => ({
+  vehicle_id: '',
+  driver_id: isPersonalView ? (user?.driver_id || user?.id) : '',
+  request_type: '',
+  description: '',
+  priority: 'MEDIUM',
+  estimated_cost: '',
+  currency: 'GHS',
+});
+
+const requestToFormData = (request) => ({
+  vehicle_id: request.vehicle_id,
+  driver_id: request.driver_id,
+  request_type: request.request_type,
+  description: request.description,
+  priority: request.priority,
+  estimated_cost: request.estimated_cost ?? '',
+  currency: request.currency || 'GHS',
+});
 
 const MaintenanceRequests = () => {
   const { user, token, isDriverOrUser, isStaff } = useAuth();
@@ -24,6 +48,9 @@ const MaintenanceRequests = () => {
   const [managers, setManagers] = useState([]);
   const [loading, setLoading] = useState(true);
   const [requestDialogOpen, setRequestDialogOpen] = useState(false);
+  const [editingRequestId, setEditingRequestId] = useState(null);
+  const [deleteTarget, setDeleteTarget] = useState(null);
+  const [deleting, setDeleting] = useState(false);
   const [approvalDialogOpen, setApprovalDialogOpen] = useState(false);
   const [managerDialogOpen, setManagerDialogOpen] = useState(false);
   const [selectedRequest, setSelectedRequest] = useState(null);
@@ -49,7 +76,7 @@ const MaintenanceRequests = () => {
     name: '',
     email: '',
     phone: '',
-    country: 'GHANA',
+    country: DEFAULT_COUNTRY_CODE,
   });
 
   const fetchData = useCallback(async () => {
@@ -91,33 +118,63 @@ const MaintenanceRequests = () => {
     fetchData();
   }, [fetchData]);
 
+  const handleRequestDialogChange = (open) => {
+    setRequestDialogOpen(open);
+    if (!open) {
+      setEditingRequestId(null);
+      setFormData(createInitialRequestForm(user, isPersonalView));
+    }
+  };
+
+  const openCreateRequest = () => {
+    setEditingRequestId(null);
+    setFormData(createInitialRequestForm(user, isPersonalView));
+    setRequestDialogOpen(true);
+  };
+
+  const openEditRequest = (request) => {
+    setEditingRequestId(request.id);
+    setFormData(requestToFormData(request));
+    setRequestDialogOpen(true);
+  };
+
   const handleSubmitRequest = async (e) => {
     e.preventDefault();
+    const headers = token ? { Authorization: `Bearer ${token}` } : {};
+    const submitData = {
+      ...formData,
+      driver_id: isPersonalView ? (user?.driver_id || user?.id) : formData.driver_id,
+      estimated_cost: formData.estimated_cost ? parseFloat(formData.estimated_cost) : null,
+    };
+
+    await completeDialogSubmit({
+      submit: () =>
+        editingRequestId
+          ? axios.put(`${API}/maintenance-requests/${editingRequestId}`, submitData, { headers })
+          : axios.post(`${API}/maintenance-requests`, submitData, { headers }),
+      setDialogOpen: handleRequestDialogChange,
+      setFormData,
+      initialFormData: () => createInitialRequestForm(user, isPersonalView),
+      onSuccess: fetchData,
+      successMessage: editingRequestId ? 'Request updated!' : 'Maintenance request submitted! Fleet managers have been notified.',
+      errorMessage: editingRequestId ? 'Failed to update request' : 'Failed to submit request',
+    });
+    setEditingRequestId(null);
+  };
+
+  const handleConfirmDelete = async () => {
+    if (!deleteTarget) return;
+    setDeleting(true);
     try {
       const headers = token ? { Authorization: `Bearer ${token}` } : {};
-      
-      // For drivers/users, always use their own ID
-      const submitData = {
-        ...formData,
-        driver_id: isPersonalView ? (user?.driver_id || user?.id) : formData.driver_id,
-        estimated_cost: formData.estimated_cost ? parseFloat(formData.estimated_cost) : null,
-      };
-      
-      await axios.post(`${API}/maintenance-requests`, submitData, { headers });
-      toast.success('Maintenance request submitted! Fleet managers have been notified.');
-      setRequestDialogOpen(false);
+      await axios.delete(`${API}/maintenance-requests/${deleteTarget.id}`, { headers });
+      toast.success('Request deleted');
+      setDeleteTarget(null);
       fetchData();
-      setFormData({
-        vehicle_id: '',
-        driver_id: isPersonalView ? (user?.driver_id || user?.id) : '',
-        request_type: '',
-        description: '',
-        priority: 'MEDIUM',
-        estimated_cost: '',
-        currency: 'GHS',
-      });
     } catch (error) {
-      toast.error('Failed to submit request');
+      toast.error(error.response?.data?.detail || 'Failed to delete request');
+    } finally {
+      setDeleting(false);
     }
   };
 
@@ -148,7 +205,7 @@ const MaintenanceRequests = () => {
       toast.success('Fleet manager added successfully!');
       setManagerDialogOpen(false);
       fetchData();
-      setManagerForm({ name: '', email: '', phone: '', country: 'GHANA' });
+      setManagerForm({ name: '', email: '', phone: '', country: DEFAULT_COUNTRY_CODE });
     } catch (error) {
       toast.error('Failed to add fleet manager');
     }
@@ -225,16 +282,10 @@ const MaintenanceRequests = () => {
                   </div>
                   <div>
                     <Label>Country</Label>
-                    <Select value={managerForm.country} onValueChange={(value) => setManagerForm({...managerForm, country: value})}>
-                      <SelectTrigger>
-                        <SelectValue />
-                      </SelectTrigger>
-                      <SelectContent>
-                        <SelectItem value="GHANA">Ghana</SelectItem>
-                        <SelectItem value="LIBERIA">Liberia</SelectItem>
-                        <SelectItem value="SAO_TOME">São Tomé</SelectItem>
-                      </SelectContent>
-                    </Select>
+                    <CountrySelect
+                      value={managerForm.country}
+                      onValueChange={(value) => setManagerForm({ ...managerForm, country: value })}
+                    />
                   </div>
                   <div className="flex justify-end gap-2 mt-6">
                     <Button type="button" variant="outline" onClick={() => setManagerDialogOpen(false)}>Cancel</Button>
@@ -245,16 +296,16 @@ const MaintenanceRequests = () => {
             </Dialog>
           )}
 
-          <Dialog open={requestDialogOpen} onOpenChange={setRequestDialogOpen}>
+          <Dialog open={requestDialogOpen} onOpenChange={handleRequestDialogChange}>
             <DialogTrigger asChild>
-              <Button data-testid="submit-request-btn">
+              <Button data-testid="submit-request-btn" onClick={openCreateRequest}>
                 <Plus size={18} className="mr-2" />
                 {isPersonalView ? 'New Request' : 'Submit Request'}
               </Button>
             </DialogTrigger>
             <DialogContent className="max-w-lg">
               <DialogHeader>
-                <DialogTitle>Submit Maintenance Request</DialogTitle>
+                <DialogTitle>{editingRequestId ? 'Edit Maintenance Request' : 'Submit Maintenance Request'}</DialogTitle>
                 <DialogDescription>
                   {isPersonalView 
                     ? 'Request maintenance for your assigned vehicle.'
@@ -348,8 +399,8 @@ const MaintenanceRequests = () => {
                   </div>
                 </div>
                 <div className="flex justify-end gap-2 mt-6">
-                  <Button type="button" variant="outline" onClick={() => setRequestDialogOpen(false)}>Cancel</Button>
-                  <Button type="submit">Submit Request</Button>
+                  <Button type="button" variant="outline" onClick={() => handleRequestDialogChange(false)}>Cancel</Button>
+                  <Button type="submit">{editingRequestId ? 'Save Changes' : 'Submit Request'}</Button>
                 </div>
               </form>
             </DialogContent>
@@ -470,7 +521,7 @@ const MaintenanceRequests = () => {
                   <th>Priority</th>
                   <th>Description</th>
                   <th>Status</th>
-                  {activeTab === 'PENDING' && !isPersonalView && <th>Action</th>}
+                  {activeTab === 'PENDING' && <th className="w-32">Actions</th>}
                   {activeTab === 'REJECTED' && <th>Reason</th>}
                 </tr>
               </thead>
@@ -509,11 +560,30 @@ const MaintenanceRequests = () => {
                         <td><span className={getPriorityBadge(request.priority)}>{request.priority}</span></td>
                         <td className="text-sm max-w-xs truncate">{request.description}</td>
                         <td><span className={getStatusBadge(request.status)}>{request.status}</span></td>
-                        {activeTab === 'PENDING' && !isPersonalView && (
+                        {activeTab === 'PENDING' && (
                           <td>
-                            <Button size="sm" onClick={() => openApprovalDialog(request)}>
-                              Review
-                            </Button>
+                            <div className="flex gap-1 items-center flex-wrap">
+                              {activeTab === 'PENDING' && !isPersonalView && (
+                                <Button size="sm" onClick={() => openApprovalDialog(request)}>
+                                  Review
+                                </Button>
+                              )}
+                              {canEditMaintenanceRequest(user?.role, isPersonalView, request) && (
+                                <Button variant="ghost" size="icon" className="h-8 w-8" onClick={() => openEditRequest(request)}>
+                                  <Pencil size={16} />
+                                </Button>
+                              )}
+                              {canHardDelete(user?.role, 'maintenance_request') && (
+                                <Button
+                                  variant="ghost"
+                                  size="icon"
+                                  className="h-8 w-8 text-red-600 hover:text-red-700 hover:bg-red-50"
+                                  onClick={() => setDeleteTarget(request)}
+                                >
+                                  <Trash2 size={16} />
+                                </Button>
+                              )}
+                            </div>
                           </td>
                         )}
                         {activeTab === 'REJECTED' && (
@@ -539,7 +609,7 @@ const MaintenanceRequests = () => {
                 <h3 className="font-semibold text-slate-800">{manager.name}</h3>
                 <p className="text-sm text-slate-600">{manager.email}</p>
                 <p className="text-sm text-slate-600">{manager.phone}</p>
-                <span className="country-badge ghana mt-2 inline-block">{manager.country}</span>
+                <span className={`${getCountryBadgeClass(manager.country)} mt-2 inline-block`}>{getCountryLabel(manager.country)}</span>
               </div>
             ))}
             {managers.length === 0 && (
@@ -548,6 +618,15 @@ const MaintenanceRequests = () => {
           </div>
         </div>
       )}
+
+      <ConfirmDeleteDialog
+        open={!!deleteTarget}
+        onOpenChange={(open) => !open && setDeleteTarget(null)}
+        onConfirm={handleConfirmDelete}
+        loading={deleting}
+        title="Delete maintenance request?"
+        description={deleteTarget ? `Permanently delete this ${deleteTarget.request_type} request? This cannot be undone.` : undefined}
+      />
     </div>
   );
 };

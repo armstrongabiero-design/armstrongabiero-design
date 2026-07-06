@@ -28,6 +28,7 @@ from auth_service import (
     create_access_token,
 )
 from currency_utils import currency_converter
+from country_utils import normalize_country_code, country_filter_query
 from ai_services import ai_service
 from email_service import email_service
 from database import db, client
@@ -37,32 +38,104 @@ from models import (
     Driver, DriverCreate, DriverUpdate,
     MaintenanceRecord, MaintenanceRecordCreate,
     WorkshopJob, WorkshopJobCreate,
-    InventoryItem, InventoryItemCreate,
+    InventoryItem, InventoryItemCreate, InventoryItemUpdate,
     InventoryTransaction, InventoryTransactionCreate,
-    FuelTransaction, FuelTransactionCreate,
-    Expenditure, ExpenditureCreate,
-    Document, DocumentCreate,
-    Asset, AssetCreate,
-    SafetyIncident, SafetyIncidentCreate,
+    FuelTransaction, FuelTransactionCreate, FuelTransactionUpdate,
+    Expenditure, ExpenditureCreate, ExpenditureUpdate,
+    Document, DocumentCreate, DocumentUpdate,
+    Asset, AssetCreate, AssetUpdate,
+    SafetyIncident, SafetyIncidentCreate, SafetyIncidentUpdate,
     ExchangeRate, ExchangeRateCreate,
     AIPrediction, AIPredictionCreate,
     CurrencyEnum, DocumentType,
-    MaintenanceRequest, MaintenanceRequestCreate, MaintenanceRequestApproval,
-    PreTripChecklist, PreTripChecklistCreate, ChecklistItem, ChecklistItemStatus,
+    MaintenanceRequest, MaintenanceRequestCreate, MaintenanceRequestUpdate, MaintenanceRequestApproval,
+    PreTripChecklist, PreTripChecklistCreate, PreTripChecklistUpdate, ChecklistItem, ChecklistItemStatus,
     FleetManager, FleetManagerCreate, RequestStatus, RequestPriority,
     User, UserSelfRegister, UserLogin, UserUpdate, UserRole, Token,
     BootstrapGroupFleetManagerRequest,
     Tire, TireCreate, TireUpdate, TireRotation, TireRotationCreate, TirePosition, TireStatus,
-    LogbookEntry, LogbookEntryCreate,
+    LogbookEntry, LogbookEntryCreate, LogbookEntryUpdate,
     Vendor, VendorCreate, VendorUpdate, VendorCategory,
     VehicleLocation, VehicleLocationCreate,
     Alert, AlertType, AlertSeverity,
     TCORecord, ComplianceCheck, ComplianceStatus, ExpenseCategory,
     ForgotPasswordRequest, ResetPasswordRequest, PasswordResetToken
 )
+from audit_service import assert_can_hard_delete, write_audit_log
 from security_middleware import JWTAuthMiddleware
 
 limiter = Limiter(key_func=get_remote_address)
+
+_STAFF_ROLES = frozenset({"GROUP_FLEET_MANAGER", "FLEET_MANAGER", "FLEET_OFFICER"})
+
+
+def _require_staff(current_user: dict = Depends(get_current_user)) -> dict:
+    if current_user.get("role") not in _STAFF_ROLES:
+        raise HTTPException(status_code=403, detail="Staff access required")
+    return current_user
+
+
+def _mongo_update_payload(update_data: dict) -> dict:
+    payload = dict(update_data)
+    for key, val in list(payload.items()):
+        if hasattr(val, "isoformat"):
+            payload[key] = val.isoformat()
+        elif hasattr(val, "value"):
+            payload[key] = val.value
+    return payload
+
+
+_PRETRIP_ITEM_DEFS = [
+    ("Engine Oil Level", "engine_oil", "engine_oil_notes"),
+    ("Tire Condition & Pressure", "tires", "tires_notes"),
+    ("Brake Functionality", "brakes", "brakes_notes"),
+    ("Lights (Headlights, Indicators, Brake)", "lights", "lights_notes"),
+    ("Fuel Level", "fuel_level", "fuel_level_notes"),
+    ("Mirrors & Wipers", "mirrors_wipers", "mirrors_wipers_notes"),
+    ("Cleanliness & Damage Check", "cleanliness_damage", "cleanliness_damage_notes"),
+]
+_PRETRIP_ITEM_NAME_TO_KEYS = {name: (status_key, notes_key) for name, status_key, notes_key in _PRETRIP_ITEM_DEFS}
+
+
+def _pretrip_doc_to_fields(doc: dict) -> dict:
+    fields = {
+        "driver_id": doc.get("driver_id"),
+        "vehicle_id": doc.get("vehicle_id"),
+        "damage_photos": doc.get("damage_photos") or [],
+        "additional_notes": doc.get("notes"),
+    }
+    for item in doc.get("checklist_items") or []:
+        keys = _PRETRIP_ITEM_NAME_TO_KEYS.get(item.get("item_name"))
+        if keys:
+            fields[keys[0]] = item.get("status")
+            fields[keys[1]] = item.get("notes")
+    return fields
+
+
+def _pretrip_build_items_and_status(fields: dict) -> tuple:
+    items = []
+    for item_name, status_key, notes_key in _PRETRIP_ITEM_DEFS:
+        status = fields.get(status_key)
+        if status is None:
+            continue
+        if not isinstance(status, ChecklistItemStatus):
+            status = ChecklistItemStatus(status)
+        items.append(
+            ChecklistItem(item_name=item_name, status=status, notes=fields.get(notes_key)).model_dump()
+        )
+    has_failed = any(i["status"] == ChecklistItemStatus.FAILED.value for i in items)
+    has_attention = any(i["status"] == ChecklistItemStatus.NEEDS_ATTENTION.value for i in items)
+    overall = "FAILED" if has_failed else ("ATTENTION_NEEDED" if has_attention else "PASSED")
+    return items, overall
+
+
+def _assert_can_edit_pretrip(current_user: dict, checklist: dict) -> None:
+    if current_user.get("role") in _STAFF_ROLES:
+        return
+    user_driver_id = current_user.get("driver_id") or current_user.get("id")
+    if checklist.get("driver_id") == user_driver_id:
+        return
+    raise HTTPException(status_code=403, detail="You do not have permission to edit this checklist")
 
 _ENV = os.environ.get("ENVIRONMENT", "development").lower()
 _IS_PRODUCTION = _ENV == "production"
@@ -71,13 +144,20 @@ _IS_PRODUCTION = _ENV == "production"
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     assert_jwt_configuration()
+    try:
+        from country_migration import migrate_countries_to_iso
+        n = await migrate_countries_to_iso()
+        if n:
+            logging.getLogger(__name__).info("Migrated %s document(s) to ISO country codes", n)
+    except Exception as exc:
+        logging.getLogger(__name__).warning("Country ISO migration skipped: %s", exc)
     yield
     client.close()
 
 
 # Create the main app without a prefix
 app = FastAPI(
-    title="Fleet Management System",
+    title="GTI Fleet",
     lifespan=lifespan,
     docs_url=None if _IS_PRODUCTION else "/docs",
     redoc_url=None if _IS_PRODUCTION else "/redoc",
@@ -284,29 +364,62 @@ async def get_vehicle(vehicle_id: str):
 
 
 @api_router.put("/vehicles/{vehicle_id}", response_model=Vehicle)
-async def update_vehicle(vehicle_id: str, input: VehicleUpdate):
+async def update_vehicle(
+    vehicle_id: str,
+    input: VehicleUpdate,
+    current_user: dict = Depends(_require_staff),
+):
     vehicle = await db.vehicles.find_one({"id": vehicle_id}, {"_id": 0})
     if not vehicle:
         raise HTTPException(status_code=404, detail="Vehicle not found")
-    
+
     update_data = {k: v for k, v in input.model_dump().items() if v is not None}
-    update_data['updated_at'] = datetime.utcnow().isoformat()
-    
+    if "acquisition_date" in update_data and isinstance(update_data["acquisition_date"], datetime):
+        update_data["acquisition_date"] = update_data["acquisition_date"].isoformat()
+
+    if "acquisition_cost" in update_data or "acquisition_currency" in update_data:
+        cost = update_data.get("acquisition_cost", vehicle.get("acquisition_cost"))
+        currency = update_data.get("acquisition_currency", vehicle.get("acquisition_currency"))
+        update_data["acquisition_cost_usd"] = currency_converter.convert(
+            cost, currency, CurrencyEnum.USD
+        )
+
+    update_data["updated_at"] = datetime.now(timezone.utc).isoformat()
+
     await db.vehicles.update_one({"id": vehicle_id}, {"$set": update_data})
     updated_vehicle = await db.vehicles.find_one({"id": vehicle_id}, {"_id": 0})
-    
-    for date_field in ['acquisition_date', 'created_at', 'updated_at']:
+
+    for date_field in ["acquisition_date", "created_at", "updated_at"]:
         if isinstance(updated_vehicle.get(date_field), str):
             updated_vehicle[date_field] = datetime.fromisoformat(updated_vehicle[date_field])
-    
+
     return Vehicle(**updated_vehicle)
 
 
 @api_router.delete("/vehicles/{vehicle_id}")
-async def delete_vehicle(vehicle_id: str):
-    result = await db.vehicles.delete_one({"id": vehicle_id})
-    if result.deleted_count == 0:
+async def delete_vehicle(
+    vehicle_id: str,
+    current_user: dict = Depends(get_current_user),
+):
+    assert_can_hard_delete(current_user, "vehicle")
+    vehicle = await db.vehicles.find_one({"id": vehicle_id}, {"_id": 0})
+    if not vehicle:
         raise HTTPException(status_code=404, detail="Vehicle not found")
+
+    await db.vehicles.delete_one({"id": vehicle_id})
+    await write_audit_log(
+        action="hard_delete",
+        entity_type="vehicle",
+        entity_id=vehicle_id,
+        actor_id=current_user["id"],
+        actor_role=current_user.get("role", ""),
+        actor_email=current_user.get("email"),
+        details={
+            "registration_number": vehicle.get("registration_number"),
+            "make": vehicle.get("make"),
+            "model": vehicle.get("model"),
+        },
+    )
     return {"message": "Vehicle deleted successfully"}
 
 
@@ -349,24 +462,55 @@ async def get_driver(driver_id: str):
 
 
 @api_router.put("/drivers/{driver_id}", response_model=Driver)
-async def update_driver(driver_id: str, input: DriverUpdate):
+async def update_driver(
+    driver_id: str,
+    input: DriverUpdate,
+    current_user: dict = Depends(_require_staff),
+):
     driver = await db.drivers.find_one({"id": driver_id}, {"_id": 0})
     if not driver:
         raise HTTPException(status_code=404, detail="Driver not found")
-    
+
     update_data = {k: v for k, v in input.model_dump().items() if v is not None}
-    if 'license_expiry' in update_data and isinstance(update_data['license_expiry'], datetime):
-        update_data['license_expiry'] = update_data['license_expiry'].isoformat()
-    update_data['updated_at'] = datetime.utcnow().isoformat()
-    
+    if "license_expiry" in update_data and isinstance(update_data["license_expiry"], datetime):
+        update_data["license_expiry"] = update_data["license_expiry"].isoformat()
+    update_data["updated_at"] = datetime.now(timezone.utc).isoformat()
+
     await db.drivers.update_one({"id": driver_id}, {"$set": update_data})
     updated_driver = await db.drivers.find_one({"id": driver_id}, {"_id": 0})
-    
-    for date_field in ['license_expiry', 'created_at', 'updated_at']:
+
+    for date_field in ["license_expiry", "created_at", "updated_at"]:
         if isinstance(updated_driver.get(date_field), str):
             updated_driver[date_field] = datetime.fromisoformat(updated_driver[date_field])
-    
+
     return Driver(**updated_driver)
+
+
+@api_router.delete("/drivers/{driver_id}")
+async def delete_driver(
+    driver_id: str,
+    current_user: dict = Depends(get_current_user),
+):
+    assert_can_hard_delete(current_user, "driver")
+    driver = await db.drivers.find_one({"id": driver_id}, {"_id": 0})
+    if not driver:
+        raise HTTPException(status_code=404, detail="Driver not found")
+
+    await db.drivers.delete_one({"id": driver_id})
+    await write_audit_log(
+        action="hard_delete",
+        entity_type="driver",
+        entity_id=driver_id,
+        actor_id=current_user["id"],
+        actor_role=current_user.get("role", ""),
+        actor_email=current_user.get("email"),
+        details={
+            "first_name": driver.get("first_name"),
+            "last_name": driver.get("last_name"),
+            "license_number": driver.get("license_number"),
+        },
+    )
+    return {"message": "Driver deleted successfully"}
 
 
 # ============= MAINTENANCE ROUTES =============
@@ -524,6 +668,54 @@ async def get_inventory_items(country: Optional[str] = None, low_stock: bool = F
     return items
 
 
+@api_router.put("/inventory/{item_id}")
+async def update_inventory_item(
+    item_id: str,
+    input: InventoryItemUpdate,
+    current_user: dict = Depends(_require_staff),
+):
+    update_data = input.model_dump(exclude_none=True)
+    if not update_data:
+        raise HTTPException(status_code=400, detail="No fields to update")
+
+    existing = await db.inventory_items.find_one({"id": item_id}, {"_id": 0})
+    if not existing:
+        raise HTTPException(status_code=404, detail="Inventory item not found")
+
+    if "unit_cost" in update_data or "currency" in update_data:
+        cost = update_data.get("unit_cost", existing.get("unit_cost"))
+        currency = update_data.get("currency", existing.get("currency"))
+        update_data["unit_cost_usd"] = currency_converter.convert(cost, currency, CurrencyEnum.USD)
+
+    update_data["updated_at"] = datetime.now(timezone.utc).isoformat()
+    update_data = _mongo_update_payload(update_data)
+    await db.inventory_items.update_one({"id": item_id}, {"$set": update_data})
+    return {"status": "success"}
+
+
+@api_router.delete("/inventory/{item_id}")
+async def delete_inventory_item(
+    item_id: str,
+    current_user: dict = Depends(get_current_user),
+):
+    assert_can_hard_delete(current_user, "inventory_item")
+    item = await db.inventory_items.find_one({"id": item_id}, {"_id": 0})
+    if not item:
+        raise HTTPException(status_code=404, detail="Inventory item not found")
+
+    await db.inventory_items.delete_one({"id": item_id})
+    await write_audit_log(
+        action="hard_delete",
+        entity_type="inventory_item",
+        entity_id=item_id,
+        actor_id=current_user["id"],
+        actor_role=current_user.get("role", ""),
+        actor_email=current_user.get("email"),
+        details={"name": item.get("name"), "sku": item.get("sku")},
+    )
+    return {"message": "Inventory item deleted successfully"}
+
+
 @api_router.post("/inventory/transactions", response_model=InventoryTransaction)
 async def create_inventory_transaction(input: InventoryTransactionCreate):
     transaction = InventoryTransaction(**input.model_dump())
@@ -634,6 +826,70 @@ async def get_fuel_transactions(vehicle_id: Optional[str] = None, anomalies_only
     return transactions
 
 
+@api_router.put("/fuel/{transaction_id}")
+async def update_fuel_transaction(
+    transaction_id: str,
+    input: FuelTransactionUpdate,
+    current_user: dict = Depends(_require_staff),
+):
+    update_data = input.model_dump(exclude_none=True)
+    if not update_data:
+        raise HTTPException(status_code=400, detail="No fields to update")
+
+    existing = await db.fuel_transactions.find_one({"id": transaction_id}, {"_id": 0})
+    if not existing:
+        raise HTTPException(status_code=404, detail="Fuel transaction not found")
+
+    vehicle_id = update_data.get("vehicle_id", existing.get("vehicle_id"))
+    odometer = update_data.get("odometer_reading", existing.get("odometer_reading"))
+    quantity = update_data.get("quantity_liters", existing.get("quantity_liters"))
+
+    if "cost" in update_data or "currency" in update_data:
+        cost = update_data.get("cost", existing.get("cost"))
+        currency = update_data.get("currency", existing.get("currency"))
+        update_data["cost_usd"] = currency_converter.convert(cost, currency, CurrencyEnum.USD)
+
+    if any(k in update_data for k in ("vehicle_id", "odometer_reading", "quantity_liters")):
+        prev_fuel = await db.fuel_transactions.find_one(
+            {"vehicle_id": vehicle_id, "id": {"$ne": transaction_id}},
+            {"_id": 0},
+            sort=[("created_at", -1)],
+        )
+        fuel_efficiency = None
+        if prev_fuel and odometer and quantity:
+            odometer_change = odometer - prev_fuel.get("odometer_reading", 0)
+            if odometer_change > 0 and quantity > 0:
+                fuel_efficiency = round(odometer_change / quantity, 2)
+        update_data["fuel_efficiency"] = fuel_efficiency
+
+    update_data = _mongo_update_payload(update_data)
+    await db.fuel_transactions.update_one({"id": transaction_id}, {"$set": update_data})
+    return {"status": "success"}
+
+
+@api_router.delete("/fuel/{transaction_id}")
+async def delete_fuel_transaction(
+    transaction_id: str,
+    current_user: dict = Depends(get_current_user),
+):
+    assert_can_hard_delete(current_user, "fuel_transaction")
+    txn = await db.fuel_transactions.find_one({"id": transaction_id}, {"_id": 0})
+    if not txn:
+        raise HTTPException(status_code=404, detail="Fuel transaction not found")
+
+    await db.fuel_transactions.delete_one({"id": transaction_id})
+    await write_audit_log(
+        action="hard_delete",
+        entity_type="fuel_transaction",
+        entity_id=transaction_id,
+        actor_id=current_user["id"],
+        actor_role=current_user.get("role", ""),
+        actor_email=current_user.get("email"),
+        details={"vehicle_id": txn.get("vehicle_id"), "cost_usd": txn.get("cost_usd")},
+    )
+    return {"message": "Fuel transaction deleted successfully"}
+
+
 # ============= EXPENDITURE ROUTES =============
 @api_router.post("/expenditures", response_model=Expenditure)
 async def create_expenditure(input: ExpenditureCreate):
@@ -666,6 +922,53 @@ async def get_expenditures(country: Optional[str] = None, category: Optional[str
         if isinstance(e.get('created_at'), str):
             e['created_at'] = datetime.fromisoformat(e['created_at'])
     return expenditures
+
+
+@api_router.put("/expenditures/{expenditure_id}")
+async def update_expenditure(
+    expenditure_id: str,
+    input: ExpenditureUpdate,
+    current_user: dict = Depends(_require_staff),
+):
+    update_data = input.model_dump(exclude_none=True)
+    if not update_data:
+        raise HTTPException(status_code=400, detail="No fields to update")
+
+    existing = await db.expenditures.find_one({"id": expenditure_id}, {"_id": 0})
+    if not existing:
+        raise HTTPException(status_code=404, detail="Expenditure not found")
+
+    if "amount" in update_data or "currency" in update_data:
+        amount = update_data.get("amount", existing.get("amount"))
+        currency = update_data.get("currency", existing.get("currency"))
+        update_data["amount_usd"] = currency_converter.convert(amount, currency, CurrencyEnum.USD)
+
+    update_data = _mongo_update_payload(update_data)
+    await db.expenditures.update_one({"id": expenditure_id}, {"$set": update_data})
+    return {"status": "success"}
+
+
+@api_router.delete("/expenditures/{expenditure_id}")
+async def delete_expenditure(
+    expenditure_id: str,
+    current_user: dict = Depends(get_current_user),
+):
+    assert_can_hard_delete(current_user, "expenditure")
+    expenditure = await db.expenditures.find_one({"id": expenditure_id}, {"_id": 0})
+    if not expenditure:
+        raise HTTPException(status_code=404, detail="Expenditure not found")
+
+    await db.expenditures.delete_one({"id": expenditure_id})
+    await write_audit_log(
+        action="hard_delete",
+        entity_type="expenditure",
+        entity_id=expenditure_id,
+        actor_id=current_user["id"],
+        actor_role=current_user.get("role", ""),
+        actor_email=current_user.get("email"),
+        details={"category": expenditure.get("category"), "amount_usd": expenditure.get("amount_usd")},
+    )
+    return {"message": "Expenditure deleted successfully"}
 
 
 # ============= DOCUMENT ROUTES =============
@@ -729,6 +1032,54 @@ async def process_document_ocr(document_id: str, file: UploadFile = File(...)):
     )
     
     return ocr_result
+
+
+@api_router.put("/documents/{document_id}", response_model=Document)
+async def update_document(
+    document_id: str,
+    input: DocumentUpdate,
+    current_user: dict = Depends(_require_staff),
+):
+    document = await db.documents.find_one({"id": document_id}, {"_id": 0})
+    if not document:
+        raise HTTPException(status_code=404, detail="Document not found")
+
+    update_data = _mongo_update_payload({k: v for k, v in input.model_dump().items() if v is not None})
+    if not update_data:
+        raise HTTPException(status_code=400, detail="No fields to update")
+
+    await db.documents.update_one({"id": document_id}, {"$set": update_data})
+    updated = await db.documents.find_one({"id": document_id}, {"_id": 0})
+    for field in ["issue_date", "expiry_date", "created_at"]:
+        if isinstance(updated.get(field), str):
+            updated[field] = datetime.fromisoformat(updated[field])
+    return Document(**updated)
+
+
+@api_router.delete("/documents/{document_id}")
+async def delete_document(
+    document_id: str,
+    current_user: dict = Depends(get_current_user),
+):
+    assert_can_hard_delete(current_user, "document")
+    document = await db.documents.find_one({"id": document_id}, {"_id": 0})
+    if not document:
+        raise HTTPException(status_code=404, detail="Document not found")
+
+    await db.documents.delete_one({"id": document_id})
+    await write_audit_log(
+        action="hard_delete",
+        entity_type="document",
+        entity_id=document_id,
+        actor_id=current_user["id"],
+        actor_role=current_user.get("role", ""),
+        actor_email=current_user.get("email"),
+        details={
+            "document_type": document.get("document_type"),
+            "document_number": document.get("document_number"),
+        },
+    )
+    return {"message": "Document deleted successfully"}
 
 
 # ============= ASSET ROUTES =============
@@ -819,6 +1170,63 @@ async def predict_asset_resale(asset_id: str):
     return prediction
 
 
+@api_router.put("/assets/{asset_id}")
+async def update_asset(
+    asset_id: str,
+    input: AssetUpdate,
+    current_user: dict = Depends(_require_staff),
+):
+    update_data = input.model_dump(exclude_none=True)
+    if not update_data:
+        raise HTTPException(status_code=400, detail="No fields to update")
+
+    existing = await db.assets.find_one({"id": asset_id}, {"_id": 0})
+    if not existing:
+        raise HTTPException(status_code=404, detail="Asset not found")
+
+    if "acquisition_cost" in update_data or "currency" in update_data:
+        cost = update_data.get("acquisition_cost", existing.get("acquisition_cost"))
+        currency = update_data.get("currency", existing.get("currency"))
+        cost_usd = currency_converter.convert(cost, currency, CurrencyEnum.USD)
+        update_data["acquisition_cost_usd"] = cost_usd
+        if "current_value" not in update_data:
+            update_data["current_value"] = cost
+            update_data["current_value_usd"] = cost_usd
+    elif "current_value" in update_data and "current_value_usd" not in update_data:
+        currency = update_data.get("currency", existing.get("currency"))
+        update_data["current_value_usd"] = currency_converter.convert(
+            update_data["current_value"], currency, CurrencyEnum.USD
+        )
+
+    update_data["updated_at"] = datetime.now(timezone.utc).isoformat()
+    update_data = _mongo_update_payload(update_data)
+    await db.assets.update_one({"id": asset_id}, {"$set": update_data})
+    return {"status": "success"}
+
+
+@api_router.delete("/assets/{asset_id}")
+async def delete_asset(
+    asset_id: str,
+    current_user: dict = Depends(get_current_user),
+):
+    assert_can_hard_delete(current_user, "asset")
+    asset = await db.assets.find_one({"id": asset_id}, {"_id": 0})
+    if not asset:
+        raise HTTPException(status_code=404, detail="Asset not found")
+
+    await db.assets.delete_one({"id": asset_id})
+    await write_audit_log(
+        action="hard_delete",
+        entity_type="asset",
+        entity_id=asset_id,
+        actor_id=current_user["id"],
+        actor_role=current_user.get("role", ""),
+        actor_email=current_user.get("email"),
+        details={"vehicle_id": asset.get("vehicle_id")},
+    )
+    return {"message": "Asset deleted successfully"}
+
+
 # ============= SAFETY ROUTES =============
 @api_router.post("/safety/incidents", response_model=SafetyIncident)
 async def create_safety_incident(input: SafetyIncidentCreate):
@@ -870,6 +1278,56 @@ async def get_safety_incidents(driver_id: Optional[str] = None, vehicle_id: Opti
         if isinstance(i.get('created_at'), str):
             i['created_at'] = datetime.fromisoformat(i['created_at'])
     return incidents
+
+
+@api_router.put("/safety/incidents/{incident_id}")
+async def update_safety_incident(
+    incident_id: str,
+    input: SafetyIncidentUpdate,
+    current_user: dict = Depends(_require_staff),
+):
+    update_data = input.model_dump(exclude_none=True)
+    if not update_data:
+        raise HTTPException(status_code=400, detail="No fields to update")
+
+    existing = await db.safety_incidents.find_one({"id": incident_id}, {"_id": 0})
+    if not existing:
+        raise HTTPException(status_code=404, detail="Safety incident not found")
+
+    if "cost" in update_data or "currency" in update_data:
+        cost = update_data.get("cost", existing.get("cost"))
+        currency = update_data.get("currency", existing.get("currency"))
+        if cost and currency:
+            update_data["cost_usd"] = currency_converter.convert(cost, currency, CurrencyEnum.USD)
+        else:
+            update_data["cost_usd"] = None
+
+    update_data = _mongo_update_payload(update_data)
+    await db.safety_incidents.update_one({"id": incident_id}, {"$set": update_data})
+    return {"status": "success"}
+
+
+@api_router.delete("/safety/incidents/{incident_id}")
+async def delete_safety_incident(
+    incident_id: str,
+    current_user: dict = Depends(get_current_user),
+):
+    assert_can_hard_delete(current_user, "safety_incident")
+    incident = await db.safety_incidents.find_one({"id": incident_id}, {"_id": 0})
+    if not incident:
+        raise HTTPException(status_code=404, detail="Safety incident not found")
+
+    await db.safety_incidents.delete_one({"id": incident_id})
+    await write_audit_log(
+        action="hard_delete",
+        entity_type="safety_incident",
+        entity_id=incident_id,
+        actor_id=current_user["id"],
+        actor_role=current_user.get("role", ""),
+        actor_email=current_user.get("email"),
+        details={"incident_type": incident.get("incident_type"), "driver_id": incident.get("driver_id")},
+    )
+    return {"message": "Safety incident deleted successfully"}
 
 
 # ============= EXCHANGE RATE ROUTES =============
@@ -929,17 +1387,23 @@ async def root():
 # ============= DASHBOARD/ANALYTICS ROUTES =============
 
 # Helper function to get country filter for queries
+PRIMARY_COUNTRIES = ("GH", "LR", "ST")
+
+
 def get_country_filter(user_country: Optional[str]) -> dict:
-    """Returns MongoDB filter based on user's country access"""
+    """Returns MongoDB filter based on user's country access (ISO or legacy)."""
     if user_country is None:  # Group Fleet Manager sees all
         return {}
-    return {"country": user_country}
+    try:
+        return country_filter_query(user_country)
+    except ValueError:
+        return {"country": user_country}
 
 
 @api_router.get("/dashboard/stats")
 async def get_dashboard_stats(country: Optional[str] = None):
     """Get dashboard statistics with optional country filter"""
-    country_filter = {"country": country} if country else {}
+    country_filter = country_filter_query(country) if country else {}
     
     total_vehicles = await db.vehicles.count_documents(country_filter)
     active_vehicles = await db.vehicles.count_documents({**country_filter, "status": "ACTIVE"})
@@ -966,9 +1430,10 @@ async def get_dashboard_stats(country: Optional[str] = None):
     # Count by country
     vehicles_by_country = {}
     drivers_by_country = {}
-    for c in ['GHANA', 'LIBERIA', 'SAO_TOME']:
-        vehicles_by_country[c] = await db.vehicles.count_documents({"country": c})
-        drivers_by_country[c] = await db.drivers.count_documents({"country": c})
+    for c in PRIMARY_COUNTRIES:
+        q = country_filter_query(c)
+        vehicles_by_country[c] = await db.vehicles.count_documents(q)
+        drivers_by_country[c] = await db.drivers.count_documents(q)
     
     return {
         "total_vehicles": total_vehicles,
@@ -1062,15 +1527,10 @@ async def get_staff_dashboard(current_user: dict = Depends(get_current_user)):
     def normalize_country(country):
         if not country:
             return None
-        country_upper = country.upper().replace(' ', '_').replace('É', 'E')
-        # Map common variations
-        if 'GHANA' in country_upper:
-            return 'GHANA'
-        if 'LIBERIA' in country_upper:
-            return 'LIBERIA'
-        if 'SAO' in country_upper or 'TOME' in country_upper or 'STP' in country_upper:
-            return 'SAO_TOME'
-        return country_upper
+        try:
+            return normalize_country_code(country)
+        except ValueError:
+            return None
     
     normalized_country = normalize_country(user_country)
     
@@ -1078,9 +1538,7 @@ async def get_staff_dashboard(current_user: dict = Depends(get_current_user)):
     if user_role == 'GROUP_FLEET_MANAGER':
         country_filter = {}
     else:
-        # Match both exact and case variations
-        country_regex = {"$regex": f"^{normalized_country}$", "$options": "i"} if normalized_country else {"$exists": False}
-        country_filter = {"country": country_regex}
+        country_filter = country_filter_query(normalized_country) if normalized_country else {"country": {"$exists": False}}
     
     # Basic stats
     total_vehicles = await db.vehicles.count_documents(country_filter)
@@ -1101,11 +1559,11 @@ async def get_staff_dashboard(current_user: dict = Depends(get_current_user)):
         pass  # See all
     elif user_role == 'FLEET_MANAGER':
         if normalized_country:
-            pending_users_query['country'] = {"$regex": f"^{normalized_country}$", "$options": "i"}
+            pending_users_query['country'] = country_filter_query(normalized_country)['country']
         pending_users_query['role'] = {"$in": ['FLEET_OFFICER', 'DRIVER', 'USER']}
     elif user_role == 'FLEET_OFFICER':
         if normalized_country:
-            pending_users_query['country'] = {"$regex": f"^{normalized_country}$", "$options": "i"}
+            pending_users_query['country'] = country_filter_query(normalized_country)['country']
         pending_users_query['role'] = {"$in": ['DRIVER', 'USER']}
     else:
         pending_users_query['id'] = 'NONE'  # No results
@@ -1136,9 +1594,10 @@ async def get_staff_dashboard(current_user: dict = Depends(get_current_user)):
     vehicles_by_country = {}
     drivers_by_country = {}
     if user_role == 'GROUP_FLEET_MANAGER':
-        for c in ['GHANA', 'LIBERIA', 'SAO_TOME']:
-            vehicles_by_country[c] = await db.vehicles.count_documents({"country": {"$regex": f"^{c}$", "$options": "i"}})
-            drivers_by_country[c] = await db.drivers.count_documents({"country": {"$regex": f"^{c}$", "$options": "i"}})
+        for c in PRIMARY_COUNTRIES:
+            q = country_filter_query(c)
+            vehicles_by_country[c] = await db.vehicles.count_documents(q)
+            drivers_by_country[c] = await db.drivers.count_documents(q)
     
     return {
         "user_role": user_role,
@@ -1165,7 +1624,7 @@ async def get_staff_dashboard(current_user: dict = Depends(get_current_user)):
 @api_router.get("/dashboard/alerts")
 async def get_dashboard_alerts(country: Optional[str] = None):
     """Get all active alerts for the dashboard"""
-    country_filter = {"country": country} if country else {}
+    country_filter = country_filter_query(country) if country else {}
     alerts = []
     now = datetime.now(timezone.utc)
     warning_threshold = now + timedelta(days=30)
@@ -1309,7 +1768,7 @@ async def get_dashboard_alerts(country: Optional[str] = None):
 @api_router.get("/dashboard/compliance")
 async def get_compliance_status(country: Optional[str] = None):
     """Get compliance status for all vehicles and drivers"""
-    country_filter = {"country": country} if country else {}
+    country_filter = country_filter_query(country) if country else {}
     now = datetime.now(timezone.utc)
     
     compliance_items = []
@@ -1496,6 +1955,67 @@ async def get_maintenance_request(request_id: str):
     return request
 
 
+@api_router.put("/maintenance-requests/{request_id}", response_model=MaintenanceRequest)
+async def update_maintenance_request(
+    request_id: str,
+    input: MaintenanceRequestUpdate,
+    current_user: dict = Depends(get_current_user),
+):
+    request = await db.maintenance_requests.find_one({"id": request_id}, {"_id": 0})
+    if not request:
+        raise HTTPException(status_code=404, detail="Request not found")
+
+    if request.get("status") != "PENDING":
+        raise HTTPException(status_code=400, detail="Only pending requests can be edited")
+
+    role = current_user.get("role")
+    user_id = current_user.get("id")
+    driver_id = current_user.get("driver_id")
+    is_staff = role in _STAFF_ROLES
+    is_owner = request.get("driver_id") in (user_id, driver_id)
+    if not is_staff and not is_owner:
+        raise HTTPException(status_code=403, detail="You cannot edit this request")
+
+    update_data = _mongo_update_payload({k: v for k, v in input.model_dump().items() if v is not None})
+    if not update_data:
+        raise HTTPException(status_code=400, detail="No fields to update")
+    update_data["updated_at"] = datetime.now(timezone.utc).isoformat()
+
+    await db.maintenance_requests.update_one({"id": request_id}, {"$set": update_data})
+    updated = await db.maintenance_requests.find_one({"id": request_id}, {"_id": 0})
+    for field in ["created_at", "updated_at", "approved_at", "rejected_at", "completed_at"]:
+        if isinstance(updated.get(field), str):
+            updated[field] = datetime.fromisoformat(updated[field])
+    return updated
+
+
+@api_router.delete("/maintenance-requests/{request_id}")
+async def delete_maintenance_request(
+    request_id: str,
+    current_user: dict = Depends(get_current_user),
+):
+    assert_can_hard_delete(current_user, "maintenance_request")
+    request = await db.maintenance_requests.find_one({"id": request_id}, {"_id": 0})
+    if not request:
+        raise HTTPException(status_code=404, detail="Request not found")
+
+    await db.maintenance_requests.delete_one({"id": request_id})
+    await write_audit_log(
+        action="hard_delete",
+        entity_type="maintenance_request",
+        entity_id=request_id,
+        actor_id=current_user["id"],
+        actor_role=current_user.get("role", ""),
+        actor_email=current_user.get("email"),
+        details={
+            "request_type": request.get("request_type"),
+            "vehicle_id": request.get("vehicle_id"),
+            "status": request.get("status"),
+        },
+    )
+    return {"message": "Maintenance request deleted successfully"}
+
+
 @api_router.post("/maintenance-requests/{request_id}/approve")
 async def approve_maintenance_request(
     request_id: str,
@@ -1575,27 +2095,14 @@ async def create_pretrip_checklist(input: PreTripChecklistCreate, current_user: 
     if existing:
         raise HTTPException(status_code=400, detail="Checklist already completed for today")
     
-    # Build checklist items
-    items = [
-        ChecklistItem(item_name="Engine Oil Level", status=input.engine_oil, notes=input.engine_oil_notes),
-        ChecklistItem(item_name="Tire Condition & Pressure", status=input.tires, notes=input.tires_notes),
-        ChecklistItem(item_name="Brake Functionality", status=input.brakes, notes=input.brakes_notes),
-        ChecklistItem(item_name="Lights (Headlights, Indicators, Brake)", status=input.lights, notes=input.lights_notes),
-        ChecklistItem(item_name="Fuel Level", status=input.fuel_level, notes=input.fuel_level_notes),
-        ChecklistItem(item_name="Mirrors & Wipers", status=input.mirrors_wipers, notes=input.mirrors_wipers_notes),
-        ChecklistItem(item_name="Cleanliness & Damage Check", status=input.cleanliness_damage, notes=input.cleanliness_damage_notes),
-    ]
-    
-    # Determine overall status
-    has_failed = any(item.status == ChecklistItemStatus.FAILED for item in items)
-    has_attention = any(item.status == ChecklistItemStatus.NEEDS_ATTENTION for item in items)
-    overall_status = "FAILED" if has_failed else ("ATTENTION_NEEDED" if has_attention else "PASSED")
+    fields = input.model_dump()
+    items, overall_status = _pretrip_build_items_and_status(fields)
     
     checklist = PreTripChecklist(
         driver_id=input.driver_id,
         vehicle_id=input.vehicle_id,
         date=datetime.now(timezone.utc),
-        checklist_items=[item.model_dump() for item in items],
+        checklist_items=items,
         damage_photos=input.damage_photos,
         overall_status=overall_status,
         completed=True,
@@ -1630,6 +2137,67 @@ async def get_pretrip_checklists(driver_id: Optional[str] = None, vehicle_id: Op
             if isinstance(c.get(field), str):
                 c[field] = datetime.fromisoformat(c[field])
     return checklists
+
+
+@api_router.put("/pre-trip-checklists/{checklist_id}")
+async def update_pretrip_checklist(
+    checklist_id: str,
+    input: PreTripChecklistUpdate,
+    current_user: dict = Depends(get_current_user),
+):
+    existing = await db.pretrip_checklists.find_one({"id": checklist_id}, {"_id": 0})
+    if not existing:
+        raise HTTPException(status_code=404, detail="Checklist not found")
+
+    _assert_can_edit_pretrip(current_user, existing)
+
+    update_data = input.model_dump(exclude_none=True)
+    if not update_data:
+        raise HTTPException(status_code=400, detail="No fields to update")
+
+    merged = _pretrip_doc_to_fields(existing)
+    merged.update(update_data)
+
+    items, overall_status = _pretrip_build_items_and_status(merged)
+    set_payload = {
+        "driver_id": merged.get("driver_id", existing.get("driver_id")),
+        "vehicle_id": merged.get("vehicle_id", existing.get("vehicle_id")),
+        "checklist_items": items,
+        "overall_status": overall_status,
+        "completed": True,
+        "notes": merged.get("additional_notes"),
+        "damage_photos": merged.get("damage_photos", existing.get("damage_photos") or []),
+    }
+
+    await db.pretrip_checklists.update_one({"id": checklist_id}, {"$set": set_payload})
+    return {"status": "success"}
+
+
+@api_router.delete("/pre-trip-checklists/{checklist_id}")
+async def delete_pretrip_checklist(
+    checklist_id: str,
+    current_user: dict = Depends(get_current_user),
+):
+    assert_can_hard_delete(current_user, "pretrip_checklist")
+    checklist = await db.pretrip_checklists.find_one({"id": checklist_id}, {"_id": 0})
+    if not checklist:
+        raise HTTPException(status_code=404, detail="Checklist not found")
+
+    await db.pretrip_checklists.delete_one({"id": checklist_id})
+    await write_audit_log(
+        action="hard_delete",
+        entity_type="pretrip_checklist",
+        entity_id=checklist_id,
+        actor_id=current_user["id"],
+        actor_role=current_user.get("role", ""),
+        actor_email=current_user.get("email"),
+        details={
+            "driver_id": checklist.get("driver_id"),
+            "vehicle_id": checklist.get("vehicle_id"),
+            "overall_status": checklist.get("overall_status"),
+        },
+    )
+    return {"message": "Checklist deleted successfully"}
 
 
 @api_router.get("/pre-trip-checklists/today/{driver_id}/{vehicle_id}")
@@ -2191,22 +2759,44 @@ async def get_tire(tire_id: str):
 
 
 @api_router.put("/tires/{tire_id}")
-async def update_tire(tire_id: str, input: TireUpdate):
+async def update_tire(
+    tire_id: str,
+    input: TireUpdate,
+    current_user: dict = Depends(_require_staff),
+):
     """Update a tire"""
     update_data = input.model_dump(exclude_none=True)
     if not update_data:
         raise HTTPException(status_code=400, detail="No fields to update")
     update_data["updated_at"] = datetime.now(timezone.utc).isoformat()
-    # Serialize datetime / enum fields for MongoDB
-    for key, val in list(update_data.items()):
-        if hasattr(val, "isoformat"):
-            update_data[key] = val.isoformat()
-        elif hasattr(val, "value"):
-            update_data[key] = val.value
+    update_data = _mongo_update_payload(update_data)
     result = await db.tires.update_one({"id": tire_id}, {"$set": update_data})
-    if result.modified_count == 0:
+    if result.matched_count == 0:
         raise HTTPException(status_code=404, detail="Tire not found")
     return {"status": "success"}
+
+
+@api_router.delete("/tires/{tire_id}")
+async def delete_tire(
+    tire_id: str,
+    current_user: dict = Depends(get_current_user),
+):
+    assert_can_hard_delete(current_user, "tire")
+    tire = await db.tires.find_one({"id": tire_id}, {"_id": 0})
+    if not tire:
+        raise HTTPException(status_code=404, detail="Tire not found")
+
+    await db.tires.delete_one({"id": tire_id})
+    await write_audit_log(
+        action="hard_delete",
+        entity_type="tire",
+        entity_id=tire_id,
+        actor_id=current_user["id"],
+        actor_role=current_user.get("role", ""),
+        actor_email=current_user.get("email"),
+        details={"serial_number": tire.get("serial_number")},
+    )
+    return {"message": "Tire deleted successfully"}
 
 
 @api_router.post("/tires/rotations", response_model=TireRotation)
@@ -2316,6 +2906,68 @@ async def get_logbook_entries(
     return entries
 
 
+@api_router.put("/logbook/{entry_id}", response_model=LogbookEntry)
+async def update_logbook_entry(
+    entry_id: str,
+    input: LogbookEntryUpdate,
+    current_user: dict = Depends(get_current_user),
+):
+    entry = await db.driver_logbook.find_one({"id": entry_id}, {"_id": 0})
+    if not entry:
+        raise HTTPException(status_code=404, detail="Logbook entry not found")
+
+    role = current_user.get("role")
+    user_id = current_user.get("id")
+    driver_id = current_user.get("driver_id")
+    is_staff = role in _STAFF_ROLES
+    is_owner = entry.get("driver_id") in (user_id, driver_id)
+    if not is_staff and not is_owner:
+        raise HTTPException(status_code=403, detail="You cannot edit this logbook entry")
+
+    update_data = _mongo_update_payload({k: v for k, v in input.model_dump().items() if v is not None})
+    if not update_data:
+        raise HTTPException(status_code=400, detail="No fields to update")
+
+    start_odo = update_data.get("start_odometer", entry.get("start_odometer"))
+    end_odo = update_data.get("end_odometer", entry.get("end_odometer"))
+    if end_odo is not None and start_odo is not None:
+        update_data["distance_km"] = end_odo - start_odo
+
+    await db.driver_logbook.update_one({"id": entry_id}, {"$set": update_data})
+    updated = await db.driver_logbook.find_one({"id": entry_id}, {"_id": 0})
+    for field in ["date", "start_time", "end_time", "created_at"]:
+        if isinstance(updated.get(field), str):
+            updated[field] = datetime.fromisoformat(updated[field])
+    return updated
+
+
+@api_router.delete("/logbook/{entry_id}")
+async def delete_logbook_entry(
+    entry_id: str,
+    current_user: dict = Depends(get_current_user),
+):
+    assert_can_hard_delete(current_user, "logbook_entry")
+    entry = await db.driver_logbook.find_one({"id": entry_id}, {"_id": 0})
+    if not entry:
+        raise HTTPException(status_code=404, detail="Logbook entry not found")
+
+    await db.driver_logbook.delete_one({"id": entry_id})
+    await write_audit_log(
+        action="hard_delete",
+        entity_type="logbook_entry",
+        entity_id=entry_id,
+        actor_id=current_user["id"],
+        actor_role=current_user.get("role", ""),
+        actor_email=current_user.get("email"),
+        details={
+            "driver_id": entry.get("driver_id"),
+            "vehicle_id": entry.get("vehicle_id"),
+            "purpose": entry.get("purpose"),
+        },
+    )
+    return {"message": "Logbook entry deleted successfully"}
+
+
 @api_router.get("/logbook/summary/{driver_id}")
 async def get_driver_logbook_summary(driver_id: str, period_days: int = 30):
     """Get driver logbook summary"""
@@ -2386,21 +3038,44 @@ async def get_vendor(vendor_id: str):
 
 
 @api_router.put("/vendors/{vendor_id}")
-async def update_vendor(vendor_id: str, input: VendorUpdate):
+async def update_vendor(
+    vendor_id: str,
+    input: VendorUpdate,
+    current_user: dict = Depends(_require_staff),
+):
     """Update a vendor"""
     update_data = input.model_dump(exclude_none=True)
     if not update_data:
         raise HTTPException(status_code=400, detail="No fields to update")
     update_data["updated_at"] = datetime.now(timezone.utc).isoformat()
-    for key, val in list(update_data.items()):
-        if hasattr(val, "isoformat"):
-            update_data[key] = val.isoformat()
-        elif hasattr(val, "value"):
-            update_data[key] = val.value
+    update_data = _mongo_update_payload(update_data)
     result = await db.vendors.update_one({"id": vendor_id}, {"$set": update_data})
-    if result.modified_count == 0:
+    if result.matched_count == 0:
         raise HTTPException(status_code=404, detail="Vendor not found")
     return {"status": "success"}
+
+
+@api_router.delete("/vendors/{vendor_id}")
+async def delete_vendor(
+    vendor_id: str,
+    current_user: dict = Depends(get_current_user),
+):
+    assert_can_hard_delete(current_user, "vendor")
+    vendor = await db.vendors.find_one({"id": vendor_id}, {"_id": 0})
+    if not vendor:
+        raise HTTPException(status_code=404, detail="Vendor not found")
+
+    await db.vendors.delete_one({"id": vendor_id})
+    await write_audit_log(
+        action="hard_delete",
+        entity_type="vendor",
+        entity_id=vendor_id,
+        actor_id=current_user["id"],
+        actor_role=current_user.get("role", ""),
+        actor_email=current_user.get("email"),
+        details={"name": vendor.get("name"), "category": vendor.get("category")},
+    )
+    return {"message": "Vendor deleted successfully"}
 
 
 # ============= VEHICLE LOCATION ROUTES =============
@@ -2539,7 +3214,7 @@ async def get_vehicle_tco(vehicle_id: str, period_days: int = 365):
 @api_router.get("/tco/fleet")
 async def get_fleet_tco(country: Optional[str] = None, period_days: int = 365):
     """Calculate TCO for entire fleet"""
-    country_filter = {"country": country} if country else {}
+    country_filter = country_filter_query(country) if country else {}
     vehicles = await db.vehicles.find(country_filter, {"_id": 0, "id": 1}).to_list(1000)
     
     fleet_tco = {
@@ -2576,7 +3251,7 @@ async def get_fleet_tco(country: Optional[str] = None, period_days: int = 365):
 async def get_expense_breakdown(country: Optional[str] = None, period_days: int = 30):
     """Get expense breakdown by category"""
     start_date = (datetime.now(timezone.utc) - timedelta(days=period_days)).isoformat()
-    country_filter = {"country": country} if country else {}
+    country_filter = country_filter_query(country) if country else {}
     
     # Get all expenditures
     expenditures = await db.expenditures.find(
@@ -2631,7 +3306,7 @@ async def get_expense_breakdown(country: Optional[str] = None, period_days: int 
 async def get_utilization_report(country: Optional[str] = None, period_days: int = 30):
     """Get fleet utilization report"""
     start_date = (datetime.now(timezone.utc) - timedelta(days=period_days)).isoformat()
-    country_filter = {"country": country} if country else {}
+    country_filter = country_filter_query(country) if country else {}
     
     vehicles = await db.vehicles.find(country_filter, {"_id": 0}).to_list(1000)
     utilization_data = []

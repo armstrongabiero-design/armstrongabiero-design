@@ -1,113 +1,108 @@
-# Run the project locally
+# Run locally (local MongoDB)
 
-Assumes **MongoDB is already running** on your machine and **Python 3.11+** and **Node.js 18+** are installed. **Node 20 or 22 LTS** is recommended; very new major versions (e.g. Node 24) can surface toolchain quirks with `react-scripts` / webpack. Connection defaults below use `mongodb://127.0.0.1:27017`—adjust to match your instance (port, auth, replica set, etc.).
+Use **Docker MongoDB on `127.0.0.1:27017`** for development. **Production** uses the replica set on the DC hosts — see [`backend/.env.example`](backend/.env.example) and [`docs/PRODUCTION_DEPLOYMENT_RUNBOOK.md`](docs/PRODUCTION_DEPLOYMENT_RUNBOOK.md).
 
 ---
 
-## 1. Backend (FastAPI)
+## 1. Start MongoDB
+
+From the **repository root**:
+
+```bash
+docker compose up -d
+```
+
+Verify:
+
+```bash
+docker compose ps
+# optional: mongosh mongodb://127.0.0.1:27017 --eval 'db.runCommand({ ping: 1 })'
+```
+
+Stop when done: `docker compose down` (add `-v` only if you want to wipe data).
+
+---
+
+## 2. Backend
 
 ```bash
 cd backend
-
 python3.11 -m venv .venv
-source .venv/bin/activate          # Windows: .venv\Scripts\activate
-python -m pip install --upgrade pip
+source .venv/bin/activate
 pip install -r requirements.txt
+cp .env.local.example .env   # or edit existing .env
 ```
 
-Create environment file (once):
+**Minimum `backend/.env` for local:**
 
-```bash
-cp .env.example .env
-```
-
-Edit **`backend/.env`** and set at least:
-
-| Variable | Example / notes |
-|----------|------------------|
-| `MONGO_URL` | `mongodb://127.0.0.1:27017` (or your URI) |
-| `DB_NAME` | `fleet_management` (optional; default) |
-| `JWT_SECRET_KEY` | Long random string (e.g. `python3.11 -c "import secrets; print(secrets.token_hex(32))"`) |
+| Variable | Value |
+|----------|--------|
+| `MONGO_URL` | `mongodb://127.0.0.1:27017` |
+| `DB_NAME` | `fleet_management` |
 | `ENVIRONMENT` | `development` |
+| `JWT_SECRET_KEY` | Any long random string |
+| `CORS_ORIGINS` | `http://localhost:3000,http://127.0.0.1:3000` |
+| `FRONTEND_URL` | `http://localhost:3000` |
 
-Optional: `CORS_ORIGINS` (defaults include `http://localhost:3000` in development if unset), `FRONTEND_URL`, `BOOTSTRAP_TOKEN` for first admin bootstrap.
-
-Start the API:
+Run API:
 
 ```bash
 source .venv/bin/activate
 uvicorn server:app --reload --host 0.0.0.0 --port 8000
 ```
 
-Check:
-
-- Health: <http://127.0.0.1:8000/health>
-- API base: <http://127.0.0.1:8000/api>
+- Health: http://127.0.0.1:8000/health  
+- API: http://127.0.0.1:8000/api  
 
 ---
 
-## 2. Frontend (React)
-
-In a **second** terminal:
+## 3. Frontend
 
 ```bash
 cd frontend
 cp .env.example .env
+npm install
+npm run dev
 ```
 
-Edit **`frontend/.env`** and set the API URL (no trailing slash):
+**`frontend/.env`:**
 
 ```bash
 REACT_APP_BACKEND_URL=http://127.0.0.1:8000
 ```
 
-Install and run:
-
-```bash
-npm install
-npm start
-# or: npm run dev  (same as start)
-```
-
-**npm note:** The repo may include `frontend/.npmrc` with `legacy-peer-deps=true` for React 19 + older peer ranges. `package.json` includes an **`overrides`** entry for **`ajv@8.12.0`** so webpack / `schema-utils` / `ajv-keywords` do not pull a mismatched `ajv` (fixes `Cannot find module 'ajv/dist/compile/codegen'`). After changing overrides, run a clean install:
-
-```bash
-cd frontend
-rm -rf node_modules package-lock.json
-npm install
-npm start
-```
-
-Open the app (default): <http://localhost:3000>
+App: http://localhost:3000  
 
 ---
 
-## 3. First admin (empty database)
+## 4. First admin (empty local DB)
 
-1. In `backend/.env`, set `BOOTSTRAP_TOKEN` to a secret value; restart the backend.
-2. Use **Initial Group Fleet Manager** at `/admin-register` (or call `POST /api/auth/bootstrap` with header `X-Bootstrap-Token` matching that token).
-3. Use a **strong** password (see API password policy: length, upper/lower, digit, special character).
+1. Set `BOOTSTRAP_TOKEN` in `backend/.env`.
+2. Open http://localhost:3000/admin-register  
+3. Register the first Group Fleet Manager.
 
 ---
 
-## 4. Optional: integration tests
+## Local vs production MongoDB
 
-With the API running and `backend/.env` loaded:
+| | **Local** | **Production** |
+|---|-----------|----------------|
+| **URI** | `mongodb://127.0.0.1:27017` | Replica set `rs0` on `.22` / `.23` |
+| **Auth** | None (Docker default) | `fleetapp` user + `authSource` |
+| **Template** | `backend/.env.local.example` | `backend/.env.example` |
+| **Start** | `docker compose up -d` | `mongod` on DC servers (runbook) |
 
-```bash
-# From repository root, with backend venv activated
-cd backend && source .venv/bin/activate && cd ..
-export REACT_APP_BACKEND_URL=http://127.0.0.1:8000
-pytest
-```
-
-Set `TEST_ADMIN_EMAIL` / `TEST_ADMIN_PASSWORD` and/or `BOOTSTRAP_TOKEN` in the environment if the suite needs a staff JWT (see `backend/tests/http_helpers.py`).
+**Do not** point local `.env` at production Mongo unless you intend to hit live data (VPN/tunnel required).
 
 ---
 
 ## Troubleshooting
 
-- **`Cannot read properties of undefined (reading 'date')`** (under `fork-ts-checker-webpack-plugin` / `ajv-keywords`) — npm **`overrides`** for **Ajv 8** can leave that plugin’s **nested** old `ajv-keywords` talking to the wrong Ajv API. **`craco.config.js`** removes `ForkTsCheckerWebpackPlugin` so dev/build start (this repo is JS-first; use your editor for TS if you add `.ts` files).
-- **`MONGO_URL environment variable is required`** — Create `backend/.env` or export `MONGO_URL` before `uvicorn`.
-- **CORS errors in the browser** — Set `CORS_ORIGINS` to include your dev origin, e.g. `http://localhost:3000,http://127.0.0.1:3000`.
-- **Cannot install `emergentintegrations`** — It is not on public PyPI; the app’s AI helpers degrade without it (see `backend/ai_services.py`).
+| Issue | Fix |
+|-------|-----|
+| `MONGO_URL environment variable is required` | Create `backend/.env` from `.env.local.example` |
+| Connection refused on 27017 | `docker compose up -d` from repo root |
+| CORS errors | Set `CORS_ORIGINS` to include `http://localhost:3000` |
+| Still hitting DC replica set | Check `MONGO_URL` in `backend/.env` — must be `127.0.0.1`, not `192.168.135.*` |
+
+More detail: [`docs/side_doc/LOCAL_DEV.md`](docs/side_doc/LOCAL_DEV.md)

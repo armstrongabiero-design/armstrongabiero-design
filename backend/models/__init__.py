@@ -1,7 +1,7 @@
 """Models package - re-exports all models for backward compatibility"""
 # Enums
 from .enums import (
-    CountryEnum, CurrencyEnum, UserRole, VehicleStatus,
+    CountryEnum, CountryCode, CurrencyEnum, UserRole, VehicleStatus,
     MaintenanceType, WorkshopType, DocumentType, TransactionType,
     TirePosition, TireStatus, VendorCategory, ExpenseCategory,
     RequestStatus, RequestPriority, ChecklistItemStatus,
@@ -25,30 +25,30 @@ from .fleet import (
 from .maintenance import (
     MaintenanceRecord, MaintenanceRecordCreate,
     WorkshopJob, WorkshopJobCreate,
-    MaintenanceRequest, MaintenanceRequestCreate, MaintenanceRequestApproval,
-    ChecklistItem, PreTripChecklist, PreTripChecklistCreate,
+    MaintenanceRequest, MaintenanceRequestCreate, MaintenanceRequestUpdate, MaintenanceRequestApproval,
+    ChecklistItem, PreTripChecklist, PreTripChecklistCreate, PreTripChecklistUpdate,
     FleetManager, FleetManagerCreate,
 )
 
 # Operations models
 from .operations import (
-    FuelTransaction, FuelTransactionCreate,
-    Expenditure, ExpenditureCreate,
-    InventoryItem, InventoryItemCreate,
+    FuelTransaction, FuelTransactionCreate, FuelTransactionUpdate,
+    Expenditure, ExpenditureCreate, ExpenditureUpdate,
+    InventoryItem, InventoryItemCreate, InventoryItemUpdate,
     InventoryTransaction, InventoryTransactionCreate,
-    LogbookEntry, LogbookEntryCreate,
+    LogbookEntry, LogbookEntryCreate, LogbookEntryUpdate,
 )
 
 # Compliance models
 from .compliance import (
-    Document, DocumentCreate,
-    SafetyIncident, SafetyIncidentCreate,
+    Document, DocumentCreate, DocumentUpdate,
+    SafetyIncident, SafetyIncidentCreate, SafetyIncidentUpdate,
     Alert, ComplianceCheck,
 )
 
 # Asset models
 from .assets import (
-    Asset, AssetCreate,
+    Asset, AssetCreate, AssetUpdate,
     ExchangeRate, ExchangeRateCreate,
     AIPrediction, AIPredictionCreate,
     TCORecord,

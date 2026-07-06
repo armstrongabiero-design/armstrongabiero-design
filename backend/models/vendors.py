@@ -4,7 +4,7 @@ from typing import Optional
 from datetime import datetime, timezone
 import uuid
 
-from .enums import VendorCategory, CountryEnum, CurrencyEnum
+from .enums import VendorCategory, CountryCode, CurrencyEnum
 
 
 class Vendor(BaseModel):
@@ -12,7 +12,7 @@ class Vendor(BaseModel):
     id: str = Field(default_factory=lambda: str(uuid.uuid4()))
     name: str
     category: VendorCategory
-    country: CountryEnum
+    country: CountryCode
     address: str
     city: str
     contact_person: str
@@ -34,7 +34,7 @@ class Vendor(BaseModel):
 class VendorCreate(BaseModel):
     name: str
     category: VendorCategory
-    country: CountryEnum
+    country: CountryCode
     address: str
     city: str
     contact_person: str
@@ -51,7 +51,7 @@ class VendorUpdate(BaseModel):
     model_config = ConfigDict(extra="forbid")
     name: Optional[str] = None
     category: Optional[VendorCategory] = None
-    country: Optional[CountryEnum] = None
+    country: Optional[CountryCode] = None
     address: Optional[str] = None
     city: Optional[str] = None
     contact_person: Optional[str] = None

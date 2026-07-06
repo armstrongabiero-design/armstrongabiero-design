@@ -1,22 +1,40 @@
 import React, { useEffect, useState, useCallback } from 'react';
 import axios from 'axios';
 import { MapPin, RefreshCw, Clock } from 'lucide-react';
-import { toast } from 'sonner';
 import { Button } from '../components/ui/button';
 import { Input } from '../components/ui/input';
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle, DialogTrigger } from '../components/ui/dialog';
 import { Label } from '../components/ui/label';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '../components/ui/select';
+import CountrySelect, {
+  DEFAULT_COUNTRY_CODE,
+  getCountryFlag,
+  countryMatchesFilter,
+  normalizeCountryCode,
+} from '../components/CountrySelect';
+import { completeDialogSubmit } from '../utils/formUtils';
 
 const BACKEND_URL = process.env.REACT_APP_BACKEND_URL;
 const API = `${BACKEND_URL}/api`;
 
-// Country center coordinates
+// Country center coordinates (ISO alpha-2)
 const COUNTRY_COORDS = {
-  GHANA: { lat: 7.9465, lng: -1.0232, zoom: 7 },
-  LIBERIA: { lat: 6.4281, lng: -9.4295, zoom: 7 },
-  SAO_TOME: { lat: 0.1864, lng: 6.6131, zoom: 10 },
+  GH: { lat: 7.9465, lng: -1.0232, zoom: 7, label: 'Ghana' },
+  LR: { lat: 6.4281, lng: -9.4295, zoom: 7, label: 'Liberia' },
+  ST: { lat: 0.1864, lng: 6.6131, zoom: 10, label: 'São Tomé and Príncipe' },
 };
+
+const createInitialFormData = (userCountry) => ({
+  vehicle_id: '',
+  latitude: '',
+  longitude: '',
+  address: '',
+  city: '',
+  country: normalizeCountryCode(userCountry) || DEFAULT_COUNTRY_CODE,
+  speed_kmh: '',
+  source: 'MANUAL',
+  driver_id: '',
+});
 
 const VehicleMap = () => {
   const [locations, setLocations] = useState([]);
@@ -26,17 +44,7 @@ const VehicleMap = () => {
   const [dialogOpen, setDialogOpen] = useState(false);
   const [selectedCountry, setSelectedCountry] = useState('');
 
-  const [formData, setFormData] = useState({
-    vehicle_id: '',
-    latitude: '',
-    longitude: '',
-    address: '',
-    city: '',
-    country: 'GHANA',
-    speed_kmh: '',
-    source: 'MANUAL',
-    driver_id: '',
-  });
+  const [formData, setFormData] = useState(createInitialFormData());
 
   const fetchData = useCallback(async () => {
     try {
@@ -63,34 +71,30 @@ const VehicleMap = () => {
 
   const handleSubmit = async (e) => {
     e.preventDefault();
-    
-    const vehicle = vehicles.find(item => item.id === formData.vehicle_id);
-    
-    try {
-      await axios.post(`${API}/vehicle-locations`, {
-        ...formData,
-        latitude: parseFloat(formData.latitude),
-        longitude: parseFloat(formData.longitude),
-        speed_kmh: formData.speed_kmh ? parseFloat(formData.speed_kmh) : null,
-        country: vehicle?.country || formData.country,
-      });
-      toast.success('Vehicle location updated!');
-      setDialogOpen(false);
-      fetchData();
-    } catch {
-      toast.error('Failed to update location');
-    }
+
+    const vehicle = vehicles.find((item) => item.id === formData.vehicle_id);
+
+    await completeDialogSubmit({
+      submit: () =>
+        axios.post(`${API}/vehicle-locations`, {
+          ...formData,
+          latitude: parseFloat(formData.latitude),
+          longitude: parseFloat(formData.longitude),
+          speed_kmh: formData.speed_kmh ? parseFloat(formData.speed_kmh) : null,
+          country: vehicle?.country || formData.country,
+        }),
+      setDialogOpen,
+      setFormData,
+      initialFormData: createInitialFormData,
+      onSuccess: fetchData,
+      successMessage: 'Vehicle location updated!',
+      errorMessage: 'Failed to update location',
+    });
   };
 
-  const filteredLocations = selectedCountry 
-    ? locations.filter(l => l.country === selectedCountry)
+  const filteredLocations = selectedCountry
+    ? locations.filter((l) => countryMatchesFilter(l.country, selectedCountry))
     : locations;
-
-  const countByCountry = {
-    GHANA: locations.filter(l => l.country === 'GHANA').length,
-    LIBERIA: locations.filter(l => l.country === 'LIBERIA').length,
-    SAO_TOME: locations.filter(l => l.country === 'SAO_TOME').length,
-  };
 
   return (
     <div className="p-6 lg:p-8" data-testid="vehicle-map-page">
@@ -100,17 +104,13 @@ const VehicleMap = () => {
           <p className="text-slate-600 mt-1">Real-time vehicle locations across all countries</p>
         </div>
         <div className="flex gap-2 flex-wrap">
-          <Select value={selectedCountry || "ALL"} onValueChange={(v) => setSelectedCountry(v === "ALL" ? "" : v)}>
-            <SelectTrigger className="w-40">
-              <SelectValue placeholder="All Countries" />
-            </SelectTrigger>
-            <SelectContent>
-              <SelectItem value="ALL">All Countries</SelectItem>
-              <SelectItem value="GHANA">Ghana ({countByCountry.GHANA})</SelectItem>
-              <SelectItem value="LIBERIA">Liberia ({countByCountry.LIBERIA})</SelectItem>
-              <SelectItem value="SAO_TOME">São Tomé ({countByCountry.SAO_TOME})</SelectItem>
-            </SelectContent>
-          </Select>
+          <CountrySelect
+            value={selectedCountry || 'ALL'}
+            onValueChange={(v) => setSelectedCountry(v === 'ALL' ? '' : v)}
+            includeAllOption
+            allLabel="All Countries"
+            className="w-40"
+          />
           <Button variant="outline" onClick={fetchData}>
             <RefreshCw size={18} className="mr-2" />
             Refresh
@@ -188,20 +188,21 @@ const VehicleMap = () => {
 
       {/* Country Summary Cards */}
       <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mb-6">
-        {Object.entries(COUNTRY_COORDS).map(([country]) => {
-          const countryLocations = locations.filter(l => l.country === country);
-          const countryName = country === 'SAO_TOME' ? 'São Tomé' : country.charAt(0) + country.slice(1).toLowerCase();
-          
+        {Object.entries(COUNTRY_COORDS).map(([code, meta]) => {
+          const countryLocations = locations.filter((l) => countryMatchesFilter(l.country, code));
+
           return (
-            <div key={country} className={`fleet-card cursor-pointer hover:shadow-lg transition-shadow ${selectedCountry === country ? 'ring-2 ring-amber-500' : ''}`} onClick={() => setSelectedCountry(selectedCountry === country ? '' : country)}>
+            <div
+              key={code}
+              className={`fleet-card cursor-pointer hover:shadow-lg transition-shadow ${selectedCountry && countryMatchesFilter(selectedCountry, code) ? 'ring-2 ring-amber-500' : ''}`}
+              onClick={() => setSelectedCountry(selectedCountry && countryMatchesFilter(selectedCountry, code) ? '' : code)}
+            >
               <div className="flex items-center justify-between">
                 <div>
-                  <h3 className="font-semibold text-lg">{countryName}</h3>
+                  <h3 className="font-semibold text-lg">{meta.label}</h3>
                   <p className="text-slate-500 text-sm">{countryLocations.length} vehicles tracked</p>
                 </div>
-                <div className="text-4xl">
-                  {country === 'GHANA' ? '\u{1F1EC}\u{1F1ED}' : country === 'LIBERIA' ? '\u{1F1F1}\u{1F1F7}' : '\u{1F1F8}\u{1F1F9}'}
-                </div>
+                <div className="text-4xl">{getCountryFlag(code)}</div>
               </div>
             </div>
           );

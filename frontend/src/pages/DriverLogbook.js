@@ -1,6 +1,6 @@
 import React, { useEffect, useState, useCallback } from 'react';
 import axios from 'axios';
-import { Plus, Book } from 'lucide-react';
+import { Plus, Book, Pencil, Trash2 } from 'lucide-react';
 import { toast } from 'sonner';
 import { useAuth } from '../contexts/AuthContext';
 import { Button } from '../components/ui/button';
@@ -9,9 +9,56 @@ import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle, Di
 import { Label } from '../components/ui/label';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '../components/ui/select';
 import { Textarea } from '../components/ui/textarea';
+import { DEFAULT_COUNTRY_CODE, normalizeCountryCode } from '../components/CountrySelect';
+import ConfirmDeleteDialog from '../components/ConfirmDeleteDialog';
+import { completeDialogSubmit } from '../utils/formUtils';
+import { canEditLogbookEntry, canHardDelete } from '../utils/permissions';
 
 const BACKEND_URL = process.env.REACT_APP_BACKEND_URL;
 const API = `${BACKEND_URL}/api`;
+
+const createInitialFormData = (user, isPersonalView) => ({
+  driver_id: isPersonalView ? (user?.driver_id || user?.id) : '',
+  vehicle_id: '',
+  country: normalizeCountryCode(user?.country) || DEFAULT_COUNTRY_CODE,
+  date: new Date().toISOString().split('T')[0],
+  start_time: '',
+  end_time: '',
+  start_location: '',
+  end_location: '',
+  start_odometer: '',
+  end_odometer: '',
+  purpose: '',
+  fuel_used_liters: '',
+  notes: '',
+});
+
+const isoToDateInput = (iso) => {
+  if (!iso) return '';
+  return new Date(iso).toISOString().split('T')[0];
+};
+
+const isoToTimeInput = (iso) => {
+  if (!iso) return '';
+  const d = new Date(iso);
+  return `${String(d.getUTCHours()).padStart(2, '0')}:${String(d.getUTCMinutes()).padStart(2, '0')}`;
+};
+
+const entryToFormData = (entry) => ({
+  driver_id: entry.driver_id,
+  vehicle_id: entry.vehicle_id,
+  country: normalizeCountryCode(entry.country) || DEFAULT_COUNTRY_CODE,
+  date: isoToDateInput(entry.date),
+  start_time: isoToTimeInput(entry.start_time),
+  end_time: isoToTimeInput(entry.end_time),
+  start_location: entry.start_location,
+  end_location: entry.end_location || '',
+  start_odometer: entry.start_odometer,
+  end_odometer: entry.end_odometer ?? '',
+  purpose: entry.purpose,
+  fuel_used_liters: entry.fuel_used_liters ?? '',
+  notes: entry.notes || '',
+});
 
 const DriverLogbook = () => {
   const { user, token, isDriverOrUser } = useAuth();
@@ -22,24 +69,13 @@ const DriverLogbook = () => {
   const [vehicles, setVehicles] = useState([]);
   const [loading, setLoading] = useState(true);
   const [dialogOpen, setDialogOpen] = useState(false);
+  const [editingId, setEditingId] = useState(null);
+  const [deleteTarget, setDeleteTarget] = useState(null);
+  const [deleting, setDeleting] = useState(false);
   const [selectedDriver, setSelectedDriver] = useState(isPersonalView ? (user?.driver_id || user?.id) : '');
   const [driverSummary, setDriverSummary] = useState(null);
 
-  const [formData, setFormData] = useState({
-    driver_id: isPersonalView ? (user?.driver_id || user?.id) : '',
-    vehicle_id: '',
-    country: user?.country || 'GHANA',
-    date: new Date().toISOString().split('T')[0],
-    start_time: '',
-    end_time: '',
-    start_location: '',
-    end_location: '',
-    start_odometer: '',
-    end_odometer: '',
-    purpose: '',
-    fuel_used_liters: '',
-    notes: '',
-  });
+  const [formData, setFormData] = useState(() => createInitialFormData(user, isPersonalView));
 
   const fetchData = useCallback(async () => {
     try {
@@ -87,47 +123,82 @@ const DriverLogbook = () => {
     }
   }, [selectedDriver, isPersonalView, user, fetchDriverSummary]);
 
-  const handleSubmit = async (e) => {
-    e.preventDefault();
-    
-    const driverId = isPersonalView ? (user?.driver_id || user?.id) : formData.driver_id;
-    const driver = drivers.find(d => d.id === driverId);
-    
-    try {
-      const headers = token ? { Authorization: `Bearer ${token}` } : {};
-      await axios.post(`${API}/logbook`, {
-        ...formData,
-        driver_id: driverId,
-        country: driver?.country || user?.country || formData.country,
-        date: new Date(formData.date).toISOString(),
-        start_time: new Date(`${formData.date}T${formData.start_time}`).toISOString(),
-        end_time: formData.end_time ? new Date(`${formData.date}T${formData.end_time}`).toISOString() : null,
-        start_odometer: parseFloat(formData.start_odometer),
-        end_odometer: formData.end_odometer ? parseFloat(formData.end_odometer) : null,
-        fuel_used_liters: formData.fuel_used_liters ? parseFloat(formData.fuel_used_liters) : null,
-      }, { headers });
-      toast.success('Logbook entry added!');
-      setDialogOpen(false);
-      fetchData();
-      setFormData({
-        driver_id: isPersonalView ? (user?.driver_id || user?.id) : '',
-        vehicle_id: '',
-        country: user?.country || 'GHANA',
-        date: new Date().toISOString().split('T')[0],
-        start_time: '',
-        end_time: '',
-        start_location: '',
-        end_location: '',
-        start_odometer: '',
-        end_odometer: '',
-        purpose: '',
-        fuel_used_liters: '',
-        notes: '',
-      });
-    } catch {
-      toast.error('Failed to add logbook entry');
+  const handleDialogOpenChange = (open) => {
+    setDialogOpen(open);
+    if (!open) {
+      setEditingId(null);
+      setFormData(createInitialFormData(user, isPersonalView));
     }
   };
+
+  const openCreateDialog = () => {
+    setEditingId(null);
+    setFormData(createInitialFormData(user, isPersonalView));
+    setDialogOpen(true);
+  };
+
+  const openEditDialog = (entry) => {
+    setEditingId(entry.id);
+    setFormData(entryToFormData(entry));
+    setDialogOpen(true);
+  };
+
+  const buildLogbookPayload = (data, driverId) => ({
+    ...data,
+    driver_id: driverId,
+    country: data.country || user?.country || DEFAULT_COUNTRY_CODE,
+    date: new Date(data.date).toISOString(),
+    start_time: new Date(`${data.date}T${data.start_time}`).toISOString(),
+    end_time: data.end_time ? new Date(`${data.date}T${data.end_time}`).toISOString() : null,
+    start_odometer: parseFloat(data.start_odometer),
+    end_odometer: data.end_odometer ? parseFloat(data.end_odometer) : null,
+    fuel_used_liters: data.fuel_used_liters ? parseFloat(data.fuel_used_liters) : null,
+  });
+
+  const handleSubmit = async (e) => {
+    e.preventDefault();
+
+    const driverId = isPersonalView ? (user?.driver_id || user?.id) : formData.driver_id;
+    const driver = drivers.find((d) => d.id === driverId);
+    const headers = token ? { Authorization: `Bearer ${token}` } : {};
+    const payload = buildLogbookPayload(
+      { ...formData, country: driver?.country || user?.country || formData.country },
+      driverId
+    );
+
+    await completeDialogSubmit({
+      submit: () =>
+        editingId
+          ? axios.put(`${API}/logbook/${editingId}`, payload, { headers })
+          : axios.post(`${API}/logbook`, payload, { headers }),
+      setDialogOpen: handleDialogOpenChange,
+      setFormData,
+      initialFormData: () => createInitialFormData(user, isPersonalView),
+      onSuccess: fetchData,
+      successMessage: editingId ? 'Logbook entry updated!' : 'Logbook entry added!',
+      errorMessage: editingId ? 'Failed to update logbook entry' : 'Failed to add logbook entry',
+    });
+    setEditingId(null);
+  };
+
+  const handleConfirmDelete = async () => {
+    if (!deleteTarget) return;
+    setDeleting(true);
+    try {
+      const headers = token ? { Authorization: `Bearer ${token}` } : {};
+      await axios.delete(`${API}/logbook/${deleteTarget.id}`, { headers });
+      toast.success('Logbook entry deleted');
+      setDeleteTarget(null);
+      fetchData();
+    } catch (error) {
+      toast.error(error.response?.data?.detail || 'Failed to delete entry');
+    } finally {
+      setDeleting(false);
+    }
+  };
+
+  const canEdit = canEditLogbookEntry(user?.role, isPersonalView);
+  const canDelete = canHardDelete(user?.role, 'logbook_entry');
 
   const filteredEntries = !isPersonalView && selectedDriver
     ? entries.filter(e => e.driver_id === selectedDriver)
@@ -160,16 +231,17 @@ const DriverLogbook = () => {
               </SelectContent>
             </Select>
           )}
-          <Dialog open={dialogOpen} onOpenChange={setDialogOpen}>
+          {canEdit && (
+          <Dialog open={dialogOpen} onOpenChange={handleDialogOpenChange}>
             <DialogTrigger asChild>
-              <Button data-testid="add-entry-btn">
+              <Button data-testid="add-entry-btn" onClick={openCreateDialog}>
                 <Plus size={18} className="mr-2" />
                 Add Entry
               </Button>
             </DialogTrigger>
             <DialogContent className="max-w-2xl max-h-[90vh] overflow-y-auto">
               <DialogHeader>
-                <DialogTitle>New Logbook Entry</DialogTitle>
+                <DialogTitle>{editingId ? 'Edit Logbook Entry' : 'New Logbook Entry'}</DialogTitle>
                 <DialogDescription>
                   {isPersonalView ? 'Record your trip details.' : 'Record a trip or driving session.'}
                 </DialogDescription>
@@ -260,12 +332,13 @@ const DriverLogbook = () => {
                 </div>
 
                 <div className="flex justify-end gap-2 mt-6">
-                  <Button type="button" variant="outline" onClick={() => setDialogOpen(false)}>Cancel</Button>
-                  <Button type="submit">Save Entry</Button>
+                  <Button type="button" variant="outline" onClick={() => handleDialogOpenChange(false)}>Cancel</Button>
+                  <Button type="submit">{editingId ? 'Save Changes' : 'Save Entry'}</Button>
                 </div>
               </form>
             </DialogContent>
           </Dialog>
+          )}
         </div>
       </div>
 
@@ -303,12 +376,13 @@ const DriverLogbook = () => {
               <th>Distance</th>
               <th>Purpose</th>
               <th>Fuel</th>
+              {canEdit && <th className="w-24">Actions</th>}
             </tr>
           </thead>
           <tbody>
             {filteredEntries.length === 0 ? (
               <tr>
-                <td colSpan={isPersonalView ? 6 : 7} className="text-center py-8 text-slate-500">
+                <td colSpan={isPersonalView ? (canEdit ? 7 : 6) : (canEdit ? 8 : 7)} className="text-center py-8 text-slate-500">
                   No logbook entries found
                 </td>
               </tr>
@@ -330,6 +404,25 @@ const DriverLogbook = () => {
                     <td>{distance} km</td>
                     <td className="text-sm max-w-xs truncate">{entry.purpose}</td>
                     <td>{entry.fuel_used_liters ? `${entry.fuel_used_liters} L` : '-'}</td>
+                    {canEdit && (
+                      <td>
+                        <div className="flex gap-1">
+                          <Button variant="ghost" size="icon" className="h-8 w-8" onClick={() => openEditDialog(entry)}>
+                            <Pencil size={16} />
+                          </Button>
+                          {canDelete && (
+                            <Button
+                              variant="ghost"
+                              size="icon"
+                              className="h-8 w-8 text-red-600 hover:text-red-700 hover:bg-red-50"
+                              onClick={() => setDeleteTarget(entry)}
+                            >
+                              <Trash2 size={16} />
+                            </Button>
+                          )}
+                        </div>
+                      </td>
+                    )}
                   </tr>
                 );
               })
@@ -337,6 +430,15 @@ const DriverLogbook = () => {
           </tbody>
         </table>
       </div>
+
+      <ConfirmDeleteDialog
+        open={!!deleteTarget}
+        onOpenChange={(open) => !open && setDeleteTarget(null)}
+        onConfirm={handleConfirmDelete}
+        loading={deleting}
+        title="Delete logbook entry?"
+        description={deleteTarget ? `Permanently delete this trip on ${new Date(deleteTarget.date).toLocaleDateString()}?` : undefined}
+      />
     </div>
   );
 };

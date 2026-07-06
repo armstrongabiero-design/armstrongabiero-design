@@ -4,7 +4,7 @@ from typing import Optional, List, Dict
 from datetime import datetime, timezone
 import uuid
 
-from .enums import TirePosition, TireStatus, CountryEnum, CurrencyEnum
+from .enums import TirePosition, TireStatus, CountryCode, CurrencyEnum
 
 
 class Tire(BaseModel):
@@ -17,7 +17,7 @@ class Tire(BaseModel):
     vehicle_id: Optional[str] = None
     position: Optional[TirePosition] = None
     status: TireStatus = TireStatus.SPARE
-    country: CountryEnum
+    country: CountryCode
     purchase_date: datetime
     purchase_cost: float
     currency: CurrencyEnum
@@ -41,7 +41,7 @@ class TireCreate(BaseModel):
     size: str
     vehicle_id: Optional[str] = None
     position: Optional[TirePosition] = None
-    country: CountryEnum
+    country: CountryCode
     purchase_date: datetime
     purchase_cost: float
     currency: CurrencyEnum
@@ -59,7 +59,7 @@ class TireUpdate(BaseModel):
     vehicle_id: Optional[str] = None
     position: Optional[TirePosition] = None
     status: Optional[TireStatus] = None
-    country: Optional[CountryEnum] = None
+    country: Optional[CountryCode] = None
     purchase_date: Optional[datetime] = None
     purchase_cost: Optional[float] = None
     currency: Optional[CurrencyEnum] = None

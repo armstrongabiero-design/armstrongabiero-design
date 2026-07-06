@@ -1,11 +1,30 @@
 """Enums for Fleet Management System"""
 from enum import Enum
+from typing import Annotated
+
+from pydantic import BeforeValidator, Field
+
+from country_utils import normalize_country_code
+
+
+def _coerce_country_code(value: object) -> str:
+    return normalize_country_code(value)
+
+
+# ISO 3166-1 alpha-2 (replaces legacy CountryEnum: GHANA/LIBERIA/SAO_TOME)
+CountryCode = Annotated[
+    str,
+    BeforeValidator(_coerce_country_code),
+    Field(min_length=2, max_length=2, pattern=r"^[A-Z]{2}$"),
+]
 
 
 class CountryEnum(str, Enum):
-    GHANA = "GHANA"
-    LIBERIA = "LIBERIA"
-    SAO_TOME = "SAO_TOME"
+    """Deprecated — use CountryCode (ISO alpha-2). Kept for backward-compatible imports."""
+
+    GHANA = "GH"
+    LIBERIA = "LR"
+    SAO_TOME = "ST"
 
 
 class CurrencyEnum(str, Enum):

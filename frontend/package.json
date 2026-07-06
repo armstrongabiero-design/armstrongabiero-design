@@ -1,7 +1,8 @@
 {
-  "name": "frontend",
+  "name": "gti-fleet",
   "version": "0.1.0",
   "private": true,
+  "description": "GTI Fleet — fleet management web application",
   "dependencies": {
     "@hookform/resolvers": "^5.0.1",
     "@radix-ui/react-accordion": "^1.2.8",

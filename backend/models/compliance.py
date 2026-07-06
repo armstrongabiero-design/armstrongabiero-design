@@ -4,13 +4,13 @@ from typing import Optional, Dict, Any
 from datetime import datetime, timezone
 import uuid
 
-from .enums import CountryEnum, CurrencyEnum, DocumentType, ComplianceStatus
+from .enums import CountryCode, CurrencyEnum, DocumentType, ComplianceStatus
 
 
 class Document(BaseModel):
     model_config = ConfigDict(extra="ignore")
     id: str = Field(default_factory=lambda: str(uuid.uuid4()))
-    country: CountryEnum
+    country: CountryCode
     document_type: DocumentType
     entity_id: str
     entity_type: str
@@ -26,7 +26,7 @@ class Document(BaseModel):
 
 
 class DocumentCreate(BaseModel):
-    country: CountryEnum
+    country: CountryCode
     document_type: DocumentType
     entity_id: str
     entity_type: str
@@ -34,6 +34,17 @@ class DocumentCreate(BaseModel):
     issue_date: datetime
     expiry_date: datetime
     file_url: str
+
+
+class DocumentUpdate(BaseModel):
+    country: Optional[CountryCode] = None
+    document_type: Optional[DocumentType] = None
+    entity_id: Optional[str] = None
+    entity_type: Optional[str] = None
+    document_number: Optional[str] = None
+    issue_date: Optional[datetime] = None
+    expiry_date: Optional[datetime] = None
+    file_url: Optional[str] = None
 
 
 class SafetyIncident(BaseModel):
@@ -64,6 +75,18 @@ class SafetyIncidentCreate(BaseModel):
     currency: Optional[CurrencyEnum] = None
 
 
+class SafetyIncidentUpdate(BaseModel):
+    driver_id: Optional[str] = None
+    vehicle_id: Optional[str] = None
+    incident_date: Optional[datetime] = None
+    incident_type: Optional[str] = None
+    severity: Optional[str] = None
+    description: Optional[str] = None
+    location: Optional[str] = None
+    cost: Optional[float] = None
+    currency: Optional[CurrencyEnum] = None
+
+
 class Alert(BaseModel):
     model_config = ConfigDict(extra="ignore")
     id: str = Field(default_factory=lambda: str(uuid.uuid4()))
@@ -73,7 +96,7 @@ class Alert(BaseModel):
     message: str
     entity_type: str
     entity_id: str
-    country: CountryEnum
+    country: CountryCode
     is_read: bool = False
     is_resolved: bool = False
     resolved_at: Optional[datetime] = None
@@ -86,7 +109,7 @@ class ComplianceCheck(BaseModel):
     id: str = Field(default_factory=lambda: str(uuid.uuid4()))
     entity_type: str
     entity_id: str
-    country: CountryEnum
+    country: CountryCode
     check_type: str
     status: ComplianceStatus
     expiry_date: Optional[datetime] = None
