@@ -62,6 +62,7 @@ from models import (
     ForgotPasswordRequest, ResetPasswordRequest, PasswordResetToken
 )
 from audit_service import assert_can_hard_delete, write_audit_log
+from storage_service import upload_bytes, read_bytes, delete_object, presigned_download_url, storage_enabled
 from security_middleware import JWTAuthMiddleware
 
 limiter = Limiter(key_func=get_remote_address)
@@ -972,6 +973,56 @@ async def delete_expenditure(
 
 
 # ============= DOCUMENT ROUTES =============
+_DOCUMENT_MAX_BYTES = 10 * 1024 * 1024
+_ALLOWED_DOCUMENT_CONTENT_TYPES = frozenset(
+    {
+        "image/jpeg",
+        "image/png",
+        "image/webp",
+        "image/gif",
+        "application/pdf",
+    }
+)
+
+
+def _parse_ocr_date(value) -> Optional[str]:
+    if not value:
+        return None
+    if isinstance(value, datetime):
+        return value.isoformat()
+    text = str(value).strip()
+    if not text:
+        return None
+    try:
+        return datetime.fromisoformat(text.replace("Z", "+00:00")).isoformat()
+    except ValueError:
+        return None
+
+
+def _document_ocr_updates(ocr_result: dict) -> dict:
+    updates = {
+        "ocr_processed": True,
+        "ocr_data": ocr_result,
+        "validated": ocr_result.get("validation_status") == "VALID",
+    }
+    if ocr_result.get("document_number"):
+        updates["document_number"] = ocr_result["document_number"]
+    issue = _parse_ocr_date(ocr_result.get("issue_date"))
+    if issue:
+        updates["issue_date"] = issue
+    expiry = _parse_ocr_date(ocr_result.get("expiry_date"))
+    if expiry:
+        updates["expiry_date"] = expiry
+    status = ocr_result.get("validation_status")
+    if status == "EXPIRED":
+        updates["validation_notes"] = "Document marked expired by OCR"
+    elif status == "INVALID":
+        updates["validation_notes"] = "Document marked invalid by OCR"
+    elif status == "VALID":
+        updates["validation_notes"] = None
+    return updates
+
+
 @api_router.post("/documents", response_model=Document)
 async def create_document(input: DocumentCreate):
     document = Document(**input.model_dump())
@@ -1004,33 +1055,139 @@ async def get_documents(entity_id: Optional[str] = None, document_type: Optional
     return documents
 
 
-@api_router.post("/documents/{document_id}/ocr")
-async def process_document_ocr(document_id: str, file: UploadFile = File(...)):
+    return documents
+
+
+@api_router.post("/documents/{document_id}/upload")
+async def upload_document_file(
+    document_id: str,
+    file: UploadFile = File(...),
+    current_user: dict = Depends(_require_staff),
+):
     document = await db.documents.find_one({"id": document_id}, {"_id": 0})
     if not document:
         raise HTTPException(status_code=404, detail="Document not found")
-    
-    # Read and encode image
-    image_bytes = await file.read()
-    image_base64 = base64.b64encode(image_bytes).decode('utf-8')
-    
-    # Process with AI OCR
-    ocr_result = await ai_service.ocr_document(
-        image_base64,
-        document.get('document_type'),
-        document.get('country')
+
+    content_type = (file.content_type or "").split(";")[0].strip().lower()
+    if content_type not in _ALLOWED_DOCUMENT_CONTENT_TYPES:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Invalid file type. Allowed: PDF and images ({', '.join(sorted(_ALLOWED_DOCUMENT_CONTENT_TYPES))})",
+        )
+
+    content = await file.read()
+    if len(content) > _DOCUMENT_MAX_BYTES:
+        raise HTTPException(
+            status_code=400,
+            detail=f"File too large (max {_DOCUMENT_MAX_BYTES // (1024 * 1024)} MB)",
+        )
+
+    old_key = document.get("s3_key")
+    object_key, file_ref = upload_bytes(
+        document_id=document_id,
+        content=content,
+        content_type=content_type,
+        filename=file.filename or "document",
     )
-    
-    # Update document with OCR data
+
     await db.documents.update_one(
         {"id": document_id},
         {"$set": {
-            "ocr_processed": True,
-            "ocr_data": ocr_result,
-            "validated": ocr_result.get("validation_status") == "VALID"
-        }}
+            "s3_key": object_key,
+            "file_url": file_ref,
+            "original_filename": file.filename,
+            "content_type": content_type,
+        }},
     )
-    
+
+    if old_key and old_key != object_key:
+        delete_object(old_key)
+
+    return {
+        "message": "File uploaded successfully",
+        "s3_key": object_key,
+        "file_url": file_ref,
+        "storage": "s3" if storage_enabled() else "local",
+    }
+
+
+@api_router.get("/documents/{document_id}/download-url")
+async def get_document_download_url(
+    document_id: str,
+    current_user: dict = Depends(get_current_user),
+):
+    document = await db.documents.find_one({"id": document_id}, {"_id": 0})
+    if not document:
+        raise HTTPException(status_code=404, detail="Document not found")
+    if not document.get("s3_key"):
+        raise HTTPException(status_code=404, detail="No file uploaded for this document")
+
+    if storage_enabled():
+        url = presigned_download_url(document["s3_key"])
+        if not url:
+            raise HTTPException(status_code=503, detail="Could not generate download URL")
+        return {"url": url, "expires_in": int(os.environ.get("S3_PRESIGNED_URL_EXPIRY", "3600"))}
+
+    return {"url": f"/api/documents/{document_id}/file", "expires_in": None}
+
+
+@api_router.get("/documents/{document_id}/file")
+async def get_document_file(
+    document_id: str,
+    current_user: dict = Depends(get_current_user),
+):
+    if storage_enabled():
+        raise HTTPException(status_code=404, detail="Use download-url for S3-backed documents")
+
+    document = await db.documents.find_one({"id": document_id}, {"_id": 0})
+    if not document or not document.get("s3_key"):
+        raise HTTPException(status_code=404, detail="Document file not found")
+
+    content = read_bytes(document["s3_key"])
+    if content is None:
+        raise HTTPException(status_code=404, detail="Document file not found")
+
+    media_type = document.get("content_type") or "application/octet-stream"
+    filename = document.get("original_filename") or f"document-{document_id}"
+    headers = {"Content-Disposition": f'inline; filename="{filename}"'}
+    return Response(content=content, media_type=media_type, headers=headers)
+
+
+@api_router.post("/documents/{document_id}/ocr")
+async def process_document_ocr(
+    document_id: str,
+    file: Optional[UploadFile] = File(None),
+    current_user: dict = Depends(_require_staff),
+):
+    document = await db.documents.find_one({"id": document_id}, {"_id": 0})
+    if not document:
+        raise HTTPException(status_code=404, detail="Document not found")
+
+    image_bytes = None
+    if file and file.filename:
+        content_type = (file.content_type or "").split(";")[0].strip().lower()
+        if content_type not in _ALLOWED_DOCUMENT_CONTENT_TYPES:
+            raise HTTPException(status_code=400, detail="Invalid file type for OCR")
+        image_bytes = await file.read()
+        if len(image_bytes) > _DOCUMENT_MAX_BYTES:
+            raise HTTPException(status_code=400, detail="File too large for OCR")
+    elif document.get("s3_key"):
+        image_bytes = read_bytes(document["s3_key"])
+        if image_bytes is None:
+            raise HTTPException(status_code=404, detail="Stored document file not found")
+    else:
+        raise HTTPException(status_code=400, detail="Upload a document file before running OCR")
+
+    image_base64 = base64.b64encode(image_bytes).decode("utf-8")
+    ocr_result = await ai_service.ocr_document(
+        image_base64,
+        document.get("document_type"),
+        document.get("country"),
+    )
+
+    updates = _document_ocr_updates(ocr_result)
+    await db.documents.update_one({"id": document_id}, {"$set": updates})
+
     return ocr_result
 
 
@@ -1065,6 +1222,9 @@ async def delete_document(
     document = await db.documents.find_one({"id": document_id}, {"_id": 0})
     if not document:
         raise HTTPException(status_code=404, detail="Document not found")
+
+    if document.get("s3_key"):
+        delete_object(document["s3_key"])
 
     await db.documents.delete_one({"id": document_id})
     await write_audit_log(

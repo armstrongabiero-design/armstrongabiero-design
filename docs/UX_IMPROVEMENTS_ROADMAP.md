@@ -43,12 +43,15 @@ Implementation: `backend/audit_service.py` (`can_hard_delete`, `write_audit_log`
 - [x] Inventory, Fuel, Expenditures, Assets, Safety: edit + delete (managers; staff edit)
 - [x] Pre-trip checklists: edit (staff or owning driver) + delete (officers + managers)
 
-## Phase 3 — Documents + S3 + OCR
+## Phase 3 — Documents + S3 + OCR (complete)
 
-1. Configure `S3_BUCKET_NAME`, `AWS_REGION`, credentials in `backend/.env`
-2. Upload endpoint: store file in S3, persist `file_url` / `s3_key` on document record
-3. Wire Documents UI: file picker → upload → optional OCR (`/documents/{id}/ocr` or existing route)
-4. View/download link from S3 presigned URL
+- [x] `storage_service.py` — S3 upload/download/presigned URLs; local disk fallback when `S3_BUCKET_NAME` unset
+- [x] Env: `S3_BUCKET_NAME`, `AWS_REGION`, `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY` in `backend/.env.example`
+- [x] `POST /documents/{id}/upload` — store file, persist `s3_key` + metadata on document
+- [x] `GET /documents/{id}/download-url` — presigned S3 URL (or local `/file` path in dev)
+- [x] `POST /documents/{id}/ocr` — OCR from stored file or upload; auto-applies extracted fields
+- [x] Documents UI: file picker → upload → optional OCR; View link; row-level OCR action
+- [x] Delete removes S3/local file alongside document record
 
 ## Form UX standard
 

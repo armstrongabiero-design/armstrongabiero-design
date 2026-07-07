@@ -17,7 +17,10 @@ class Document(BaseModel):
     document_number: str
     issue_date: datetime
     expiry_date: datetime
-    file_url: str
+    file_url: str = ""
+    s3_key: Optional[str] = None
+    original_filename: Optional[str] = None
+    content_type: Optional[str] = None
     ocr_processed: bool = False
     ocr_data: Optional[Dict[str, Any]] = None
     validated: bool = False
@@ -33,7 +36,7 @@ class DocumentCreate(BaseModel):
     document_number: str
     issue_date: datetime
     expiry_date: datetime
-    file_url: str
+    file_url: str = ""
 
 
 class DocumentUpdate(BaseModel):

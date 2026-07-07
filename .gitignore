@@ -73,8 +73,7 @@ agenthub/agents/youtube/db
 *.deb
 *.dylib
 
-# Build caches
-.cache/
+backend/uploads/
 
 # Mobile development
 android-sdk/ -e 
