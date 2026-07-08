@@ -11,7 +11,7 @@ from dotenv import load_dotenv
 
 ROOT_DIR = Path(__file__).parent
 load_dotenv(ROOT_DIR / ".env")
-from fastapi import FastAPI, APIRouter, HTTPException, UploadFile, File, Depends, Query, Body, Request, Header
+from fastapi import FastAPI, APIRouter, HTTPException, UploadFile, File, Form, Depends, Query, Body, Request, Header
 from fastapi.responses import Response
 from slowapi import Limiter, _rate_limit_exceeded_handler
 from slowapi.errors import RateLimitExceeded
@@ -63,6 +63,7 @@ from models import (
 )
 from audit_service import assert_can_hard_delete, write_audit_log
 from storage_service import upload_bytes, read_bytes, delete_object, presigned_download_url, storage_enabled
+from vehicle_bulk_import import build_template_workbook, parse_bulk_upload
 from security_middleware import JWTAuthMiddleware
 
 limiter = Limiter(key_func=get_remote_address)
@@ -335,6 +336,120 @@ async def create_vehicle(input: VehicleCreate):
     
     await db.vehicles.insert_one(doc)
     return vehicle
+
+
+_VEHICLE_BULK_MAX_BYTES = 5 * 1024 * 1024
+
+
+@api_router.get("/vehicles/bulk-upload/template")
+async def download_vehicle_bulk_template(
+    current_user: dict = Depends(_require_staff),
+):
+    """Download Excel template for bulk vehicle import."""
+    return Response(
+        content=build_template_workbook(),
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={
+            "Content-Disposition": 'attachment; filename="vehicle-import-template.xlsx"',
+        },
+    )
+
+
+@api_router.post("/vehicles/bulk-upload")
+async def bulk_upload_vehicles(
+    file: UploadFile = File(...),
+    country: str = Form(...),
+    current_user: dict = Depends(_require_staff),
+):
+    """Import vehicles from an Excel file matching the bulk upload template."""
+    filename = (file.filename or "").lower()
+    if not filename.endswith(".xlsx"):
+        raise HTTPException(
+            status_code=400,
+            detail="Please upload an Excel file (.xlsx). Download the template for the correct format.",
+        )
+
+    content = await file.read()
+    if len(content) > _VEHICLE_BULK_MAX_BYTES:
+        raise HTTPException(
+            status_code=400,
+            detail=f"File too large (max {_VEHICLE_BULK_MAX_BYTES // (1024 * 1024)} MB)",
+        )
+
+    try:
+        country_code = normalize_country_code(country)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    try:
+        vehicle_inputs, parse_errors = parse_bulk_upload(content, country=country_code)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    existing_regs = {
+        (v.get("registration_number") or "").upper()
+        for v in await db.vehicles.find({}, {"registration_number": 1, "_id": 0}).to_list(10000)
+    }
+
+    created: List[dict] = []
+    errors: List[dict] = list(parse_errors)
+
+    for item in vehicle_inputs:
+        reg_key = item.registration_number.upper()
+        if reg_key in existing_regs:
+            errors.append({
+                "row": None,
+                "registration_number": item.registration_number,
+                "message": "A vehicle with this registration number already exists",
+            })
+            continue
+
+        try:
+            acquisition_cost_usd = currency_converter.convert(
+                item.acquisition_cost, item.acquisition_currency, CurrencyEnum.USD
+            )
+            vehicle_data = item.model_dump()
+            vehicle_data["acquisition_cost_usd"] = acquisition_cost_usd
+            vehicle = Vehicle(**vehicle_data)
+
+            doc = vehicle.model_dump()
+            doc["acquisition_date"] = doc["acquisition_date"].isoformat()
+            doc["created_at"] = doc["created_at"].isoformat()
+            doc["updated_at"] = doc["updated_at"].isoformat()
+
+            await db.vehicles.insert_one(doc)
+            existing_regs.add(reg_key)
+            created.append({
+                "id": vehicle.id,
+                "registration_number": vehicle.registration_number,
+            })
+        except Exception as exc:
+            errors.append({
+                "row": None,
+                "registration_number": item.registration_number,
+                "message": str(exc),
+            })
+
+    await write_audit_log(
+        action="bulk_create",
+        entity_type="vehicle",
+        entity_id="bulk",
+        actor_id=current_user["id"],
+        actor_role=current_user.get("role", ""),
+        actor_email=current_user.get("email"),
+        details={
+            "created_count": len(created),
+            "failed_count": len(errors),
+            "country": country_code,
+        },
+    )
+
+    return {
+        "created": len(created),
+        "failed": len(errors),
+        "vehicles": created,
+        "errors": errors,
+    }
 
 
 @api_router.get("/vehicles", response_model=List[Vehicle])
