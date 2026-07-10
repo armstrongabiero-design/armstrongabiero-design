@@ -8,9 +8,22 @@ import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle, Di
 import { Label } from '../components/ui/label';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '../components/ui/select';
 import { Textarea } from '../components/ui/textarea';
+import { completeDialogSubmit } from '../utils/formUtils';
 
 const BACKEND_URL = process.env.REACT_APP_BACKEND_URL;
 const API = `${BACKEND_URL}/api`;
+
+const createInitialFormData = () => ({
+  vehicle_id: '',
+  maintenance_type: 'ROUTINE',
+  description: '',
+  scheduled_date: new Date().toISOString().split('T')[0],
+  next_due_date: '',
+  odometer_at_maintenance: 0,
+  cost: 0,
+  currency: 'GHS',
+  notes: '',
+});
 
 const Maintenance = () => {
   const [records, setRecords] = useState([]);
@@ -19,17 +32,7 @@ const Maintenance = () => {
   const [dialogOpen, setDialogOpen] = useState(false);
   const [predicting, setPredicting] = useState(false);
   const [selectedVehicle, setSelectedVehicle] = useState('');
-
-  const [formData, setFormData] = useState({
-    vehicle_id: '',
-    maintenance_type: 'SCHEDULED',
-    description: '',
-    scheduled_date: new Date().toISOString().split('T')[0],
-    odometer_at_maintenance: 0,
-    cost: 0,
-    currency: 'GHS',
-    notes: '',
-  });
+  const [formData, setFormData] = useState(createInitialFormData);
 
   useEffect(() => {
     fetchData();
@@ -50,21 +53,31 @@ const Maintenance = () => {
     }
   };
 
+  const handleDialogOpenChange = (open) => {
+    setDialogOpen(open);
+    if (!open) setFormData(createInitialFormData());
+  };
+
   const handleSubmit = async (e) => {
     e.preventDefault();
-    try {
-      await axios.post(`${API}/maintenance`, {
-        ...formData,
-        scheduled_date: new Date(formData.scheduled_date).toISOString(),
-        odometer_at_maintenance: parseFloat(formData.odometer_at_maintenance),
-        cost: parseFloat(formData.cost),
-      });
-      toast.success('Maintenance record added!');
-      setDialogOpen(false);
-      fetchData();
-    } catch (error) {
-      toast.error('Failed to add maintenance record');
-    }
+    const payload = {
+      ...formData,
+      scheduled_date: new Date(formData.scheduled_date).toISOString(),
+      next_due_date: formData.next_due_date
+        ? new Date(formData.next_due_date).toISOString()
+        : null,
+      odometer_at_maintenance: parseFloat(formData.odometer_at_maintenance),
+      cost: parseFloat(formData.cost),
+    };
+    await completeDialogSubmit({
+      submit: () => axios.post(`${API}/maintenance`, payload),
+      setDialogOpen: handleDialogOpenChange,
+      setFormData,
+      initialFormData: createInitialFormData,
+      onSuccess: fetchData,
+      successMessage: 'Maintenance record added!',
+      errorMessage: 'Failed to add maintenance record',
+    });
   };
 
   const predictMaintenance = async () => {
@@ -89,12 +102,23 @@ const Maintenance = () => {
     }
   };
 
+  const typeLabel = (type) => {
+    const labels = {
+      PREDICTIVE: 'Predictive',
+      CORRECTIVE: 'Corrective',
+      ROUTINE: 'Routine',
+      SCHEDULED: 'Routine',
+      UNSCHEDULED: 'Corrective',
+    };
+    return labels[type] || type;
+  };
+
   return (
     <div className="p-6 lg:p-8" data-testid="maintenance-page">
       <div className="flex justify-between items-center mb-6">
         <div>
-          <h1 className="text-3xl font-bold text-slate-800">Maintenance</h1>
-          <p className="text-slate-600 mt-1">Track and predict vehicle maintenance</p>
+          <h1 className="text-3xl font-bold text-slate-800">Maintenance Records</h1>
+          <p className="text-slate-600 mt-1">Track vehicle maintenance and upcoming due dates</p>
         </div>
         <div className="flex gap-2">
           <Dialog>
@@ -132,7 +156,7 @@ const Maintenance = () => {
             </DialogContent>
           </Dialog>
 
-          <Dialog open={dialogOpen} onOpenChange={setDialogOpen}>
+          <Dialog open={dialogOpen} onOpenChange={handleDialogOpenChange}>
             <DialogTrigger asChild>
               <Button data-testid="add-maintenance-btn">
                 <Plus size={18} className="mr-2" />
@@ -167,9 +191,9 @@ const Maintenance = () => {
                       <SelectValue />
                     </SelectTrigger>
                     <SelectContent>
-                      <SelectItem value="SCHEDULED">Scheduled</SelectItem>
-                      <SelectItem value="UNSCHEDULED">Unscheduled</SelectItem>
                       <SelectItem value="PREDICTIVE">Predictive</SelectItem>
+                      <SelectItem value="CORRECTIVE">Corrective</SelectItem>
+                      <SelectItem value="ROUTINE">Routine</SelectItem>
                     </SelectContent>
                   </Select>
                 </div>
@@ -183,9 +207,13 @@ const Maintenance = () => {
                     <Input type="date" value={formData.scheduled_date} onChange={(e) => setFormData({...formData, scheduled_date: e.target.value})} required />
                   </div>
                   <div>
-                    <Label>Odometer</Label>
-                    <Input type="number" value={formData.odometer_at_maintenance} onChange={(e) => setFormData({...formData, odometer_at_maintenance: e.target.value})} required />
+                    <Label>Next Due Date (optional)</Label>
+                    <Input type="date" value={formData.next_due_date} onChange={(e) => setFormData({...formData, next_due_date: e.target.value})} />
                   </div>
+                </div>
+                <div>
+                  <Label>Odometer</Label>
+                  <Input type="number" value={formData.odometer_at_maintenance} onChange={(e) => setFormData({...formData, odometer_at_maintenance: e.target.value})} required />
                 </div>
                 <div className="grid grid-cols-2 gap-4">
                   <div>
@@ -208,7 +236,7 @@ const Maintenance = () => {
                   </div>
                 </div>
                 <div className="flex justify-end gap-2 mt-6">
-                  <Button type="button" variant="outline" onClick={() => setDialogOpen(false)}>Cancel</Button>
+                  <Button type="button" variant="outline" onClick={() => handleDialogOpenChange(false)}>Cancel</Button>
                   <Button type="submit">Add Record</Button>
                 </div>
               </form>
@@ -225,6 +253,7 @@ const Maintenance = () => {
               <th>Type</th>
               <th>Description</th>
               <th>Scheduled Date</th>
+              <th>Next Due Date</th>
               <th>Odometer</th>
               <th>Cost (USD)</th>
               <th>Status</th>
@@ -233,17 +262,22 @@ const Maintenance = () => {
           <tbody>
             {records.length === 0 ? (
               <tr>
-                <td colSpan="7" className="text-center py-8 text-slate-500">No maintenance records</td>
+                <td colSpan="8" className="text-center py-8 text-slate-500">No maintenance records</td>
               </tr>
             ) : (
               records.map((record) => {
                 const vehicle = vehicles.find(v => v.id === record.vehicle_id);
+                const nextDue = record.next_due_date ? new Date(record.next_due_date) : null;
+                const overdue = nextDue && nextDue < new Date();
                 return (
                   <tr key={record.id}>
                     <td className="font-semibold">{vehicle?.registration_number || 'N/A'}</td>
-                    <td><span className="status-badge">{record.maintenance_type}</span></td>
+                    <td><span className="status-badge">{typeLabel(record.maintenance_type)}</span></td>
                     <td className="text-sm">{record.description}</td>
                     <td>{new Date(record.scheduled_date).toLocaleDateString()}</td>
+                    <td className={overdue ? 'text-red-600 font-semibold' : ''}>
+                      {nextDue ? nextDue.toLocaleDateString() : '—'}
+                    </td>
                     <td>{record.odometer_at_maintenance.toLocaleString()} km</td>
                     <td>${record.cost_usd.toLocaleString()}</td>
                     <td>

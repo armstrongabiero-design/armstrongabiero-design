@@ -1,6 +1,6 @@
 import React, { useEffect, useState, useCallback } from 'react';
 import axios from 'axios';
-import { Plus, Book, Pencil, Trash2 } from 'lucide-react';
+import { Plus, Book, Pencil, Trash2, Upload, Download } from 'lucide-react';
 import { toast } from 'sonner';
 import { useAuth } from '../contexts/AuthContext';
 import { Button } from '../components/ui/button';
@@ -12,7 +12,7 @@ import { Textarea } from '../components/ui/textarea';
 import { DEFAULT_COUNTRY_CODE, normalizeCountryCode } from '../components/CountrySelect';
 import ConfirmDeleteDialog from '../components/ConfirmDeleteDialog';
 import { completeDialogSubmit } from '../utils/formUtils';
-import { canEditLogbookEntry, canHardDelete } from '../utils/permissions';
+import { canEditFleetRecord, canEditLogbookEntry, canHardDelete } from '../utils/permissions';
 
 const BACKEND_URL = process.env.REACT_APP_BACKEND_URL;
 const API = `${BACKEND_URL}/api`;
@@ -72,6 +72,10 @@ const DriverLogbook = () => {
   const [editingId, setEditingId] = useState(null);
   const [deleteTarget, setDeleteTarget] = useState(null);
   const [deleting, setDeleting] = useState(false);
+  const [bulkDialogOpen, setBulkDialogOpen] = useState(false);
+  const [bulkFile, setBulkFile] = useState(null);
+  const [bulkUploading, setBulkUploading] = useState(false);
+  const [bulkResult, setBulkResult] = useState(null);
   const [selectedDriver, setSelectedDriver] = useState(isPersonalView ? (user?.driver_id || user?.id) : '');
   const [driverSummary, setDriverSummary] = useState(null);
 
@@ -197,7 +201,71 @@ const DriverLogbook = () => {
     }
   };
 
+  const resetBulkDialog = () => {
+    setBulkFile(null);
+    setBulkResult(null);
+  };
+
+  const handleBulkDialogOpenChange = (open) => {
+    setBulkDialogOpen(open);
+    if (!open) resetBulkDialog();
+  };
+
+  const downloadBulkTemplate = async () => {
+    try {
+      const headers = token ? { Authorization: `Bearer ${token}` } : {};
+      const response = await axios.get(`${API}/logbook/bulk-upload/template`, {
+        headers,
+        responseType: 'blob',
+      });
+      const url = window.URL.createObjectURL(new Blob([response.data]));
+      const link = document.createElement('a');
+      link.href = url;
+      link.setAttribute('download', 'logbook-import-template.xlsx');
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+      window.URL.revokeObjectURL(url);
+    } catch {
+      toast.error('Could not download template');
+    }
+  };
+
+  const handleBulkUpload = async (e) => {
+    e.preventDefault();
+    if (!bulkFile) {
+      toast.error('Please select an Excel file to upload');
+      return;
+    }
+    const uploadData = new FormData();
+    uploadData.append('file', bulkFile);
+    setBulkUploading(true);
+    setBulkResult(null);
+    try {
+      const headers = token ? { Authorization: `Bearer ${token}` } : {};
+      const { data } = await axios.post(`${API}/logbook/bulk-upload`, uploadData, {
+        headers: { ...headers, 'Content-Type': 'multipart/form-data' },
+      });
+      setBulkResult(data);
+      if (data.created > 0) {
+        fetchData();
+        toast.success(`${data.created} entr${data.created === 1 ? 'y' : 'ies'} imported`);
+      }
+      if (data.failed > 0 && data.created === 0) {
+        toast.error('No entries were imported. Review the errors below.');
+      } else if (data.failed > 0) {
+        toast.warning(`${data.failed} row${data.failed === 1 ? '' : 's'} could not be imported`);
+      }
+    } catch (error) {
+      const detail = error.response?.data?.detail;
+      toast.error(typeof detail === 'string' ? detail : 'Bulk upload failed');
+    } finally {
+      setBulkUploading(false);
+    }
+  };
+
   const canEdit = canEditLogbookEntry(user?.role, isPersonalView);
+  const canBulkUpload = canEditFleetRecord(user?.role) && !isPersonalView;
   const canDelete = canHardDelete(user?.role, 'logbook_entry');
 
   const filteredEntries = !isPersonalView && selectedDriver
@@ -230,6 +298,78 @@ const DriverLogbook = () => {
                 ))}
               </SelectContent>
             </Select>
+          )}
+          {canBulkUpload && (
+            <>
+              <Button
+                variant="outline"
+                data-testid="bulk-upload-logbook-btn"
+                onClick={() => setBulkDialogOpen(true)}
+              >
+                <Upload size={18} className="mr-2" />
+                Bulk Upload
+              </Button>
+              <Dialog open={bulkDialogOpen} onOpenChange={handleBulkDialogOpenChange}>
+                <DialogContent className="max-w-lg">
+                  <DialogHeader>
+                    <DialogTitle>Bulk Upload Logbook</DialogTitle>
+                    <DialogDescription>
+                      Import trip entries from Excel. Each row needs a matching driver license,
+                      vehicle registration, and a completed pre-trip checklist for that date.
+                    </DialogDescription>
+                  </DialogHeader>
+                  <form onSubmit={handleBulkUpload} className="space-y-4">
+                    <div>
+                      <Button type="button" variant="outline" className="w-full" onClick={downloadBulkTemplate}>
+                        <Download size={16} className="mr-2" />
+                        Download sample template (.xlsx)
+                      </Button>
+                    </div>
+                    <div>
+                      <Label>Excel file</Label>
+                      <Input
+                        type="file"
+                        accept=".xlsx,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+                        onChange={(e) => setBulkFile(e.target.files?.[0] || null)}
+                        required
+                      />
+                      <p className="text-xs text-slate-500 mt-1">
+                        Columns: License Number, Vehicle Registration, Date, Start/End Time,
+                        Locations, Odometers, Purpose, Fuel Used (L), Notes.
+                      </p>
+                    </div>
+                    {bulkResult && (
+                      <div className="rounded-lg border border-slate-200 bg-slate-50 p-3 text-sm space-y-2">
+                        <p className="font-medium text-slate-800">
+                          Imported {bulkResult.created} · Failed {bulkResult.failed}
+                        </p>
+                        {bulkResult.errors?.length > 0 && (
+                          <ul className="max-h-32 overflow-y-auto text-red-700 space-y-1">
+                            {bulkResult.errors.map((err, idx) => (
+                              <li key={idx}>
+                                {err.row ? `Row ${err.row}` : 'Import'}
+                                {err.license_number || err.registration_number
+                                  ? ` (${[err.license_number, err.registration_number].filter(Boolean).join(', ')})`
+                                  : ''}
+                                : {err.message}
+                              </li>
+                            ))}
+                          </ul>
+                        )}
+                      </div>
+                    )}
+                    <div className="flex justify-end gap-2">
+                      <Button type="button" variant="outline" onClick={() => handleBulkDialogOpenChange(false)}>
+                        Close
+                      </Button>
+                      <Button type="submit" disabled={bulkUploading}>
+                        {bulkUploading ? 'Uploading…' : 'Upload & Import'}
+                      </Button>
+                    </div>
+                  </form>
+                </DialogContent>
+              </Dialog>
+            </>
           )}
           {canEdit && (
           <Dialog open={dialogOpen} onOpenChange={handleDialogOpenChange}>

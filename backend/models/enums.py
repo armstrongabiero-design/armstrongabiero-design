@@ -50,9 +50,9 @@ class VehicleStatus(str, Enum):
 
 
 class MaintenanceType(str, Enum):
-    SCHEDULED = "SCHEDULED"
-    UNSCHEDULED = "UNSCHEDULED"
     PREDICTIVE = "PREDICTIVE"
+    CORRECTIVE = "CORRECTIVE"
+    ROUTINE = "ROUTINE"
 
 
 class WorkshopType(str, Enum):

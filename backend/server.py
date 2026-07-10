@@ -36,7 +36,7 @@ from models import (
     Country, CountryCreate, CountryEnum,
     Vehicle, VehicleCreate, VehicleUpdate,
     Driver, DriverCreate, DriverUpdate,
-    MaintenanceRecord, MaintenanceRecordCreate,
+    MaintenanceRecord, MaintenanceRecordCreate, MaintenanceRecordUpdate,
     WorkshopJob, WorkshopJobCreate,
     InventoryItem, InventoryItemCreate, InventoryItemUpdate,
     InventoryTransaction, InventoryTransactionCreate,
@@ -64,6 +64,8 @@ from models import (
 from audit_service import assert_can_hard_delete, write_audit_log
 from storage_service import upload_bytes, read_bytes, delete_object, presigned_download_url, storage_enabled
 from vehicle_bulk_import import build_template_workbook, parse_bulk_upload
+from driver_bulk_import import build_driver_template_workbook, parse_driver_bulk_upload
+from logbook_bulk_import import build_logbook_template_workbook, parse_logbook_bulk_upload
 from security_middleware import JWTAuthMiddleware
 
 limiter = Limiter(key_func=get_remote_address)
@@ -153,6 +155,13 @@ async def lifespan(app: FastAPI):
             logging.getLogger(__name__).info("Migrated %s document(s) to ISO country codes", n)
     except Exception as exc:
         logging.getLogger(__name__).warning("Country ISO migration skipped: %s", exc)
+    try:
+        from maintenance_type_migration import migrate_maintenance_types
+        n = await migrate_maintenance_types()
+        if n:
+            logging.getLogger(__name__).info("Migrated %s maintenance type(s)", n)
+    except Exception as exc:
+        logging.getLogger(__name__).warning("Maintenance type migration skipped: %s", exc)
     yield
     client.close()
 
@@ -552,6 +561,112 @@ async def create_driver(input: DriverCreate):
     return driver
 
 
+_DRIVER_BULK_MAX_BYTES = 5 * 1024 * 1024
+
+
+@api_router.get("/drivers/bulk-upload/template")
+async def download_driver_bulk_template(
+    current_user: dict = Depends(_require_staff),
+):
+    return Response(
+        content=build_driver_template_workbook(),
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={
+            "Content-Disposition": 'attachment; filename="driver-import-template.xlsx"',
+        },
+    )
+
+
+@api_router.post("/drivers/bulk-upload")
+async def bulk_upload_drivers(
+    file: UploadFile = File(...),
+    country: str = Form(...),
+    current_user: dict = Depends(_require_staff),
+):
+    filename = (file.filename or "").lower()
+    if not filename.endswith(".xlsx"):
+        raise HTTPException(
+            status_code=400,
+            detail="Please upload an Excel file (.xlsx). Download the template for the correct format.",
+        )
+
+    content = await file.read()
+    if len(content) > _DRIVER_BULK_MAX_BYTES:
+        raise HTTPException(
+            status_code=400,
+            detail=f"File too large (max {_DRIVER_BULK_MAX_BYTES // (1024 * 1024)} MB)",
+        )
+
+    try:
+        country_code = normalize_country_code(country)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    try:
+        driver_inputs, parse_errors = parse_driver_bulk_upload(content, country=country_code)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    existing_licenses = {
+        (d.get("license_number") or "").upper()
+        for d in await db.drivers.find({}, {"license_number": 1, "_id": 0}).to_list(10000)
+    }
+
+    created: List[dict] = []
+    errors: List[dict] = list(parse_errors)
+
+    for item in driver_inputs:
+        license_key = item.license_number.upper()
+        if license_key in existing_licenses:
+            errors.append({
+                "row": None,
+                "license_number": item.license_number,
+                "message": "A driver with this license number already exists",
+            })
+            continue
+
+        try:
+            driver = Driver(**item.model_dump())
+            doc = driver.model_dump()
+            doc["license_expiry"] = doc["license_expiry"].isoformat()
+            doc["created_at"] = doc["created_at"].isoformat()
+            doc["updated_at"] = doc["updated_at"].isoformat()
+            await db.drivers.insert_one(doc)
+            existing_licenses.add(license_key)
+            created.append({
+                "id": driver.id,
+                "license_number": driver.license_number,
+                "name": f"{driver.first_name} {driver.last_name}",
+            })
+        except Exception as exc:
+            errors.append({
+                "row": None,
+                "license_number": item.license_number,
+                "message": str(exc),
+            })
+
+    await write_audit_log(
+        action="bulk_create",
+        entity_type="driver",
+        entity_id="bulk",
+        actor_id=current_user["id"],
+        actor_role=current_user.get("role", ""),
+        actor_email=current_user.get("email"),
+        details={
+            "created_count": len(created),
+            "failed_count": len(errors),
+            "country": country_code,
+        },
+    )
+
+    return {
+        "created": len(created),
+        "failed": len(errors),
+        "drivers": created,
+        "errors": errors,
+    }
+
+
 @api_router.get("/drivers", response_model=List[Driver])
 async def get_drivers(country: Optional[str] = None):
     query = {}
@@ -642,6 +757,8 @@ async def create_maintenance(input: MaintenanceRecordCreate):
     doc['scheduled_date'] = doc['scheduled_date'].isoformat()
     if doc.get('completed_date'):
         doc['completed_date'] = doc['completed_date'].isoformat()
+    if doc.get('next_due_date'):
+        doc['next_due_date'] = doc['next_due_date'].isoformat()
     doc['created_at'] = doc['created_at'].isoformat()
     
     await db.maintenance_records.insert_one(doc)
@@ -656,13 +773,38 @@ async def get_maintenance_records(vehicle_id: Optional[str] = None):
     
     records = await db.maintenance_records.find(query, {"_id": 0}).to_list(1000)
     for r in records:
-        if isinstance(r.get('scheduled_date'), str):
-            r['scheduled_date'] = datetime.fromisoformat(r['scheduled_date'])
-        if r.get('completed_date') and isinstance(r['completed_date'], str):
-            r['completed_date'] = datetime.fromisoformat(r['completed_date'])
-        if isinstance(r.get('created_at'), str):
-            r['created_at'] = datetime.fromisoformat(r['created_at'])
+        for field in ('scheduled_date', 'completed_date', 'next_due_date', 'created_at'):
+            if r.get(field) and isinstance(r[field], str):
+                r[field] = datetime.fromisoformat(r[field])
     return records
+
+
+@api_router.put("/maintenance/{record_id}", response_model=MaintenanceRecord)
+async def update_maintenance(
+    record_id: str,
+    input: MaintenanceRecordUpdate,
+    current_user: dict = Depends(_require_staff),
+):
+    existing = await db.maintenance_records.find_one({"id": record_id}, {"_id": 0})
+    if not existing:
+        raise HTTPException(status_code=404, detail="Maintenance record not found")
+
+    update_data = input.model_dump(exclude_none=True)
+    if not update_data:
+        raise HTTPException(status_code=400, detail="No fields to update")
+
+    if "cost" in update_data or "currency" in update_data:
+        cost = update_data.get("cost", existing.get("cost"))
+        currency = update_data.get("currency", existing.get("currency"))
+        update_data["cost_usd"] = currency_converter.convert(cost, currency, CurrencyEnum.USD)
+
+    update_data = _mongo_update_payload(update_data)
+    await db.maintenance_records.update_one({"id": record_id}, {"$set": update_data})
+    updated = await db.maintenance_records.find_one({"id": record_id}, {"_id": 0})
+    for field in ("scheduled_date", "completed_date", "next_due_date", "created_at"):
+        if updated.get(field) and isinstance(updated[field], str):
+            updated[field] = datetime.fromisoformat(updated[field])
+    return MaintenanceRecord(**updated)
 
 
 @api_router.post("/maintenance/predict/{vehicle_id}")
@@ -2026,6 +2168,50 @@ async def get_dashboard_alerts(country: Optional[str] = None):
             "entity_id": None,
             "country": country
         })
+
+    # 7. Maintenance next-due alerts (14-day window + overdue)
+    maintenance_records = await db.maintenance_records.find(
+        {**country_filter, "next_due_date": {"$ne": None}},
+        {"_id": 0},
+    ).to_list(1000)
+    for record in maintenance_records:
+        next_due = record.get("next_due_date")
+        if not next_due:
+            continue
+        if isinstance(next_due, str):
+            next_due = datetime.fromisoformat(next_due.replace("Z", "+00:00"))
+        if next_due.tzinfo is None:
+            next_due = next_due.replace(tzinfo=timezone.utc)
+        days_until = (next_due - now).days
+        if days_until > 14:
+            continue
+        vehicle = await db.vehicles.find_one(
+            {"id": record.get("vehicle_id")},
+            {"_id": 0, "registration_number": 1},
+        )
+        reg = vehicle.get("registration_number", "Unknown") if vehicle else "Unknown"
+        if days_until < 0:
+            alerts.append({
+                "type": "MAINTENANCE_OVERDUE",
+                "severity": "CRITICAL",
+                "title": f"Maintenance Overdue: {reg}",
+                "message": f"Next due was {abs(days_until)} day(s) ago — {record.get('description', 'Maintenance')}",
+                "entity_type": "maintenance_record",
+                "entity_id": record.get("id"),
+                "country": record.get("country") or (vehicle or {}).get("country"),
+                "days_until_due": days_until,
+            })
+        else:
+            alerts.append({
+                "type": "MAINTENANCE_DUE_SOON",
+                "severity": "WARNING",
+                "title": f"Maintenance Due Soon: {reg}",
+                "message": f"Next due in {days_until} day(s) — {record.get('description', 'Maintenance')}",
+                "entity_type": "maintenance_record",
+                "entity_id": record.get("id"),
+                "country": record.get("country") or (vehicle or {}).get("country"),
+                "days_until_due": days_until,
+            })
     
     # Sort by severity
     severity_order = {"CRITICAL": 0, "WARNING": 1, "INFO": 2}
@@ -2399,14 +2585,31 @@ async def create_pretrip_checklist(input: PreTripChecklistCreate, current_user: 
 
 
 @api_router.get("/pre-trip-checklists", response_model=List[PreTripChecklist])
-async def get_pretrip_checklists(driver_id: Optional[str] = None, vehicle_id: Optional[str] = None):
+async def get_pretrip_checklists(
+    driver_id: Optional[str] = None,
+    vehicle_id: Optional[str] = None,
+    overall_status: Optional[str] = None,
+    date_from: Optional[str] = None,
+    date_to: Optional[str] = None,
+    limit: int = Query(100, ge=1, le=500),
+):
     query = {}
     if driver_id:
         query['driver_id'] = driver_id
     if vehicle_id:
         query['vehicle_id'] = vehicle_id
-    
-    checklists = await db.pretrip_checklists.find(query, {"_id": 0}).sort("date", -1).to_list(100)
+    if overall_status:
+        query['overall_status'] = overall_status
+
+    date_filter = {}
+    if date_from:
+        date_filter["$gte"] = date_from if "T" in date_from else f"{date_from}T00:00:00"
+    if date_to:
+        date_filter["$lte"] = date_to if "T" in date_to else f"{date_to}T23:59:59.999999"
+    if date_filter:
+        query["date"] = date_filter
+
+    checklists = await db.pretrip_checklists.find(query, {"_id": 0}).sort("date", -1).to_list(limit)
     for c in checklists:
         for field in ['date', 'created_at']:
             if isinstance(c.get(field), str):
@@ -3147,6 +3350,163 @@ async def create_logbook_entry(input: LogbookEntryCreate, current_user: dict = D
     
     await db.driver_logbook.insert_one(doc)
     return doc
+
+
+_LOGBOOK_BULK_MAX_BYTES = 5 * 1024 * 1024
+_LOGBOOK_BULK_ROLES = frozenset({"GROUP_FLEET_MANAGER", "FLEET_MANAGER", "FLEET_OFFICER"})
+
+
+def _require_logbook_bulk_role(current_user: dict = Depends(get_current_user)) -> dict:
+    if current_user.get("role") not in _LOGBOOK_BULK_ROLES:
+        raise HTTPException(status_code=403, detail="Staff access required for logbook bulk upload")
+    return current_user
+
+
+@api_router.get("/logbook/bulk-upload/template")
+async def download_logbook_bulk_template(
+    current_user: dict = Depends(_require_logbook_bulk_role),
+):
+    return Response(
+        content=build_logbook_template_workbook(),
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={
+            "Content-Disposition": 'attachment; filename="logbook-import-template.xlsx"',
+        },
+    )
+
+
+@api_router.post("/logbook/bulk-upload")
+async def bulk_upload_logbook(
+    file: UploadFile = File(...),
+    current_user: dict = Depends(_require_logbook_bulk_role),
+):
+    filename = (file.filename or "").lower()
+    if not filename.endswith(".xlsx"):
+        raise HTTPException(
+            status_code=400,
+            detail="Please upload an Excel file (.xlsx). Download the template for the correct format.",
+        )
+
+    content = await file.read()
+    if len(content) > _LOGBOOK_BULK_MAX_BYTES:
+        raise HTTPException(
+            status_code=400,
+            detail=f"File too large (max {_LOGBOOK_BULK_MAX_BYTES // (1024 * 1024)} MB)",
+        )
+
+    try:
+        rows, parse_errors = parse_logbook_bulk_upload(content)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    drivers = await db.drivers.find({}, {"_id": 0, "id": 1, "license_number": 1, "country": 1}).to_list(10000)
+    vehicles = await db.vehicles.find({}, {"_id": 0, "id": 1, "registration_number": 1}).to_list(10000)
+    drivers_by_license = {(d.get("license_number") or "").upper(): d for d in drivers}
+    vehicles_by_reg = {(v.get("registration_number") or "").upper(): v for v in vehicles}
+
+    created: List[dict] = []
+    errors: List[dict] = list(parse_errors)
+
+    for row in rows:
+        license_key = row["license_number"].upper()
+        reg_key = row["registration_number"].upper()
+        driver = drivers_by_license.get(license_key)
+        vehicle = vehicles_by_reg.get(reg_key)
+
+        if not driver:
+            errors.append({
+                "row": row["row"],
+                "license_number": row["license_number"],
+                "registration_number": row["registration_number"],
+                "message": f"No driver found with license number {row['license_number']}",
+            })
+            continue
+        if not vehicle:
+            errors.append({
+                "row": row["row"],
+                "license_number": row["license_number"],
+                "registration_number": row["registration_number"],
+                "message": f"No vehicle found with registration {row['registration_number']}",
+            })
+            continue
+
+        trip_day = row["date"].date()
+        start_of_day = datetime(trip_day.year, trip_day.month, trip_day.day)
+        end_of_day = datetime(trip_day.year, trip_day.month, trip_day.day, 23, 59, 59, 999999)
+        checklist = await db.pretrip_checklists.find_one(
+            {
+                "driver_id": driver["id"],
+                "vehicle_id": vehicle["id"],
+                "date": {"$gte": start_of_day.isoformat(), "$lte": end_of_day.isoformat()},
+            },
+            {"_id": 0},
+        )
+        if not checklist or checklist.get("overall_status") == "FAILED":
+            errors.append({
+                "row": row["row"],
+                "license_number": row["license_number"],
+                "registration_number": row["registration_number"],
+                "message": "Pre-trip checklist required for this driver, vehicle, and date before logging the trip",
+            })
+            continue
+
+        try:
+            entry = LogbookEntry(
+                driver_id=driver["id"],
+                vehicle_id=vehicle["id"],
+                country=driver.get("country"),
+                date=row["date"],
+                start_time=row["start_time"],
+                end_time=row.get("end_time"),
+                start_location=row["start_location"],
+                end_location=row.get("end_location"),
+                start_odometer=row["start_odometer"],
+                end_odometer=row.get("end_odometer"),
+                purpose=row["purpose"],
+                fuel_used_liters=row.get("fuel_used_liters"),
+                notes=row.get("notes"),
+            )
+            if entry.end_odometer is not None and entry.distance_km is None:
+                entry.distance_km = entry.end_odometer - entry.start_odometer
+
+            doc = entry.model_dump()
+            doc["submitted_by_id"] = current_user.get("id")
+            doc["submitted_by_name"] = current_user.get("full_name")
+            doc["submitted_by_role"] = current_user.get("role")
+            for field in ["date", "start_time", "end_time", "created_at"]:
+                if doc.get(field):
+                    doc[field] = doc[field].isoformat()
+
+            await db.driver_logbook.insert_one(doc)
+            created.append({
+                "id": entry.id,
+                "license_number": row["license_number"],
+                "registration_number": row["registration_number"],
+            })
+        except Exception as exc:
+            errors.append({
+                "row": row["row"],
+                "license_number": row["license_number"],
+                "registration_number": row["registration_number"],
+                "message": str(exc),
+            })
+
+    await write_audit_log(
+        action="bulk_create",
+        entity_type="logbook_entry",
+        entity_id="bulk",
+        actor_id=current_user["id"],
+        actor_role=current_user.get("role", ""),
+        actor_email=current_user.get("email"),
+        details={"created_count": len(created), "failed_count": len(errors)},
+    )
+
+    return {
+        "created": len(created),
+        "failed": len(errors),
+        "entries": created,
+        "errors": errors,
+    }
 
 
 @api_router.get("/logbook")

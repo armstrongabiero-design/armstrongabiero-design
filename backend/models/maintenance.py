@@ -18,6 +18,7 @@ class MaintenanceRecord(BaseModel):
     description: str
     scheduled_date: datetime
     completed_date: Optional[datetime] = None
+    next_due_date: Optional[datetime] = None
     odometer_at_maintenance: float
     cost: float
     currency: CurrencyEnum
@@ -35,9 +36,24 @@ class MaintenanceRecordCreate(BaseModel):
     maintenance_type: MaintenanceType
     description: str
     scheduled_date: datetime
+    next_due_date: Optional[datetime] = None
     odometer_at_maintenance: float
     cost: float
     currency: CurrencyEnum
+    workshop_id: Optional[str] = None
+    notes: Optional[str] = None
+
+
+class MaintenanceRecordUpdate(BaseModel):
+    vehicle_id: Optional[str] = None
+    maintenance_type: Optional[MaintenanceType] = None
+    description: Optional[str] = None
+    scheduled_date: Optional[datetime] = None
+    completed_date: Optional[datetime] = None
+    next_due_date: Optional[datetime] = None
+    odometer_at_maintenance: Optional[float] = None
+    cost: Optional[float] = None
+    currency: Optional[CurrencyEnum] = None
     workshop_id: Optional[str] = None
     notes: Optional[str] = None
 

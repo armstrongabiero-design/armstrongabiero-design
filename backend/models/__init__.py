@@ -23,7 +23,7 @@ from .fleet import (
 
 # Maintenance models
 from .maintenance import (
-    MaintenanceRecord, MaintenanceRecordCreate,
+    MaintenanceRecord, MaintenanceRecordCreate, MaintenanceRecordUpdate,
     WorkshopJob, WorkshopJobCreate,
     MaintenanceRequest, MaintenanceRequestCreate, MaintenanceRequestUpdate, MaintenanceRequestApproval,
     ChecklistItem, PreTripChecklist, PreTripChecklistCreate, PreTripChecklistUpdate,

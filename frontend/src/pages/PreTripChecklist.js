@@ -1,11 +1,11 @@
-import React, { useEffect, useState, useCallback } from 'react';
+import React, { useEffect, useState, useCallback, useMemo } from 'react';
 import axios from 'axios';
 import { ClipboardCheck, Camera, AlertTriangle, CheckCircle2, XCircle, AlertCircle, Pencil, Trash2 } from 'lucide-react';
 import { toast } from 'sonner';
 import { useAuth } from '../contexts/AuthContext';
 import { Button } from '../components/ui/button';
 import { Input } from '../components/ui/input';
-import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle, DialogTrigger } from '../components/ui/dialog';
+import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from '../components/ui/dialog';
 import { Label } from '../components/ui/label';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '../components/ui/select';
 import { Textarea } from '../components/ui/textarea';
@@ -82,29 +82,40 @@ const PreTripChecklist = () => {
   const [editingId, setEditingId] = useState(null);
   const [deleteTarget, setDeleteTarget] = useState(null);
   const [deleting, setDeleting] = useState(false);
+  const [sessionHint, setSessionHint] = useState(null);
 
-  // For personal view, auto-set driver
   const [selectedDriver, setSelectedDriver] = useState(isPersonalView ? (user?.driver_id || user?.id) : '');
   const [selectedVehicle, setSelectedVehicle] = useState('');
-  
+
+  const [filterDriver, setFilterDriver] = useState(isPersonalView ? (user?.driver_id || user?.id) : 'ALL');
+  const [filterVehicle, setFilterVehicle] = useState('ALL');
+  const [filterStatus, setFilterStatus] = useState('ALL');
+  const [filterDateFrom, setFilterDateFrom] = useState('');
+  const [filterDateTo, setFilterDateTo] = useState('');
+
   const [formData, setFormData] = useState(createInitialFormData(user, isPersonalView));
 
   const fetchData = useCallback(async () => {
     try {
       const headers = token ? { Authorization: `Bearer ${token}` } : {};
+      const params = { limit: 100 };
+      if (isPersonalView) {
+        params.driver_id = user?.driver_id || user?.id;
+      } else if (filterDriver && filterDriver !== 'ALL') {
+        params.driver_id = filterDriver;
+      }
+      if (filterVehicle && filterVehicle !== 'ALL') params.vehicle_id = filterVehicle;
+      if (filterStatus && filterStatus !== 'ALL') params.overall_status = filterStatus;
+      if (filterDateFrom) params.date_from = filterDateFrom;
+      if (filterDateTo) params.date_to = filterDateTo;
+
       const [checklistsRes, driversRes, vehiclesRes] = await Promise.all([
-        axios.get(`${API}/pre-trip-checklists`, { headers }),
+        axios.get(`${API}/pre-trip-checklists`, { headers, params }),
         axios.get(`${API}/drivers`, { headers }),
         axios.get(`${API}/vehicles`, { headers }),
       ]);
-      
-      let filteredChecklists = checklistsRes.data;
-      if (isPersonalView) {
-        const userId = user?.driver_id || user?.id;
-        filteredChecklists = checklistsRes.data.filter(c => c.driver_id === userId);
-      }
-      
-      setChecklists(filteredChecklists);
+
+      setChecklists(checklistsRes.data);
       setDrivers(driversRes.data);
       setVehicles(vehiclesRes.data);
     } catch {
@@ -112,7 +123,7 @@ const PreTripChecklist = () => {
     } finally {
       setLoading(false);
     }
-  }, [token, isPersonalView, user]);
+  }, [token, isPersonalView, user, filterDriver, filterVehicle, filterStatus, filterDateFrom, filterDateTo]);
 
   const checkTodayStatus = useCallback(async (driverId, vehicleId) => {
     try {
@@ -136,6 +147,8 @@ const PreTripChecklist = () => {
     const driverId = isPersonalView ? (user?.driver_id || user?.id) : selectedDriver;
     if (driverId && selectedVehicle) {
       checkTodayStatus(driverId, selectedVehicle);
+    } else {
+      setChecklistStatus(null);
     }
   }, [selectedDriver, selectedVehicle, isPersonalView, user, checkTodayStatus]);
 
@@ -176,6 +189,8 @@ const PreTripChecklist = () => {
     e.preventDefault();
 
     const driverId = isPersonalView ? (user?.driver_id || user?.id) : formData.driver_id;
+    const submittedVehicleId = formData.vehicle_id;
+    const wasCreate = !editingId;
     const payload = { ...formData, driver_id: driverId };
     const headers = token ? { Authorization: `Bearer ${token}` } : {};
 
@@ -187,14 +202,24 @@ const PreTripChecklist = () => {
       setDialogOpen: handleDialogOpenChange,
       setFormData,
       initialFormData: () => createInitialFormData(user, isPersonalView),
-      onSuccess: () => {
-        fetchData();
-        const vehicleId = formData.vehicle_id;
-        if (driverId && vehicleId) {
-          checkTodayStatus(driverId, vehicleId);
+      onSuccess: async () => {
+        await fetchData();
+        if (wasCreate) {
+          if (!isPersonalView) setSelectedDriver(driverId);
+          setSelectedVehicle('');
+          setChecklistStatus(null);
+          const vehicle = vehicles.find((v) => v.id === submittedVehicleId);
+          setSessionHint(
+            vehicle
+              ? `Checklist saved for ${vehicle.registration_number}. Select another vehicle to continue.`
+              : 'Checklist saved. Select another vehicle to continue.'
+          );
+          toast.success('Checklist completed. You can inspect another vehicle now.');
+        } else if (driverId && submittedVehicleId) {
+          checkTodayStatus(driverId, submittedVehicleId);
         }
       },
-      successMessage: editingId ? 'Checklist updated!' : 'Pre-trip checklist completed! You can now log trips and fuel.',
+      successMessage: editingId ? 'Checklist updated!' : 'Pre-trip checklist completed!',
       errorMessage: editingId ? 'Failed to update checklist' : 'Failed to submit checklist',
     });
   };
@@ -219,19 +244,6 @@ const PreTripChecklist = () => {
     }
   };
 
-  const getStatusIcon = (status) => {
-    switch (status) {
-      case 'OK':
-        return <CheckCircle2 className="text-green-500" size={20} />;
-      case 'NEEDS_ATTENTION':
-        return <AlertCircle className="text-amber-500" size={20} />;
-      case 'FAILED':
-        return <XCircle className="text-red-500" size={20} />;
-      default:
-        return null;
-    }
-  };
-
   const getOverallStatusBadge = (status) => {
     const badges = {
       PASSED: 'bg-green-100 text-green-800',
@@ -245,6 +257,7 @@ const PreTripChecklist = () => {
   const openChecklistForm = () => {
     const driverId = isPersonalView ? (user?.driver_id || user?.id) : selectedDriver;
     setEditingId(null);
+    setSessionHint(null);
     setFormData({
       ...createInitialFormData(user, isPersonalView),
       driver_id: driverId,
@@ -259,26 +272,43 @@ const PreTripChecklist = () => {
     setDialogOpen(true);
   };
 
+  const historyRows = useMemo(() => checklists, [checklists]);
+
+  if (loading) {
+    return <div className="p-8 text-center">Loading checklists...</div>;
+  }
+
   return (
     <div className="p-6 lg:p-8" data-testid="pretrip-checklist-page">
       <div className="mb-6">
         <h1 className="text-3xl font-bold text-slate-800">
           {isPersonalView ? 'My Pre-Trip Checklist' : 'Pre-Trip Checklist'}
         </h1>
-        <p className="text-slate-600 mt-1">Complete vehicle inspection before starting your day</p>
+        <p className="text-slate-600 mt-1">
+          Complete one inspection per vehicle per day. After submitting, select another vehicle to continue.
+        </p>
       </div>
 
-      {/* Driver & Vehicle Selection */}
       <div className="fleet-card mb-6">
         <h3 className="text-lg font-semibold text-slate-800 mb-4">
           {isPersonalView ? 'Select Vehicle' : 'Select Driver & Vehicle'}
         </h3>
+        {sessionHint && (
+          <div className="mb-4 p-3 rounded-lg bg-green-50 border border-green-200 text-sm text-green-800">
+            {sessionHint}
+          </div>
+        )}
         <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-          {/* Only show driver selection for staff */}
           {!isPersonalView ? (
             <div>
               <Label>Driver</Label>
-              <Select value={selectedDriver} onValueChange={setSelectedDriver}>
+              <Select
+                value={selectedDriver}
+                onValueChange={(value) => {
+                  setSelectedDriver(value);
+                  setSessionHint(null);
+                }}
+              >
                 <SelectTrigger>
                   <SelectValue placeholder="Select driver" />
                 </SelectTrigger>
@@ -299,7 +329,13 @@ const PreTripChecklist = () => {
           )}
           <div>
             <Label>Vehicle</Label>
-            <Select value={selectedVehicle} onValueChange={setSelectedVehicle}>
+            <Select
+              value={selectedVehicle}
+              onValueChange={(value) => {
+                setSelectedVehicle(value);
+                setSessionHint(null);
+              }}
+            >
               <SelectTrigger>
                 <SelectValue placeholder="Select vehicle" />
               </SelectTrigger>
@@ -314,7 +350,6 @@ const PreTripChecklist = () => {
           </div>
         </div>
 
-        {/* Today's Status */}
         {(isPersonalView || selectedDriver) && selectedVehicle && (
           <div className="mt-4 p-4 rounded-lg border border-slate-200">
             {checklistStatus && checklistStatus.completed ? (
@@ -324,6 +359,7 @@ const PreTripChecklist = () => {
                   <p className="text-sm text-slate-600">
                     Completed at {new Date(checklistStatus.checklist?.created_at || checklistStatus.created_at).toLocaleTimeString()}
                   </p>
+                  <p className="text-xs text-slate-500 mt-1">Select another vehicle to submit an additional checklist.</p>
                 </div>
                 <div className="flex items-center gap-2">
                   <span className={getOverallStatusBadge(checklistStatus.checklist?.overall_status || checklistStatus.overall_status)}>
@@ -356,7 +392,6 @@ const PreTripChecklist = () => {
         )}
       </div>
 
-      {/* Checklist Form Dialog */}
       <Dialog open={dialogOpen} onOpenChange={handleDialogOpenChange}>
         <DialogContent className="max-w-2xl max-h-[90vh] overflow-y-auto">
           <DialogHeader>
@@ -371,8 +406,8 @@ const PreTripChecklist = () => {
                     <span>{item.icon}</span>
                     {item.label}
                   </Label>
-                  <Select 
-                    value={formData[item.key]} 
+                  <Select
+                    value={formData[item.key]}
                     onValueChange={(value) => setFormData({...formData, [item.key]: value})}
                   >
                     <SelectTrigger className="w-40">
@@ -408,7 +443,6 @@ const PreTripChecklist = () => {
               </div>
             ))}
 
-            {/* Photo Upload */}
             <div className="border rounded-lg p-4">
               <Label className="flex items-center gap-2 mb-2">
                 <Camera size={18} />
@@ -424,10 +458,9 @@ const PreTripChecklist = () => {
               )}
             </div>
 
-            {/* Additional Notes */}
             <div>
               <Label>Additional Notes</Label>
-              <Textarea 
+              <Textarea
                 value={formData.additional_notes}
                 onChange={(e) => setFormData({...formData, additional_notes: e.target.value})}
                 placeholder="Any other observations..."
@@ -451,49 +484,132 @@ const PreTripChecklist = () => {
         loading={deleting}
       />
 
-      {/* Recent Checklists */}
       <div className="fleet-card">
         <h3 className="text-lg font-semibold text-slate-800 mb-4">
-          {isPersonalView ? 'My Recent Checklists' : 'Recent Checklists'}
+          {isPersonalView ? 'My Checklist History' : 'Checklist History'}
         </h3>
-        <div className="space-y-3">
-          {checklists.length === 0 ? (
-            <p className="text-slate-500 text-center py-8">No checklists completed yet</p>
-          ) : (
-            checklists.slice(0, 10).map(checklist => {
-              const driver = drivers.find(d => d.id === checklist.driver_id);
-              const vehicle = vehicles.find(v => v.id === checklist.vehicle_id);
-              const canEdit = canEditPreTripChecklist(user?.role, isPersonalView, checklist, user);
-              return (
-                <div key={checklist.id} className="flex items-center justify-between p-3 bg-slate-50 rounded-lg">
-                  <div>
-                    <p className="font-medium text-slate-800">
-                      {vehicle?.registration_number || 'N/A'}
-                      {!isPersonalView && ` - ${driver?.first_name || ''} ${driver?.last_name || ''}`}
-                    </p>
-                    <p className="text-sm text-slate-600">
-                      {new Date(checklist.date || checklist.created_at).toLocaleDateString()} at {new Date(checklist.created_at).toLocaleTimeString()}
-                    </p>
-                  </div>
-                  <div className="flex items-center gap-2">
-                    <span className={getOverallStatusBadge(checklist.overall_status)}>
-                      {checklist.overall_status}
-                    </span>
-                    {canEdit && (
-                      <Button variant="ghost" size="icon" onClick={() => openEditDialog(checklist)} aria-label="Edit checklist">
-                        <Pencil size={16} />
-                      </Button>
-                    )}
-                    {canDelete && (
-                      <Button variant="ghost" size="icon" onClick={() => setDeleteTarget(checklist)} aria-label="Delete checklist">
-                        <Trash2 size={16} className="text-red-600" />
-                      </Button>
-                    )}
-                  </div>
-                </div>
-              );
-            })
+        <p className="text-sm text-slate-500 mb-4">Showing up to 100 most recent checklists</p>
+
+        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-5 gap-3 mb-4">
+          {!isPersonalView && (
+            <div>
+              <Label className="text-xs">Driver</Label>
+              <Select value={filterDriver} onValueChange={setFilterDriver}>
+                <SelectTrigger>
+                  <SelectValue placeholder="All drivers" />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="ALL">All drivers</SelectItem>
+                  {drivers.map((d) => (
+                    <SelectItem key={d.id} value={d.id}>{d.first_name} {d.last_name}</SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
           )}
+          <div>
+            <Label className="text-xs">Vehicle</Label>
+            <Select value={filterVehicle} onValueChange={setFilterVehicle}>
+              <SelectTrigger>
+                <SelectValue placeholder="All vehicles" />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="ALL">All vehicles</SelectItem>
+                {vehicles.map((v) => (
+                  <SelectItem key={v.id} value={v.id}>{v.registration_number}</SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          </div>
+          <div>
+            <Label className="text-xs">Status</Label>
+            <Select value={filterStatus} onValueChange={setFilterStatus}>
+              <SelectTrigger>
+                <SelectValue placeholder="All statuses" />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="ALL">All statuses</SelectItem>
+                <SelectItem value="PASSED">Passed</SelectItem>
+                <SelectItem value="ATTENTION_NEEDED">Attention Needed</SelectItem>
+                <SelectItem value="FAILED">Failed</SelectItem>
+              </SelectContent>
+            </Select>
+          </div>
+          <div>
+            <Label className="text-xs">From</Label>
+            <Input type="date" value={filterDateFrom} onChange={(e) => setFilterDateFrom(e.target.value)} />
+          </div>
+          <div>
+            <Label className="text-xs">To</Label>
+            <Input type="date" value={filterDateTo} onChange={(e) => setFilterDateTo(e.target.value)} />
+          </div>
+        </div>
+
+        <div className="table-container">
+          <table>
+            <thead>
+              <tr>
+                <th>Date</th>
+                {!isPersonalView && <th>Driver</th>}
+                <th>Vehicle</th>
+                <th>Status</th>
+                <th className="w-24">Actions</th>
+              </tr>
+            </thead>
+            <tbody>
+              {historyRows.length === 0 ? (
+                <tr>
+                  <td colSpan={isPersonalView ? 4 : 5} className="text-center py-8 text-slate-500">
+                    No checklists found
+                  </td>
+                </tr>
+              ) : (
+                historyRows.map((checklist) => {
+                  const driver = drivers.find((d) => d.id === checklist.driver_id);
+                  const vehicle = vehicles.find((v) => v.id === checklist.vehicle_id);
+                  const canEdit = canEditPreTripChecklist(user?.role, isPersonalView, checklist, user);
+                  return (
+                    <tr key={checklist.id}>
+                      <td>
+                        {new Date(checklist.date || checklist.created_at).toLocaleDateString()}{' '}
+                        <span className="text-xs text-slate-500">
+                          {new Date(checklist.created_at).toLocaleTimeString()}
+                        </span>
+                      </td>
+                      {!isPersonalView && (
+                        <td>{driver ? `${driver.first_name} ${driver.last_name}` : '—'}</td>
+                      )}
+                      <td className="font-semibold">{vehicle?.registration_number || 'N/A'}</td>
+                      <td>
+                        <span className={getOverallStatusBadge(checklist.overall_status)}>
+                          {checklist.overall_status}
+                        </span>
+                      </td>
+                      <td>
+                        <div className="flex gap-1">
+                          {canEdit && (
+                            <Button variant="ghost" size="icon" className="h-8 w-8" onClick={() => openEditDialog(checklist)}>
+                              <Pencil size={16} />
+                            </Button>
+                          )}
+                          {canDelete && (
+                            <Button
+                              variant="ghost"
+                              size="icon"
+                              className="h-8 w-8 text-red-600"
+                              onClick={() => setDeleteTarget(checklist)}
+                            >
+                              <Trash2 size={16} />
+                            </Button>
+                          )}
+                        </div>
+                      </td>
+                    </tr>
+                  );
+                })
+              )}
+            </tbody>
+          </table>
         </div>
       </div>
     </div>
