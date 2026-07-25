@@ -2943,14 +2943,26 @@ async def export_pretrip_checklists(
 
     checklists = await db.pretrip_checklists.find(query, {"_id": 0}).sort("date", -1).to_list(limit)
     drivers = await db.drivers.find({}, {"_id": 0, "id": 1, "first_name": 1, "last_name": 1}).to_list(10000)
+    users = await db.users.find(
+        {},
+        {"_id": 0, "id": 1, "driver_id": 1, "full_name": 1, "first_name": 1, "last_name": 1},
+    ).to_list(10000)
     vehicles = await db.vehicles.find({}, {"_id": 0, "id": 1, "registration_number": 1}).to_list(10000)
-    drivers_by_id = {d["id"]: d for d in drivers}
+    name_by_id = {}
+    for d in drivers:
+        name_by_id[d["id"]] = f"{d.get('first_name', '')} {d.get('last_name', '')}".strip()
+    for u in users:
+        label = (u.get("full_name") or f"{u.get('first_name', '')} {u.get('last_name', '')}").strip()
+        if not label:
+            continue
+        name_by_id.setdefault(u["id"], label)
+        if u.get("driver_id"):
+            name_by_id.setdefault(u["driver_id"], label)
     vehicles_by_id = {v["id"]: v for v in vehicles}
 
     headers = ["Date", "Driver", "Vehicle", "Overall Status"]
     rows = []
     for c in checklists:
-        driver = drivers_by_id.get(c.get("driver_id"), {})
         vehicle = vehicles_by_id.get(c.get("vehicle_id"), {})
         date_val = c.get("date")
         if isinstance(date_val, str):
@@ -2958,9 +2970,10 @@ async def export_pretrip_checklists(
                 date_val = datetime.fromisoformat(date_val)
             except ValueError:
                 pass
+        driver_id = c.get("driver_id") or ""
         rows.append([
             date_val.strftime("%Y-%m-%d") if isinstance(date_val, datetime) else (date_val or ""),
-            f"{driver.get('first_name', '')} {driver.get('last_name', '')}".strip() or c.get("driver_id", ""),
+            name_by_id.get(driver_id) or driver_id,
             vehicle.get("registration_number") or c.get("vehicle_id", ""),
             c.get("overall_status") or "",
         ])
@@ -3937,14 +3950,27 @@ async def export_logbook_entries(
 
     entries = await db.driver_logbook.find(query, {"_id": 0}).sort("date", -1).to_list(1000)
     drivers = await db.drivers.find({}, {"_id": 0, "id": 1, "first_name": 1, "last_name": 1}).to_list(10000)
+    users = await db.users.find(
+        {},
+        {"_id": 0, "id": 1, "driver_id": 1, "full_name": 1, "first_name": 1, "last_name": 1},
+    ).to_list(10000)
     vehicles = await db.vehicles.find({}, {"_id": 0, "id": 1, "registration_number": 1}).to_list(10000)
     drivers_by_id = {d["id"]: d for d in drivers}
     vehicles_by_id = {v["id"]: v for v in vehicles}
+    name_by_id = {}
+    for d in drivers:
+        name_by_id[d["id"]] = f"{d.get('first_name', '')} {d.get('last_name', '')}".strip()
+    for u in users:
+        label = (u.get("full_name") or f"{u.get('first_name', '')} {u.get('last_name', '')}").strip()
+        if not label:
+            continue
+        name_by_id.setdefault(u["id"], label)
+        if u.get("driver_id"):
+            name_by_id.setdefault(u["driver_id"], label)
 
     headers = ["Date", "Driver", "Vehicle", "Route", "Distance (km)", "Purpose", "Fuel (L)"]
     rows = []
     for e in entries:
-        driver = drivers_by_id.get(e.get("driver_id"), {})
         vehicle = vehicles_by_id.get(e.get("vehicle_id"), {})
         date_val = e.get("date")
         if isinstance(date_val, str):
@@ -3956,9 +3982,13 @@ async def export_logbook_entries(
         if distance is None and e.get("end_odometer") is not None and e.get("start_odometer") is not None:
             distance = e["end_odometer"] - e["start_odometer"]
         route = f"{e.get('start_location') or ''} → {e.get('end_location') or '...'}"
+        driver_id = e.get("driver_id") or ""
+        driver_name = name_by_id.get(driver_id) or drivers_by_id.get(driver_id, {})
+        if isinstance(driver_name, dict):
+            driver_name = f"{driver_name.get('first_name', '')} {driver_name.get('last_name', '')}".strip()
         rows.append([
             date_val.strftime("%Y-%m-%d") if isinstance(date_val, datetime) else (date_val or ""),
-            f"{driver.get('first_name', '')} {driver.get('last_name', '')}".strip() or e.get("driver_id", ""),
+            driver_name or driver_id,
             vehicle.get("registration_number") or e.get("vehicle_id", ""),
             route,
             round(distance, 1) if distance is not None else "",
