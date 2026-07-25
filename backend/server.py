@@ -66,6 +66,9 @@ from storage_service import upload_bytes, read_bytes, delete_object, presigned_d
 from vehicle_bulk_import import build_template_workbook, parse_bulk_upload
 from driver_bulk_import import build_driver_template_workbook, parse_driver_bulk_upload
 from logbook_bulk_import import build_logbook_template_workbook, parse_logbook_bulk_upload
+from document_bulk_import import build_document_template_workbook, parse_document_bulk_upload
+from maintenance_bulk_import import build_maintenance_template_workbook, parse_maintenance_bulk_upload
+from export_utils import build_export_bytes, export_filename, export_mime
 from security_middleware import JWTAuthMiddleware
 
 limiter = Limiter(key_func=get_remote_address)
@@ -779,6 +782,108 @@ async def get_maintenance_records(vehicle_id: Optional[str] = None):
     return records
 
 
+@api_router.get("/maintenance/bulk-upload/template")
+async def download_maintenance_bulk_template(
+    current_user: dict = Depends(_require_staff),
+):
+    return Response(
+        content=build_maintenance_template_workbook(),
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={
+            "Content-Disposition": 'attachment; filename="maintenance-import-template.xlsx"',
+        },
+    )
+
+
+@api_router.post("/maintenance/bulk-upload")
+async def bulk_upload_maintenance(
+    file: UploadFile = File(...),
+    current_user: dict = Depends(_require_staff),
+):
+    filename = (file.filename or "").lower()
+    if not filename.endswith(".xlsx"):
+        raise HTTPException(
+            status_code=400,
+            detail="Please upload an Excel file (.xlsx). Download the template for the correct format.",
+        )
+
+    content = await file.read()
+    if len(content) > 5 * 1024 * 1024:
+        raise HTTPException(status_code=400, detail="File too large (max 5 MB)")
+
+    try:
+        rows, parse_errors = parse_maintenance_bulk_upload(content)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    vehicles = await db.vehicles.find({}, {"_id": 0, "id": 1, "registration_number": 1}).to_list(10000)
+    vehicles_by_reg = {(v.get("registration_number") or "").upper(): v for v in vehicles}
+
+    created: List[dict] = []
+    errors: List[dict] = list(parse_errors)
+
+    for row in rows:
+        vehicle = vehicles_by_reg.get(row["registration_number"].upper())
+        if not vehicle:
+            errors.append({
+                "row": row["row"],
+                "registration_number": row["registration_number"],
+                "message": f"No vehicle found with registration {row['registration_number']}",
+            })
+            continue
+
+        try:
+            cost_usd = currency_converter.convert(row["cost"], row["currency"], CurrencyEnum.USD)
+            maintenance = MaintenanceRecord(
+                vehicle_id=vehicle["id"],
+                maintenance_type=row["maintenance_type"],
+                description=row["description"],
+                scheduled_date=row["scheduled_date"],
+                next_due_date=row.get("next_due_date"),
+                odometer_at_maintenance=row["odometer_at_maintenance"],
+                cost=row["cost"],
+                currency=row["currency"],
+                cost_usd=cost_usd,
+                notes=row.get("notes"),
+            )
+            doc = maintenance.model_dump()
+            doc["scheduled_date"] = doc["scheduled_date"].isoformat()
+            if doc.get("completed_date"):
+                doc["completed_date"] = doc["completed_date"].isoformat()
+            if doc.get("next_due_date"):
+                doc["next_due_date"] = doc["next_due_date"].isoformat()
+            doc["created_at"] = doc["created_at"].isoformat()
+
+            await db.maintenance_records.insert_one(doc)
+            created.append({
+                "id": maintenance.id,
+                "registration_number": row["registration_number"],
+            })
+        except Exception as exc:
+            errors.append({
+                "row": row["row"],
+                "registration_number": row["registration_number"],
+                "message": str(exc),
+            })
+
+    await write_audit_log(
+        action="bulk_create",
+        entity_type="maintenance_record",
+        entity_id="bulk",
+        actor_id=current_user["id"],
+        actor_role=current_user.get("role", ""),
+        actor_email=current_user.get("email"),
+        details={"created_count": len(created), "failed_count": len(errors)},
+    )
+
+    return {
+        "created": len(created),
+        "failed": len(errors),
+        "records": created,
+        "errors": errors,
+    }
+
+
 @api_router.put("/maintenance/{record_id}", response_model=MaintenanceRecord)
 async def update_maintenance(
     record_id: str,
@@ -1312,7 +1417,186 @@ async def get_documents(entity_id: Optional[str] = None, document_type: Optional
     return documents
 
 
-    return documents
+@api_router.get("/documents/bulk-upload/template")
+async def download_document_bulk_template(
+    current_user: dict = Depends(_require_staff),
+):
+    return Response(
+        content=build_document_template_workbook(),
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={
+            "Content-Disposition": 'attachment; filename="document-import-template.xlsx"',
+        },
+    )
+
+
+@api_router.post("/documents/bulk-upload")
+async def bulk_upload_documents(
+    country: str = Form(...),
+    metadata: UploadFile = File(...),
+    files: List[UploadFile] = File(...),
+    current_user: dict = Depends(_require_staff),
+):
+    try:
+        country_code = normalize_country_code(country)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    meta_name = (metadata.filename or "").lower()
+    if not meta_name.endswith(".xlsx"):
+        raise HTTPException(
+            status_code=400,
+            detail="Please upload an Excel metadata file (.xlsx). Download the template for the correct format.",
+        )
+
+    meta_bytes = await metadata.read()
+    if len(meta_bytes) > 5 * 1024 * 1024:
+        raise HTTPException(status_code=400, detail="Metadata file too large (max 5 MB)")
+
+    try:
+        rows, parse_errors = parse_document_bulk_upload(meta_bytes)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    file_map: dict = {}
+    for upload in files:
+        name = (upload.filename or "").strip()
+        if not name:
+            continue
+        content = await upload.read()
+        content_type = (upload.content_type or "").split(";")[0].strip().lower()
+        entry = {
+            "content": content,
+            "content_type": content_type,
+            "filename": name,
+        }
+        file_map[name] = entry
+        file_map.setdefault(name.lower(), entry)
+
+    vehicles = await db.vehicles.find({}, {"_id": 0, "id": 1, "registration_number": 1}).to_list(10000)
+    drivers = await db.drivers.find({}, {"_id": 0, "id": 1, "license_number": 1}).to_list(10000)
+    vehicles_by_reg = {(v.get("registration_number") or "").upper(): v for v in vehicles}
+    drivers_by_license = {(d.get("license_number") or "").upper(): d for d in drivers}
+
+    created: List[dict] = []
+    errors: List[dict] = list(parse_errors)
+
+    for row in rows:
+        file_entry = file_map.get(row["filename"]) or file_map.get(row["filename"].lower())
+        if not file_entry:
+            errors.append({
+                "row": row["row"],
+                "filename": row["filename"],
+                "message": f"No uploaded file matched filename {row['filename']}",
+            })
+            continue
+
+        content_type = file_entry["content_type"]
+        if content_type not in _ALLOWED_DOCUMENT_CONTENT_TYPES:
+            # Guess from extension when browser sends octet-stream
+            lower_name = row["filename"].lower()
+            if lower_name.endswith(".pdf"):
+                content_type = "application/pdf"
+            elif lower_name.endswith((".jpg", ".jpeg")):
+                content_type = "image/jpeg"
+            elif lower_name.endswith(".png"):
+                content_type = "image/png"
+            elif lower_name.endswith(".webp"):
+                content_type = "image/webp"
+            elif lower_name.endswith(".gif"):
+                content_type = "image/gif"
+
+        if content_type not in _ALLOWED_DOCUMENT_CONTENT_TYPES:
+            errors.append({
+                "row": row["row"],
+                "filename": row["filename"],
+                "message": "Invalid file type. Allowed: PDF and images.",
+            })
+            continue
+
+        if len(file_entry["content"]) > _DOCUMENT_MAX_BYTES:
+            errors.append({
+                "row": row["row"],
+                "filename": row["filename"],
+                "message": f"File too large (max {_DOCUMENT_MAX_BYTES // (1024 * 1024)} MB)",
+            })
+            continue
+
+        entity_key = row["entity_key"].upper()
+        if row["entity_type"] == "VEHICLE":
+            entity = vehicles_by_reg.get(entity_key)
+            if not entity:
+                errors.append({
+                    "row": row["row"],
+                    "filename": row["filename"],
+                    "message": f"No vehicle found with registration {row['entity_key']}",
+                })
+                continue
+        else:
+            entity = drivers_by_license.get(entity_key)
+            if not entity:
+                errors.append({
+                    "row": row["row"],
+                    "filename": row["filename"],
+                    "message": f"No driver found with license number {row['entity_key']}",
+                })
+                continue
+
+        try:
+            document = Document(
+                country=country_code,
+                document_type=row["document_type"],
+                entity_id=entity["id"],
+                entity_type=row["entity_type"],
+                document_number=row["document_number"],
+                issue_date=row["issue_date"],
+                expiry_date=row["expiry_date"],
+            )
+            doc = document.model_dump()
+            doc["issue_date"] = doc["issue_date"].isoformat()
+            doc["expiry_date"] = doc["expiry_date"].isoformat()
+            doc["created_at"] = doc["created_at"].isoformat()
+
+            object_key, file_ref = upload_bytes(
+                document_id=document.id,
+                content=file_entry["content"],
+                content_type=content_type,
+                filename=file_entry["filename"],
+            )
+            doc["s3_key"] = object_key
+            doc["file_url"] = file_ref
+            doc["original_filename"] = file_entry["filename"]
+            doc["content_type"] = content_type
+
+            await db.documents.insert_one(doc)
+            created.append({
+                "id": document.id,
+                "filename": row["filename"],
+                "document_number": row["document_number"],
+            })
+        except Exception as exc:
+            errors.append({
+                "row": row["row"],
+                "filename": row["filename"],
+                "message": str(exc),
+            })
+
+    await write_audit_log(
+        action="bulk_create",
+        entity_type="document",
+        entity_id="bulk",
+        actor_id=current_user["id"],
+        actor_role=current_user.get("role", ""),
+        actor_email=current_user.get("email"),
+        details={"created_count": len(created), "failed_count": len(errors), "country": country_code},
+    )
+
+    return {
+        "created": len(created),
+        "failed": len(errors),
+        "documents": created,
+        "errors": errors,
+    }
 
 
 @api_router.post("/documents/{document_id}/upload")
@@ -2617,6 +2901,78 @@ async def get_pretrip_checklists(
     return checklists
 
 
+@api_router.get("/pre-trip-checklists/export")
+async def export_pretrip_checklists(
+    format: str = Query("xlsx", alias="format"),
+    driver_id: Optional[str] = None,
+    vehicle_id: Optional[str] = None,
+    overall_status: Optional[str] = None,
+    date_from: Optional[str] = None,
+    date_to: Optional[str] = None,
+    limit: int = Query(100, ge=1, le=500),
+    current_user: dict = Depends(get_current_user),
+):
+    fmt = (format or "xlsx").lower().strip()
+    try:
+        media_type = export_mime(fmt)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    role = current_user.get("role")
+    is_staff = role in _STAFF_ROLES
+    own_driver_id = current_user.get("driver_id") or current_user.get("id")
+    effective_driver_id = driver_id
+    if not is_staff:
+        effective_driver_id = own_driver_id
+
+    query = {}
+    if effective_driver_id:
+        query["driver_id"] = effective_driver_id
+    if vehicle_id:
+        query["vehicle_id"] = vehicle_id
+    if overall_status:
+        query["overall_status"] = overall_status
+
+    date_filter = {}
+    if date_from:
+        date_filter["$gte"] = date_from if "T" in date_from else f"{date_from}T00:00:00"
+    if date_to:
+        date_filter["$lte"] = date_to if "T" in date_to else f"{date_to}T23:59:59.999999"
+    if date_filter:
+        query["date"] = date_filter
+
+    checklists = await db.pretrip_checklists.find(query, {"_id": 0}).sort("date", -1).to_list(limit)
+    drivers = await db.drivers.find({}, {"_id": 0, "id": 1, "first_name": 1, "last_name": 1}).to_list(10000)
+    vehicles = await db.vehicles.find({}, {"_id": 0, "id": 1, "registration_number": 1}).to_list(10000)
+    drivers_by_id = {d["id"]: d for d in drivers}
+    vehicles_by_id = {v["id"]: v for v in vehicles}
+
+    headers = ["Date", "Driver", "Vehicle", "Overall Status"]
+    rows = []
+    for c in checklists:
+        driver = drivers_by_id.get(c.get("driver_id"), {})
+        vehicle = vehicles_by_id.get(c.get("vehicle_id"), {})
+        date_val = c.get("date")
+        if isinstance(date_val, str):
+            try:
+                date_val = datetime.fromisoformat(date_val)
+            except ValueError:
+                pass
+        rows.append([
+            date_val.strftime("%Y-%m-%d") if isinstance(date_val, datetime) else (date_val or ""),
+            f"{driver.get('first_name', '')} {driver.get('last_name', '')}".strip() or c.get("driver_id", ""),
+            vehicle.get("registration_number") or c.get("vehicle_id", ""),
+            c.get("overall_status") or "",
+        ])
+
+    content = build_export_bytes("Pre-Trip Checklists", headers, rows, fmt)
+    return Response(
+        content=content,
+        media_type=media_type,
+        headers={"Content-Disposition": f'attachment; filename="{export_filename("pretrip-export", fmt)}"'},
+    )
+
+
 @api_router.put("/pre-trip-checklists/{checklist_id}")
 async def update_pretrip_checklist(
     checklist_id: str,
@@ -3539,6 +3895,83 @@ async def get_logbook_entries(
             if isinstance(e.get(field), str):
                 e[field] = datetime.fromisoformat(e[field])
     return entries
+
+
+@api_router.get("/logbook/export")
+async def export_logbook_entries(
+    format: str = Query("xlsx", alias="format"),
+    driver_id: Optional[str] = None,
+    vehicle_id: Optional[str] = None,
+    country: Optional[str] = None,
+    start_date: Optional[str] = None,
+    end_date: Optional[str] = None,
+    current_user: dict = Depends(get_current_user),
+):
+    fmt = (format or "xlsx").lower().strip()
+    try:
+        media_type = export_mime(fmt)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    role = current_user.get("role")
+    is_staff = role in _STAFF_ROLES
+    own_driver_id = current_user.get("driver_id") or current_user.get("id")
+    effective_driver_id = driver_id
+    if not is_staff:
+        effective_driver_id = own_driver_id
+
+    query = {}
+    if effective_driver_id:
+        query["driver_id"] = effective_driver_id
+    if vehicle_id:
+        query["vehicle_id"] = vehicle_id
+    if country:
+        query["country"] = country
+    if start_date:
+        query["date"] = {"$gte": start_date}
+    if end_date:
+        if "date" in query:
+            query["date"]["$lte"] = end_date
+        else:
+            query["date"] = {"$lte": end_date}
+
+    entries = await db.driver_logbook.find(query, {"_id": 0}).sort("date", -1).to_list(1000)
+    drivers = await db.drivers.find({}, {"_id": 0, "id": 1, "first_name": 1, "last_name": 1}).to_list(10000)
+    vehicles = await db.vehicles.find({}, {"_id": 0, "id": 1, "registration_number": 1}).to_list(10000)
+    drivers_by_id = {d["id"]: d for d in drivers}
+    vehicles_by_id = {v["id"]: v for v in vehicles}
+
+    headers = ["Date", "Driver", "Vehicle", "Route", "Distance (km)", "Purpose", "Fuel (L)"]
+    rows = []
+    for e in entries:
+        driver = drivers_by_id.get(e.get("driver_id"), {})
+        vehicle = vehicles_by_id.get(e.get("vehicle_id"), {})
+        date_val = e.get("date")
+        if isinstance(date_val, str):
+            try:
+                date_val = datetime.fromisoformat(date_val)
+            except ValueError:
+                pass
+        distance = e.get("distance_km")
+        if distance is None and e.get("end_odometer") is not None and e.get("start_odometer") is not None:
+            distance = e["end_odometer"] - e["start_odometer"]
+        route = f"{e.get('start_location') or ''} → {e.get('end_location') or '...'}"
+        rows.append([
+            date_val.strftime("%Y-%m-%d") if isinstance(date_val, datetime) else (date_val or ""),
+            f"{driver.get('first_name', '')} {driver.get('last_name', '')}".strip() or e.get("driver_id", ""),
+            vehicle.get("registration_number") or e.get("vehicle_id", ""),
+            route,
+            round(distance, 1) if distance is not None else "",
+            e.get("purpose") or "",
+            e.get("fuel_used_liters") if e.get("fuel_used_liters") is not None else "",
+        ])
+
+    content = build_export_bytes("Driver Logbook", headers, rows, fmt)
+    return Response(
+        content=content,
+        media_type=media_type,
+        headers={"Content-Disposition": f'attachment; filename="{export_filename("logbook-export", fmt)}"'},
+    )
 
 
 @api_router.put("/logbook/{entry_id}", response_model=LogbookEntry)

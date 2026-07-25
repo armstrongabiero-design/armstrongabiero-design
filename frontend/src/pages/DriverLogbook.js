@@ -1,6 +1,6 @@
 import React, { useEffect, useState, useCallback } from 'react';
 import axios from 'axios';
-import { Plus, Book, Pencil, Trash2, Upload, Download } from 'lucide-react';
+import { Plus, Book, Pencil, Trash2, Upload, Download, FileSpreadsheet, FileText, FileType } from 'lucide-react';
 import { toast } from 'sonner';
 import { useAuth } from '../contexts/AuthContext';
 import { Button } from '../components/ui/button';
@@ -9,9 +9,16 @@ import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle, Di
 import { Label } from '../components/ui/label';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '../components/ui/select';
 import { Textarea } from '../components/ui/textarea';
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+} from '../components/ui/dropdown-menu';
 import { DEFAULT_COUNTRY_CODE, normalizeCountryCode } from '../components/CountrySelect';
 import ConfirmDeleteDialog from '../components/ConfirmDeleteDialog';
 import { completeDialogSubmit } from '../utils/formUtils';
+import { downloadExport } from '../utils/downloadExport';
 import { canEditFleetRecord, canEditLogbookEntry, canHardDelete } from '../utils/permissions';
 
 const BACKEND_URL = process.env.REACT_APP_BACKEND_URL;
@@ -264,6 +271,25 @@ const DriverLogbook = () => {
     }
   };
 
+  const handleExport = async (format) => {
+    try {
+      const headers = token ? { Authorization: `Bearer ${token}` } : {};
+      const params = { format };
+      if (!isPersonalView && selectedDriver) {
+        params.driver_id = selectedDriver;
+      }
+      await downloadExport({
+        url: `${API}/logbook/export`,
+        params,
+        headers,
+        filenameFallback: `logbook-export.${format}`,
+      });
+      toast.success(`Exported as ${format.toUpperCase()}`);
+    } catch {
+      toast.error('Export failed');
+    }
+  };
+
   const canEdit = canEditLogbookEntry(user?.role, isPersonalView);
   const canBulkUpload = canEditFleetRecord(user?.role) && !isPersonalView;
   const canDelete = canHardDelete(user?.role, 'logbook_entry');
@@ -299,6 +325,28 @@ const DriverLogbook = () => {
               </SelectContent>
             </Select>
           )}
+          <DropdownMenu>
+            <DropdownMenuTrigger asChild>
+              <Button variant="outline" data-testid="export-logbook-btn">
+                <Download size={18} className="mr-2" />
+                Export
+              </Button>
+            </DropdownMenuTrigger>
+            <DropdownMenuContent align="end">
+              <DropdownMenuItem onClick={() => handleExport('xlsx')}>
+                <FileSpreadsheet size={16} className="mr-2" />
+                Excel (.xlsx)
+              </DropdownMenuItem>
+              <DropdownMenuItem onClick={() => handleExport('pdf')}>
+                <FileText size={16} className="mr-2" />
+                PDF report
+              </DropdownMenuItem>
+              <DropdownMenuItem onClick={() => handleExport('docx')}>
+                <FileType size={16} className="mr-2" />
+                Word (.docx)
+              </DropdownMenuItem>
+            </DropdownMenuContent>
+          </DropdownMenu>
           {canBulkUpload && (
             <>
               <Button

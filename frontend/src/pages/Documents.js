@@ -1,6 +1,6 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useState, useCallback } from 'react';
 import axios from 'axios';
-import { Plus, Sparkles, Pencil, Trash2, FileText, ExternalLink, ScanLine } from 'lucide-react';
+import { Plus, Sparkles, Pencil, Trash2, FileText, ExternalLink, ScanLine, Upload, Download } from 'lucide-react';
 import { toast } from 'sonner';
 import { useAuth } from '../contexts/AuthContext';
 import { Button } from '../components/ui/button';
@@ -8,6 +8,7 @@ import { Input } from '../components/ui/input';
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle, DialogTrigger } from '../components/ui/dialog';
 import { Label } from '../components/ui/label';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '../components/ui/select';
+import { Tabs, TabsList, TabsTrigger } from '../components/ui/tabs';
 import CountrySelect, { DEFAULT_COUNTRY_CODE, getCountryBadgeClass, getCountryLabel, normalizeCountryCode } from '../components/CountrySelect';
 import ConfirmDeleteDialog from '../components/ConfirmDeleteDialog';
 import { canEditFleetRecord, canHardDelete } from '../utils/permissions';
@@ -16,6 +17,16 @@ const BACKEND_URL = process.env.REACT_APP_BACKEND_URL;
 const API = `${BACKEND_URL}/api`;
 
 const ACCEPTED_FILE_TYPES = 'image/jpeg,image/png,image/webp,image/gif,application/pdf';
+
+const DOCUMENT_TABS = [
+  { value: 'ALL', label: 'All' },
+  { value: 'ROADWORTHY_CERT', label: 'Roadworthy Certificates' },
+  { value: 'AMA_STICKER', label: 'AMA Stickers' },
+  { value: 'VEHICLE_REGISTRATION', label: 'Vehicle Registration Certificates (VRC)' },
+  { value: 'INSURANCE', label: 'Insurance Documents' },
+  { value: 'DRIVER_LICENSE', label: "Drivers' Licenses" },
+  { value: 'OTHER', label: 'Other Documents' },
+];
 
 /** Log implementation details for developers — never show these in the UI. */
 const logDocumentsDev = (message, ...args) => {
@@ -78,18 +89,22 @@ const Documents = () => {
   const [uploading, setUploading] = useState(false);
   const [ocrRunningId, setOcrRunningId] = useState(null);
   const [formData, setFormData] = useState(createInitialFormData);
+  const [activeTab, setActiveTab] = useState('ALL');
+  const [bulkDialogOpen, setBulkDialogOpen] = useState(false);
+  const [bulkCountry, setBulkCountry] = useState(DEFAULT_COUNTRY_CODE);
+  const [bulkMetaFile, setBulkMetaFile] = useState(null);
+  const [bulkFiles, setBulkFiles] = useState([]);
+  const [bulkUploading, setBulkUploading] = useState(false);
+  const [bulkResult, setBulkResult] = useState(null);
 
-  useEffect(() => {
-    fetchData();
-    logDocumentsDev(
-      'Storage uses S3 when S3_BUCKET_NAME is set on the API; otherwise local disk. OCR requires EMERGENT_LLM_KEY on the backend.'
-    );
-  }, []);
-
-  const fetchData = async () => {
+  const fetchData = useCallback(async (documentType = activeTab) => {
     try {
+      const params = {};
+      if (documentType && documentType !== 'ALL') {
+        params.document_type = documentType;
+      }
       const [docsRes, vehiclesRes, driversRes] = await Promise.all([
-        axios.get(`${API}/documents`),
+        axios.get(`${API}/documents`, { params }),
         axios.get(`${API}/vehicles`),
         axios.get(`${API}/drivers`),
       ]);
@@ -101,6 +116,18 @@ const Documents = () => {
     } finally {
       setLoading(false);
     }
+  }, [activeTab]);
+
+  useEffect(() => {
+    fetchData(activeTab);
+    logDocumentsDev(
+      'Storage uses S3 when S3_BUCKET_NAME is set on the API; otherwise local disk. OCR requires EMERGENT_LLM_KEY on the backend.'
+    );
+  }, [fetchData, activeTab]);
+
+  const handleTabChange = (value) => {
+    setActiveTab(value);
+    setLoading(true);
   };
 
   const resetDialogState = () => {
@@ -241,22 +268,89 @@ const Documents = () => {
   const getDocumentTypeLabel = (type) => {
     const labels = {
       ROADWORTHY_CERT: 'Roadworthy Certificate',
+      AMA_STICKER: 'AMA Sticker',
       INSURANCE: 'Insurance',
       DRIVER_LICENSE: 'Driver License',
-      VEHICLE_REGISTRATION: 'Registration',
+      VEHICLE_REGISTRATION: 'Vehicle Registration Certificate',
       OTHER: 'Other',
     };
     return labels[type] || type;
   };
 
+  const resetBulkDialog = () => {
+    setBulkMetaFile(null);
+    setBulkFiles([]);
+    setBulkResult(null);
+    setBulkCountry(DEFAULT_COUNTRY_CODE);
+  };
+
+  const handleBulkDialogOpenChange = (open) => {
+    setBulkDialogOpen(open);
+    if (!open) resetBulkDialog();
+  };
+
+  const downloadBulkTemplate = async () => {
+    try {
+      const response = await axios.get(`${API}/documents/bulk-upload/template`, { responseType: 'blob' });
+      const url = window.URL.createObjectURL(new Blob([response.data]));
+      const link = document.createElement('a');
+      link.href = url;
+      link.setAttribute('download', 'document-import-template.xlsx');
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+      window.URL.revokeObjectURL(url);
+    } catch {
+      toast.error('Could not download template');
+    }
+  };
+
+  const handleBulkUpload = async (e) => {
+    e.preventDefault();
+    if (!bulkMetaFile) {
+      toast.error('Please select the Excel metadata file');
+      return;
+    }
+    if (!bulkFiles.length) {
+      toast.error('Please select one or more document files');
+      return;
+    }
+    const uploadData = new FormData();
+    uploadData.append('country', bulkCountry);
+    uploadData.append('metadata', bulkMetaFile);
+    bulkFiles.forEach((file) => uploadData.append('files', file));
+    setBulkUploading(true);
+    setBulkResult(null);
+    try {
+      const { data } = await axios.post(`${API}/documents/bulk-upload`, uploadData, {
+        headers: { 'Content-Type': 'multipart/form-data' },
+      });
+      setBulkResult(data);
+      if (data.created > 0) {
+        fetchData();
+        toast.success(`${data.created} document${data.created === 1 ? '' : 's'} imported`);
+      }
+      if (data.failed > 0 && data.created === 0) {
+        toast.error('No documents were imported. Review the errors below.');
+      } else if (data.failed > 0) {
+        toast.warning(`${data.failed} row${data.failed === 1 ? '' : 's'} could not be imported`);
+      }
+    } catch (error) {
+      toast.error(userFacingApiError(error, 'Bulk upload failed'));
+    } finally {
+      setBulkUploading(false);
+    }
+  };
+
   return (
     <div className="p-6 lg:p-8" data-testid="documents-page">
-      <div className="flex justify-between items-center mb-6">
+      <div className="flex flex-col lg:flex-row lg:justify-between lg:items-center mb-6 gap-4">
         <div>
           <h1 className="text-3xl font-bold text-slate-800">Documents</h1>
           <p className="text-slate-600 mt-1">Manage compliance documents for vehicles and drivers</p>
         </div>
         {canEdit && (
+          <div className="flex flex-wrap gap-2">
         <Dialog open={dialogOpen} onOpenChange={handleDialogOpenChange}>
           <DialogTrigger asChild>
             <Button data-testid="add-document-btn" onClick={openCreateDialog}>
@@ -289,11 +383,12 @@ const Documents = () => {
                       <SelectValue />
                     </SelectTrigger>
                     <SelectContent>
-                      <SelectItem value="ROADWORTHY_CERT">Roadworthy Cert</SelectItem>
-                      <SelectItem value="INSURANCE">Insurance</SelectItem>
+                      <SelectItem value="ROADWORTHY_CERT">Roadworthy Certificate</SelectItem>
+                      <SelectItem value="AMA_STICKER">AMA Sticker</SelectItem>
+                      <SelectItem value="VEHICLE_REGISTRATION">Vehicle Registration Certificate (VRC)</SelectItem>
+                      <SelectItem value="INSURANCE">Insurance Document</SelectItem>
                       <SelectItem value="DRIVER_LICENSE">Driver License</SelectItem>
-                      <SelectItem value="VEHICLE_REGISTRATION">Registration</SelectItem>
-                      <SelectItem value="OTHER">Other</SelectItem>
+                      <SelectItem value="OTHER">Other Document</SelectItem>
                     </SelectContent>
                   </Select>
                 </div>
@@ -374,6 +469,82 @@ const Documents = () => {
             </form>
           </DialogContent>
         </Dialog>
+
+            <Button variant="outline" data-testid="bulk-upload-documents-btn" onClick={() => setBulkDialogOpen(true)}>
+              <Upload size={18} className="mr-2" />
+              Bulk Upload
+            </Button>
+
+            <Dialog open={bulkDialogOpen} onOpenChange={handleBulkDialogOpenChange}>
+              <DialogContent className="max-w-lg">
+                <DialogHeader>
+                  <DialogTitle>Bulk Upload Documents</DialogTitle>
+                  <DialogDescription>
+                    Upload an Excel metadata sheet plus the matching document files. Each row must map to a vehicle registration or driver license.
+                  </DialogDescription>
+                </DialogHeader>
+                <form onSubmit={handleBulkUpload} className="space-y-4">
+                  <div>
+                    <Label>Country (applies to all rows)</Label>
+                    <CountrySelect value={bulkCountry} onValueChange={setBulkCountry} />
+                  </div>
+                  <div>
+                    <Button type="button" variant="outline" className="w-full" onClick={downloadBulkTemplate}>
+                      <Download size={16} className="mr-2" />
+                      Download sample template (.xlsx)
+                    </Button>
+                  </div>
+                  <div>
+                    <Label>Excel metadata file</Label>
+                    <Input
+                      type="file"
+                      accept=".xlsx,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+                      onChange={(e) => setBulkMetaFile(e.target.files?.[0] || null)}
+                      required
+                    />
+                  </div>
+                  <div>
+                    <Label>Document files</Label>
+                    <Input
+                      type="file"
+                      accept={ACCEPTED_FILE_TYPES}
+                      multiple
+                      onChange={(e) => setBulkFiles(Array.from(e.target.files || []))}
+                      required
+                    />
+                    <p className="text-xs text-slate-500 mt-1">
+                      Filenames in the Excel sheet must match these files exactly.
+                    </p>
+                  </div>
+                  {bulkResult && (
+                    <div className="rounded-lg border border-slate-200 bg-slate-50 p-3 text-sm space-y-2">
+                      <p className="font-medium text-slate-800">
+                        Imported {bulkResult.created} · Failed {bulkResult.failed}
+                      </p>
+                      {bulkResult.errors?.length > 0 && (
+                        <ul className="max-h-32 overflow-y-auto text-red-700 space-y-1">
+                          {bulkResult.errors.map((err, idx) => (
+                            <li key={idx}>
+                              {err.row ? `Row ${err.row}` : 'Import'}
+                              {err.filename ? ` (${err.filename})` : ''}: {err.message}
+                            </li>
+                          ))}
+                        </ul>
+                      )}
+                    </div>
+                  )}
+                  <div className="flex justify-end gap-2">
+                    <Button type="button" variant="outline" onClick={() => handleBulkDialogOpenChange(false)}>
+                      Close
+                    </Button>
+                    <Button type="submit" disabled={bulkUploading}>
+                      {bulkUploading ? 'Uploading…' : 'Upload & Import'}
+                    </Button>
+                  </div>
+                </form>
+              </DialogContent>
+            </Dialog>
+          </div>
         )}
       </div>
 
@@ -386,6 +557,16 @@ const Documents = () => {
           </p>
         </div>
       </div>
+
+      <Tabs value={activeTab} onValueChange={handleTabChange} className="mb-4">
+        <TabsList className="flex flex-wrap h-auto gap-1 justify-start w-full">
+          {DOCUMENT_TABS.map((tab) => (
+            <TabsTrigger key={tab.value} value={tab.value} className="text-xs sm:text-sm">
+              {tab.label}
+            </TabsTrigger>
+          ))}
+        </TabsList>
+      </Tabs>
 
       <div className="fleet-card table-container">
         <table>

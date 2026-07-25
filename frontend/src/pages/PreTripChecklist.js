@@ -1,6 +1,6 @@
 import React, { useEffect, useState, useCallback, useMemo } from 'react';
 import axios from 'axios';
-import { ClipboardCheck, Camera, AlertTriangle, CheckCircle2, XCircle, AlertCircle, Pencil, Trash2 } from 'lucide-react';
+import { ClipboardCheck, Camera, AlertTriangle, CheckCircle2, XCircle, AlertCircle, Pencil, Trash2, Download, FileSpreadsheet, FileText, FileType } from 'lucide-react';
 import { toast } from 'sonner';
 import { useAuth } from '../contexts/AuthContext';
 import { Button } from '../components/ui/button';
@@ -9,8 +9,15 @@ import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } f
 import { Label } from '../components/ui/label';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '../components/ui/select';
 import { Textarea } from '../components/ui/textarea';
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+} from '../components/ui/dropdown-menu';
 import ConfirmDeleteDialog from '../components/ConfirmDeleteDialog';
 import { completeDialogSubmit } from '../utils/formUtils';
+import { downloadExport } from '../utils/downloadExport';
 import { canEditPreTripChecklist, canHardDelete } from '../utils/permissions';
 
 const BACKEND_URL = process.env.REACT_APP_BACKEND_URL;
@@ -274,6 +281,32 @@ const PreTripChecklist = () => {
 
   const historyRows = useMemo(() => checklists, [checklists]);
 
+  const handleExport = async (format) => {
+    try {
+      const headers = token ? { Authorization: `Bearer ${token}` } : {};
+      const params = { format, limit: 100 };
+      if (isPersonalView) {
+        params.driver_id = user?.driver_id || user?.id;
+      } else if (filterDriver && filterDriver !== 'ALL') {
+        params.driver_id = filterDriver;
+      }
+      if (filterVehicle && filterVehicle !== 'ALL') params.vehicle_id = filterVehicle;
+      if (filterStatus && filterStatus !== 'ALL') params.overall_status = filterStatus;
+      if (filterDateFrom) params.date_from = filterDateFrom;
+      if (filterDateTo) params.date_to = filterDateTo;
+
+      await downloadExport({
+        url: `${API}/pre-trip-checklists/export`,
+        params,
+        headers,
+        filenameFallback: `pretrip-export.${format}`,
+      });
+      toast.success(`Exported as ${format.toUpperCase()}`);
+    } catch {
+      toast.error('Export failed');
+    }
+  };
+
   if (loading) {
     return <div className="p-8 text-center">Loading checklists...</div>;
   }
@@ -485,10 +518,36 @@ const PreTripChecklist = () => {
       />
 
       <div className="fleet-card">
-        <h3 className="text-lg font-semibold text-slate-800 mb-4">
-          {isPersonalView ? 'My Checklist History' : 'Checklist History'}
-        </h3>
-        <p className="text-sm text-slate-500 mb-4">Showing up to 100 most recent checklists</p>
+        <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3 mb-4">
+          <div>
+            <h3 className="text-lg font-semibold text-slate-800">
+              {isPersonalView ? 'My Checklist History' : 'Checklist History'}
+            </h3>
+            <p className="text-sm text-slate-500">Showing up to 100 most recent checklists</p>
+          </div>
+          <DropdownMenu>
+            <DropdownMenuTrigger asChild>
+              <Button variant="outline" data-testid="export-pretrip-btn">
+                <Download size={18} className="mr-2" />
+                Export
+              </Button>
+            </DropdownMenuTrigger>
+            <DropdownMenuContent align="end">
+              <DropdownMenuItem onClick={() => handleExport('xlsx')}>
+                <FileSpreadsheet size={16} className="mr-2" />
+                Excel (.xlsx)
+              </DropdownMenuItem>
+              <DropdownMenuItem onClick={() => handleExport('pdf')}>
+                <FileText size={16} className="mr-2" />
+                PDF report
+              </DropdownMenuItem>
+              <DropdownMenuItem onClick={() => handleExport('docx')}>
+                <FileType size={16} className="mr-2" />
+                Word (.docx)
+              </DropdownMenuItem>
+            </DropdownMenuContent>
+          </DropdownMenu>
+        </div>
 
         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-5 gap-3 mb-4">
           {!isPersonalView && (

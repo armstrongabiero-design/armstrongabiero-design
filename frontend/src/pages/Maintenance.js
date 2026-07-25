@@ -1,7 +1,8 @@
 import React, { useEffect, useState } from 'react';
 import axios from 'axios';
-import { Plus, Sparkles } from 'lucide-react';
+import { Plus, Sparkles, Upload, Download } from 'lucide-react';
 import { toast } from 'sonner';
+import { useAuth } from '../contexts/AuthContext';
 import { Button } from '../components/ui/button';
 import { Input } from '../components/ui/input';
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle, DialogTrigger } from '../components/ui/dialog';
@@ -9,6 +10,7 @@ import { Label } from '../components/ui/label';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '../components/ui/select';
 import { Textarea } from '../components/ui/textarea';
 import { completeDialogSubmit } from '../utils/formUtils';
+import { canEditFleetRecord } from '../utils/permissions';
 
 const BACKEND_URL = process.env.REACT_APP_BACKEND_URL;
 const API = `${BACKEND_URL}/api`;
@@ -26,6 +28,9 @@ const createInitialFormData = () => ({
 });
 
 const Maintenance = () => {
+  const { user } = useAuth();
+  const canBulkUpload = canEditFleetRecord(user?.role);
+
   const [records, setRecords] = useState([]);
   const [vehicles, setVehicles] = useState([]);
   const [loading, setLoading] = useState(true);
@@ -33,6 +38,10 @@ const Maintenance = () => {
   const [predicting, setPredicting] = useState(false);
   const [selectedVehicle, setSelectedVehicle] = useState('');
   const [formData, setFormData] = useState(createInitialFormData);
+  const [bulkDialogOpen, setBulkDialogOpen] = useState(false);
+  const [bulkFile, setBulkFile] = useState(null);
+  const [bulkUploading, setBulkUploading] = useState(false);
+  const [bulkResult, setBulkResult] = useState(null);
 
   useEffect(() => {
     fetchData();
@@ -113,6 +122,64 @@ const Maintenance = () => {
     return labels[type] || type;
   };
 
+  const resetBulkDialog = () => {
+    setBulkFile(null);
+    setBulkResult(null);
+  };
+
+  const handleBulkDialogOpenChange = (open) => {
+    setBulkDialogOpen(open);
+    if (!open) resetBulkDialog();
+  };
+
+  const downloadBulkTemplate = async () => {
+    try {
+      const response = await axios.get(`${API}/maintenance/bulk-upload/template`, { responseType: 'blob' });
+      const url = window.URL.createObjectURL(new Blob([response.data]));
+      const link = document.createElement('a');
+      link.href = url;
+      link.setAttribute('download', 'maintenance-import-template.xlsx');
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+      window.URL.revokeObjectURL(url);
+    } catch {
+      toast.error('Could not download template');
+    }
+  };
+
+  const handleBulkUpload = async (e) => {
+    e.preventDefault();
+    if (!bulkFile) {
+      toast.error('Please select an Excel file to upload');
+      return;
+    }
+    const uploadData = new FormData();
+    uploadData.append('file', bulkFile);
+    setBulkUploading(true);
+    setBulkResult(null);
+    try {
+      const { data } = await axios.post(`${API}/maintenance/bulk-upload`, uploadData, {
+        headers: { 'Content-Type': 'multipart/form-data' },
+      });
+      setBulkResult(data);
+      if (data.created > 0) {
+        fetchData();
+        toast.success(`${data.created} record${data.created === 1 ? '' : 's'} imported`);
+      }
+      if (data.failed > 0 && data.created === 0) {
+        toast.error('No records were imported. Review the errors below.');
+      } else if (data.failed > 0) {
+        toast.warning(`${data.failed} row${data.failed === 1 ? '' : 's'} could not be imported`);
+      }
+    } catch (error) {
+      const detail = error.response?.data?.detail;
+      toast.error(typeof detail === 'string' ? detail : 'Bulk upload failed');
+    } finally {
+      setBulkUploading(false);
+    }
+  };
+
   return (
     <div className="p-6 lg:p-8" data-testid="maintenance-page">
       <div className="flex justify-between items-center mb-6">
@@ -120,7 +187,7 @@ const Maintenance = () => {
           <h1 className="text-3xl font-bold text-slate-800">Maintenance Records</h1>
           <p className="text-slate-600 mt-1">Track vehicle maintenance and upcoming due dates</p>
         </div>
-        <div className="flex gap-2">
+        <div className="flex gap-2 flex-wrap">
           <Dialog>
             <DialogTrigger asChild>
               <Button variant="outline" data-testid="ai-predict-btn">
@@ -242,6 +309,71 @@ const Maintenance = () => {
               </form>
             </DialogContent>
           </Dialog>
+
+          {canBulkUpload && (
+            <>
+              <Button variant="outline" data-testid="bulk-upload-maintenance-btn" onClick={() => setBulkDialogOpen(true)}>
+                <Upload size={18} className="mr-2" />
+                Bulk Upload
+              </Button>
+              <Dialog open={bulkDialogOpen} onOpenChange={handleBulkDialogOpenChange}>
+                <DialogContent className="max-w-lg">
+                  <DialogHeader>
+                    <DialogTitle>Bulk Upload Maintenance Records</DialogTitle>
+                    <DialogDescription>
+                      Import multiple maintenance records from Excel. Match vehicles by registration number.
+                    </DialogDescription>
+                  </DialogHeader>
+                  <form onSubmit={handleBulkUpload} className="space-y-4">
+                    <div>
+                      <Button type="button" variant="outline" className="w-full" onClick={downloadBulkTemplate}>
+                        <Download size={16} className="mr-2" />
+                        Download sample template (.xlsx)
+                      </Button>
+                    </div>
+                    <div>
+                      <Label>Excel file</Label>
+                      <Input
+                        type="file"
+                        accept=".xlsx,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+                        onChange={(e) => setBulkFile(e.target.files?.[0] || null)}
+                        required
+                      />
+                      <p className="text-xs text-slate-500 mt-1">
+                        Columns: Vehicle Registration, Maintenance Type, Description, Scheduled Date,
+                        Odometer, Cost, Currency, Next Due Date, Notes.
+                      </p>
+                    </div>
+                    {bulkResult && (
+                      <div className="rounded-lg border border-slate-200 bg-slate-50 p-3 text-sm space-y-2">
+                        <p className="font-medium text-slate-800">
+                          Imported {bulkResult.created} · Failed {bulkResult.failed}
+                        </p>
+                        {bulkResult.errors?.length > 0 && (
+                          <ul className="max-h-32 overflow-y-auto text-red-700 space-y-1">
+                            {bulkResult.errors.map((err, idx) => (
+                              <li key={idx}>
+                                {err.row ? `Row ${err.row}` : 'Import'}
+                                {err.registration_number ? ` (${err.registration_number})` : ''}: {err.message}
+                              </li>
+                            ))}
+                          </ul>
+                        )}
+                      </div>
+                    )}
+                    <div className="flex justify-end gap-2">
+                      <Button type="button" variant="outline" onClick={() => handleBulkDialogOpenChange(false)}>
+                        Close
+                      </Button>
+                      <Button type="submit" disabled={bulkUploading}>
+                        {bulkUploading ? 'Uploading…' : 'Upload & Import'}
+                      </Button>
+                    </div>
+                  </form>
+                </DialogContent>
+              </Dialog>
+            </>
+          )}
         </div>
       </div>
 
