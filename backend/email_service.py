@@ -1,9 +1,12 @@
 """
 Email Service using Resend for GTI Fleet Solutions notifications
 """
+from html import escape
 import os
 import logging
 import resend
+
+from country_utils import country_display_name
 
 logger = logging.getLogger(__name__)
 
@@ -122,6 +125,122 @@ class EmailService:
         </html>
         """
         return self.send_email(driver_email, subject, html_content)
+
+    def send_account_status_notification(self, email: str, account_data: dict, status: str) -> bool:
+        """Notify a user when their account access status changes."""
+        normalized = str(status or "").upper()
+        contexts = {
+            "PENDING_APPROVAL": {
+                "subject": "GTI Fleet account registration received",
+                "heading": "Registration received",
+                "color": "#d97706",
+                "icon": "⏳",
+                "message": "Your account has been created and is awaiting approval by an authorized fleet manager.",
+                "action": "You will receive another email when your account is approved.",
+                "show_login": False,
+            },
+            "APPROVED": {
+                "subject": "Your GTI Fleet account has been approved",
+                "heading": "Account approved",
+                "color": "#16a34a",
+                "icon": "✅",
+                "message": "Your account has been approved and is ready to use.",
+                "action": "You can now sign in using your registered email and password.",
+                "show_login": True,
+            },
+            "ACTIVATED": {
+                "subject": "Your GTI Fleet account has been reactivated",
+                "heading": "Account reactivated",
+                "color": "#16a34a",
+                "icon": "✅",
+                "message": "Access to your account has been restored.",
+                "action": "You can now sign in and continue using GTI Fleet Solutions.",
+                "show_login": True,
+            },
+            "DEACTIVATED": {
+                "subject": "Your GTI Fleet account has been deactivated",
+                "heading": "Account deactivated",
+                "color": "#dc2626",
+                "icon": "⚠️",
+                "message": "Access to your GTI Fleet Solutions account has been suspended.",
+                "action": "If you believe this was done in error, contact your fleet manager or system administrator.",
+                "show_login": False,
+            },
+            "APPROVAL_REVOKED": {
+                "subject": "Your GTI Fleet account approval has changed",
+                "heading": "Account approval pending",
+                "color": "#d97706",
+                "icon": "⏳",
+                "message": "Your account is no longer approved for access and has returned to pending status.",
+                "action": "Contact your fleet manager or system administrator if you need assistance.",
+                "show_login": False,
+            },
+        }
+        context = contexts.get(normalized)
+        if not context:
+            logger.warning("Unknown account notification status: %s", status)
+            return False
+
+        user_name = escape(str(account_data.get("full_name") or "User"))
+        role_value = account_data.get("role") or "User"
+        role_value = getattr(role_value, "value", role_value)
+        role = escape(
+            str(role_value)
+            .replace("_", " ")
+            .title()
+        )
+        country_value = account_data.get("country") or "All countries"
+        country_value = getattr(country_value, "value", country_value)
+        country = escape(
+            country_display_name(str(country_value))
+            if country_value != "All countries"
+            else str(country_value)
+        )
+        frontend_url = escape(
+            str(account_data.get("login_url") or os.environ.get("FRONTEND_URL") or "https://fleet.gtiholding.com"),
+            quote=True,
+        )
+        login_button = ""
+        if context["show_login"]:
+            login_button = f"""
+                <div style="text-align: center; margin: 28px 0;">
+                    <a href="{frontend_url}" style="background: #e3aa27; color: white; padding: 13px 26px; text-decoration: none; border-radius: 8px; font-weight: bold; display: inline-block;">
+                        Sign in to GTI Fleet
+                    </a>
+                </div>
+            """
+
+        html_content = f"""
+        <html>
+        <body style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
+            <div style="background: linear-gradient(135deg, #e3aa27, #c4912a); color: white; padding: 20px; border-radius: 8px 8px 0 0;">
+                <h2 style="margin: 0;">GTI Fleet Solutions — Account Update</h2>
+            </div>
+            <div style="padding: 20px; border: 1px solid #e5e7eb; border-top: none; border-radius: 0 0 8px 8px;">
+                <div style="text-align: center; padding: 12px;">
+                    <div style="font-size: 44px;">{context['icon']}</div>
+                    <h3 style="color: {context['color']}; margin: 8px 0;">{context['heading']}</h3>
+                </div>
+                <p>Hello <strong>{user_name}</strong>,</p>
+                <p>{context['message']}</p>
+                <table style="width: 100%; border-collapse: collapse; margin: 20px 0; background: #f8fafc;">
+                    <tr style="border-bottom: 1px solid #e5e7eb;">
+                        <td style="padding: 10px; font-weight: bold;">Role</td>
+                        <td style="padding: 10px;">{role}</td>
+                    </tr>
+                    <tr>
+                        <td style="padding: 10px; font-weight: bold;">Country</td>
+                        <td style="padding: 10px;">{country}</td>
+                    </tr>
+                </table>
+                <p>{context['action']}</p>
+                {login_button}
+                <p style="color: #6b7280; font-size: 13px;">This is an automated account notification from GTI Fleet Solutions.</p>
+            </div>
+        </body>
+        </html>
+        """
+        return self.send_email(email, context["subject"], html_content)
     
     def send_password_reset_email(self, email: str, reset_link: str, user_name: str) -> bool:
         """Send password reset email"""

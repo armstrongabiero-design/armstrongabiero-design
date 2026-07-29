@@ -3679,6 +3679,24 @@ async def get_damage_photo(photo_id: str, current_user: dict = Depends(get_curre
 
 
 # ============= AUTHENTICATION ROUTES =============
+def _send_account_status_email(user: dict, status: str) -> bool:
+    """Best-effort account email; account state changes must not depend on Resend."""
+    email = (user.get("email") or "").strip()
+    if not email:
+        logger.warning("Account status email skipped: user %s has no email", user.get("id"))
+        return False
+    return email_service.send_account_status_notification(
+        email,
+        {
+            "full_name": user.get("full_name"),
+            "role": user.get("role"),
+            "country": user.get("country"),
+            "login_url": os.environ.get("FRONTEND_URL", ""),
+        },
+        status,
+    )
+
+
 @api_router.post("/auth/register", status_code=201)
 @limiter.limit("10/minute")
 async def register_user(request: Request, input: UserSelfRegister):
@@ -3703,6 +3721,7 @@ async def register_user(request: Request, input: UserSelfRegister):
         doc["last_login"] = doc["last_login"].isoformat()
 
     await db.users.insert_one(doc)
+    _send_account_status_email(doc, "PENDING_APPROVAL")
 
     return {
         "status": "pending_approval",
@@ -3969,13 +3988,23 @@ async def approve_user(user_id: str, current_user: dict = Depends(get_current_us
         {"id": user_id},
         {"$set": {
             "is_approved": True,
-            "approved_by": current_user.get('id')
+            "approved_by": current_user.get('id'),
+            "approved_at": datetime.now(timezone.utc).isoformat(),
         }}
     )
-    if result.modified_count == 0:
+    if result.matched_count == 0:
         raise HTTPException(status_code=404, detail="User not found")
-    
-    return {"status": "success", "message": f"User approved by {current_user.get('full_name')}"}
+
+    email_sent = False
+    if not user_to_approve.get("is_approved", False):
+        approved_user = {**user_to_approve, "is_approved": True}
+        email_sent = _send_account_status_email(approved_user, "APPROVED")
+
+    return {
+        "status": "success",
+        "message": f"User approved by {current_user.get('full_name')}",
+        "email_notification_sent": email_sent,
+    }
 
 
 @api_router.get("/auth/users/pending")
@@ -4012,11 +4041,44 @@ async def update_user(user_id: str, input: UserUpdate, current_user: dict = Depe
     update_data = {k: v for k, v in input.model_dump().items() if v is not None}
     if not update_data:
         raise HTTPException(status_code=400, detail="No data to update")
-    
-    result = await db.users.update_one({"id": user_id}, {"$set": update_data})
-    if result.modified_count == 0:
+
+    existing = await db.users.find_one({"id": user_id}, {"_id": 0})
+    if not existing:
         raise HTTPException(status_code=404, detail="User not found")
-    return {"status": "success", "message": "User updated"}
+
+    result = await db.users.update_one({"id": user_id}, {"$set": update_data})
+    updated_user = {**existing, **update_data}
+
+    notification_status = None
+    approval_changed = (
+        "is_approved" in update_data
+        and bool(existing.get("is_approved", False)) != bool(update_data["is_approved"])
+    )
+    active_changed = (
+        "is_active" in update_data
+        and bool(existing.get("is_active", True)) != bool(update_data["is_active"])
+    )
+
+    if approval_changed and not update_data["is_approved"]:
+        notification_status = "APPROVAL_REVOKED"
+    elif active_changed and not update_data["is_active"]:
+        notification_status = "DEACTIVATED"
+    elif approval_changed and update_data["is_approved"]:
+        notification_status = "APPROVED"
+    elif active_changed and update_data["is_active"]:
+        notification_status = "ACTIVATED"
+
+    email_sent = (
+        _send_account_status_email(updated_user, notification_status)
+        if notification_status and result.modified_count
+        else False
+    )
+    return {
+        "status": "success",
+        "message": "User updated",
+        "account_status": notification_status,
+        "email_notification_sent": email_sent,
+    }
 
 
 @api_router.post("/auth/forgot-password")

@@ -276,10 +276,14 @@ const StaffDashboard = ({ user, token, isGroupManager }) => {
 
   const handleApproveUser = async (userId) => {
     try {
-      await axios.put(`${API}/auth/users/${userId}/approve`, {}, {
+      const { data } = await axios.put(`${API}/auth/users/${userId}/approve`, {}, {
         headers: { Authorization: `Bearer ${token}` }
       });
-      toast.success('User approved!');
+      if (data.email_notification_sent) {
+        toast.success('User approved and notification email sent.');
+      } else {
+        toast.warning('User approved, but the notification email could not be sent.');
+      }
       fetchDashboardData();
     } catch (error) {
       toast.error(error.response?.data?.detail || 'Failed to approve user');

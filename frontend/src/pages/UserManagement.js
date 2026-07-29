@@ -33,8 +33,12 @@ const UserManagement = () => {
 
   const handleApprove = async (userId) => {
     try {
-      await axios.put(`${API}/auth/users/${userId}/approve`);
-      toast.success('User approved successfully!');
+      const { data } = await axios.put(`${API}/auth/users/${userId}/approve`);
+      if (data.email_notification_sent) {
+        toast.success('User approved and notification email sent.');
+      } else {
+        toast.warning('User approved, but the notification email could not be sent.');
+      }
       fetchUsers();
     } catch (error) {
       toast.error('Failed to approve user');
@@ -43,8 +47,13 @@ const UserManagement = () => {
 
   const handleToggleActive = async (userId, currentStatus) => {
     try {
-      await axios.put(`${API}/auth/users/${userId}`, { is_active: !currentStatus });
-      toast.success(currentStatus ? 'User deactivated' : 'User activated');
+      const { data } = await axios.put(`${API}/auth/users/${userId}`, { is_active: !currentStatus });
+      const action = currentStatus ? 'deactivated' : 'activated';
+      if (data.email_notification_sent) {
+        toast.success(`User ${action} and notification email sent.`);
+      } else {
+        toast.warning(`User ${action}, but the notification email could not be sent.`);
+      }
       fetchUsers();
     } catch (error) {
       toast.error('Failed to update user');
