@@ -1,6 +1,6 @@
 import React, { useEffect, useState } from 'react';
 import axios from 'axios';
-import { Plus, RotateCw, AlertTriangle, CheckCircle, Pencil, Trash2 } from 'lucide-react';
+import { Plus, RotateCw, AlertTriangle, CheckCircle, Pencil, Trash2, Upload, Download } from 'lucide-react';
 import { toast } from 'sonner';
 import { useAuth } from '../contexts/AuthContext';
 import { Button } from '../components/ui/button';
@@ -75,6 +75,11 @@ const TireManagement = () => {
   const [deleting, setDeleting] = useState(false);
   const [rotationDialogOpen, setRotationDialogOpen] = useState(false);
   const [selectedVehicle, setSelectedVehicle] = useState(null);
+  const [bulkDialogOpen, setBulkDialogOpen] = useState(false);
+  const [bulkCountry, setBulkCountry] = useState(DEFAULT_COUNTRY_CODE);
+  const [bulkFile, setBulkFile] = useState(null);
+  const [bulkUploading, setBulkUploading] = useState(false);
+  const [bulkResult, setBulkResult] = useState(null);
 
   const [formData, setFormData] = useState(createInitialFormData);
 
@@ -158,6 +163,69 @@ const TireManagement = () => {
     }
   };
 
+  const resetBulkDialog = () => {
+    setBulkFile(null);
+    setBulkResult(null);
+    setBulkCountry(DEFAULT_COUNTRY_CODE);
+  };
+
+  const handleBulkDialogOpenChange = (open) => {
+    setBulkDialogOpen(open);
+    if (!open) resetBulkDialog();
+  };
+
+  const downloadBulkTemplate = async () => {
+    try {
+      const response = await axios.get(`${API}/tires/bulk-upload/template`, { responseType: 'blob' });
+      const url = window.URL.createObjectURL(new Blob([response.data]));
+      const link = document.createElement('a');
+      link.href = url;
+      link.setAttribute('download', 'tire-import-template.xlsx');
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+      window.URL.revokeObjectURL(url);
+    } catch {
+      toast.error('Could not download template');
+    }
+  };
+
+  const handleBulkUpload = async (e) => {
+    e.preventDefault();
+    if (!bulkFile) {
+      toast.error('Please select an Excel file to upload');
+      return;
+    }
+    const uploadData = new FormData();
+    uploadData.append('file', bulkFile);
+    uploadData.append('country', bulkCountry);
+    setBulkUploading(true);
+    setBulkResult(null);
+    try {
+      const { data } = await axios.post(`${API}/tires/bulk-upload`, uploadData, {
+        headers: { 'Content-Type': 'multipart/form-data' },
+      });
+      setBulkResult(data);
+      const imported = (data.created || 0) + (data.updated || 0);
+      if (imported > 0) {
+        fetchData();
+        toast.success(
+          `${data.created || 0} created · ${data.updated || 0} updated`
+        );
+      }
+      if (data.failed > 0 && imported === 0) {
+        toast.error('No tires were imported. Review the errors below.');
+      } else if (data.failed > 0) {
+        toast.warning(`${data.failed} row${data.failed === 1 ? '' : 's'} could not be imported`);
+      }
+    } catch (error) {
+      const detail = error.response?.data?.detail;
+      toast.error(typeof detail === 'string' ? detail : 'Bulk upload failed');
+    } finally {
+      setBulkUploading(false);
+    }
+  };
+
   const getTreadStatus = (tire) => {
     if (!tire.tread_depth_mm) return { status: 'unknown', color: 'slate' };
     if (tire.tread_depth_mm <= tire.min_tread_depth) return { status: 'Replace', color: 'red' };
@@ -191,6 +259,7 @@ const TireManagement = () => {
         </div>
         <div className="flex gap-2">
           {canEdit && (
+            <>
           <Dialog open={dialogOpen} onOpenChange={handleDialogOpenChange}>
             <DialogTrigger asChild>
               <Button data-testid="add-tire-btn" onClick={openCreateDialog}>
@@ -291,6 +360,73 @@ const TireManagement = () => {
               </form>
             </DialogContent>
           </Dialog>
+
+          <Button variant="outline" data-testid="bulk-upload-tires-btn" onClick={() => setBulkDialogOpen(true)}>
+            <Upload size={18} className="mr-2" />
+            Bulk Upload
+          </Button>
+
+          <Dialog open={bulkDialogOpen} onOpenChange={handleBulkDialogOpenChange}>
+            <DialogContent className="max-w-lg">
+              <DialogHeader>
+                <DialogTitle>Bulk Upload Tires</DialogTitle>
+                <DialogDescription>
+                  Import or update tires from Excel by serial number. Leave Registration Number blank for spares.
+                </DialogDescription>
+              </DialogHeader>
+              <form onSubmit={handleBulkUpload} className="space-y-4">
+                <div>
+                  <Label>Default country (for blank Country cells)</Label>
+                  <CountrySelect value={bulkCountry} onValueChange={setBulkCountry} />
+                </div>
+                <div>
+                  <Button type="button" variant="outline" className="w-full" onClick={downloadBulkTemplate}>
+                    <Download size={16} className="mr-2" />
+                    Download sample template (.xlsx)
+                  </Button>
+                </div>
+                <div>
+                  <Label>Excel file</Label>
+                  <Input
+                    type="file"
+                    accept=".xlsx,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+                    onChange={(e) => setBulkFile(e.target.files?.[0] || null)}
+                    required
+                  />
+                  <p className="text-xs text-slate-500 mt-1">
+                    Columns: Serial Number, Brand, Model, Size, Country, Purchase Date, Purchase Cost, Currency,
+                    Registration Number, Position, Mileage at Install, Tread Depth, Notes, Status.
+                  </p>
+                </div>
+                {bulkResult && (
+                  <div className="rounded-lg border border-slate-200 bg-slate-50 p-3 text-sm space-y-2">
+                    <p className="font-medium text-slate-800">
+                      Created {bulkResult.created} · Updated {bulkResult.updated} · Failed {bulkResult.failed}
+                    </p>
+                    {bulkResult.errors?.length > 0 && (
+                      <ul className="max-h-32 overflow-y-auto text-red-700 space-y-1">
+                        {bulkResult.errors.map((err, idx) => (
+                          <li key={idx}>
+                            {err.row ? `Row ${err.row}` : 'Import'}
+                            {err.serial_number ? ` (${err.serial_number})` : ''}: {err.message}
+                          </li>
+                        ))}
+                      </ul>
+                    )}
+                  </div>
+                )}
+                <div className="flex justify-end gap-2">
+                  <Button type="button" variant="outline" onClick={() => handleBulkDialogOpenChange(false)}>
+                    Close
+                  </Button>
+                  <Button type="submit" disabled={bulkUploading}>
+                    {bulkUploading ? 'Uploading…' : 'Upload & Import'}
+                  </Button>
+                </div>
+              </form>
+            </DialogContent>
+          </Dialog>
+            </>
           )}
         </div>
       </div>

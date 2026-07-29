@@ -11,12 +11,18 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '.
 import { Tabs, TabsList, TabsTrigger } from '../components/ui/tabs';
 import CountrySelect, { DEFAULT_COUNTRY_CODE, getCountryBadgeClass, getCountryLabel, normalizeCountryCode } from '../components/CountrySelect';
 import ConfirmDeleteDialog from '../components/ConfirmDeleteDialog';
+import FilePreviewModal from '../components/FilePreviewModal';
 import { canEditFleetRecord, canHardDelete } from '../utils/permissions';
 
 const BACKEND_URL = process.env.REACT_APP_BACKEND_URL;
 const API = `${BACKEND_URL}/api`;
 
-const ACCEPTED_FILE_TYPES = 'image/jpeg,image/png,image/webp,image/gif,application/pdf';
+const ACCEPTED_FILE_TYPES =
+  'image/jpeg,image/png,image/webp,image/gif,application/pdf,' +
+  '.doc,.docx,.xls,.xlsx,.ppt,.pptx,.csv,' +
+  'application/msword,application/vnd.openxmlformats-officedocument.wordprocessingml.document,' +
+  'application/vnd.ms-excel,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,' +
+  'application/vnd.ms-powerpoint,application/vnd.openxmlformats-officedocument.presentationml.presentation,text/csv';
 
 const DOCUMENT_TABS = [
   { value: 'ALL', label: 'All' },
@@ -72,7 +78,7 @@ const documentToFormData = (doc) => ({
 });
 
 const Documents = () => {
-  const { user } = useAuth();
+  const { user, token } = useAuth();
   const canEdit = canEditFleetRecord(user?.role);
   const canDelete = canHardDelete(user?.role, 'document');
 
@@ -96,6 +102,7 @@ const Documents = () => {
   const [bulkFiles, setBulkFiles] = useState([]);
   const [bulkUploading, setBulkUploading] = useState(false);
   const [bulkResult, setBulkResult] = useState(null);
+  const [preview, setPreview] = useState(null);
 
   const fetchData = useCallback(async (documentType = activeTab) => {
     try {
@@ -227,7 +234,12 @@ const Documents = () => {
     try {
       const { data } = await axios.get(`${API}/documents/${doc.id}/download-url`);
       const url = data.url.startsWith('http') ? data.url : `${BACKEND_URL}${data.url}`;
-      window.open(url, '_blank', 'noopener,noreferrer');
+      setPreview({
+        url,
+        filename: doc.original_filename || doc.document_number || 'document',
+        contentType: doc.content_type || '',
+        title: getDocumentTypeLabel(doc.document_type),
+      });
     } catch {
       toast.error('Could not open document');
     }
@@ -685,6 +697,16 @@ const Documents = () => {
         loading={deleting}
         title="Delete document?"
         description={deleteTarget ? `Permanently delete ${getDocumentTypeLabel(deleteTarget.document_type)} #${deleteTarget.document_number}? The stored file will also be removed.` : undefined}
+      />
+
+      <FilePreviewModal
+        open={!!preview}
+        onOpenChange={(open) => !open && setPreview(null)}
+        url={preview?.url}
+        filename={preview?.filename}
+        contentType={preview?.contentType}
+        title={preview?.title || 'Document preview'}
+        authToken={token}
       />
     </div>
   );

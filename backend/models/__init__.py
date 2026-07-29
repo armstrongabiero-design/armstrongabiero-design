@@ -5,7 +5,7 @@ from .enums import (
     MaintenanceType, WorkshopType, DocumentType, TransactionType,
     TirePosition, TireStatus, VendorCategory, ExpenseCategory,
     RequestStatus, RequestPriority, ChecklistItemStatus,
-    AlertType, AlertSeverity, ComplianceStatus,
+    AlertType, AlertSeverity, ComplianceStatus, WorkStatus,
 )
 
 # Auth models
@@ -24,7 +24,8 @@ from .fleet import (
 # Maintenance models
 from .maintenance import (
     MaintenanceRecord, MaintenanceRecordCreate, MaintenanceRecordUpdate,
-    WorkshopJob, WorkshopJobCreate,
+    WorkshopJob, WorkshopJobCreate, WorkshopJobUpdate,
+    WorkshopMaster, WorkshopMasterCreate, WorkshopMasterUpdate,
     MaintenanceRequest, MaintenanceRequestCreate, MaintenanceRequestUpdate, MaintenanceRequestApproval,
     ChecklistItem, PreTripChecklist, PreTripChecklistCreate, PreTripChecklistUpdate,
     FleetManager, FleetManagerCreate,

@@ -318,6 +318,32 @@ class EmailService:
         """
         return self.send_email(email, subject, html_content)
 
+    def send_daily_compliance_reminder(self, email: str, data: dict) -> bool:
+        """Remind a driver to complete Daily Logbook and/or Pre-Trip Checklist."""
+        missing = data.get("missing") or ["Daily Logbook", "Pre-Trip Checklist"]
+        missing_html = "".join(f"<li>{item}</li>" for item in missing)
+        subject = f"Reminder: Complete {', '.join(missing)}"
+        login_url = data.get("login_url") or "https://fleet.gtiholding.com"
+        html_content = f"""
+        <html>
+        <body style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
+            <div style="background: linear-gradient(135deg, #e3aa27, #c4912a); color: white; padding: 20px; border-radius: 8px 8px 0 0;">
+                <h2 style="margin: 0;">GTI Fleet Solutions — Daily Reminder</h2>
+            </div>
+            <div style="padding: 20px; border: 1px solid #e5e7eb; border-top: none; border-radius: 0 0 8px 8px;">
+                <p>Hello {data.get('driver_name', 'Driver')},</p>
+                <p>Please complete the following for <strong>{data.get('local_date', 'today')}</strong>:</p>
+                <ul>{missing_html}</ul>
+                <p>This reminder stops automatically once both the Daily Logbook and Pre-Trip Checklist are completed.</p>
+                <p style="margin-top: 24px;">
+                    <a href="{login_url}" style="background: #e3aa27; color: white; padding: 12px 24px; text-decoration: none; border-radius: 8px; font-weight: bold;">Open GTI Fleet</a>
+                </p>
+            </div>
+        </body>
+        </html>
+        """
+        return self.send_email(email, subject, html_content)
+
 
 # Singleton instance
 email_service = EmailService()

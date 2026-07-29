@@ -1,6 +1,8 @@
 """API authentication middleware: require Bearer JWT for /api except allowlisted public routes."""
 from __future__ import annotations
 
+import os
+
 from jose import JWTError
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.requests import Request
@@ -53,6 +55,16 @@ class JWTAuthMiddleware(BaseHTTPMiddleware):
             return await call_next(request)
         if is_public_api_route(request.method, path):
             return await call_next(request)
+
+        # Cron/internal reminder runner may authenticate via shared token
+        norm = _normalize_path(path)
+        if request.method == "POST" and norm == "/api/reminders/run":
+            cron_token = os.environ.get("REMINDER_CRON_TOKEN", "").strip()
+            header_token = request.headers.get("X-Reminder-Token", "")
+            if cron_token and header_token and header_token == cron_token:
+                request.state.jwt_payload = None
+                return await call_next(request)
+
         auth = request.headers.get("Authorization")
         if not auth or not auth.startswith("Bearer "):
             return JSONResponse(

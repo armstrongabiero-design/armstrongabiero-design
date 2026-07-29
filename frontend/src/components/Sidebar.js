@@ -4,14 +4,14 @@ import {
   Truck, Users, Wrench, Package, Droplet, DollarSign, FileText, 
   TrendingUp, AlertTriangle, Menu, X, ClipboardCheck, FileCheck,
   MapPin, Book, CircleDot, Building, BarChart3, LogOut, Shield, UserCog,
-  Gauge, User
+  Gauge, User, Warehouse, Database, Bell
 } from 'lucide-react';
 import { useAuth } from '../contexts/AuthContext';
 
 const Sidebar = ({ open, setOpen }) => {
   const location = useLocation();
   const navigate = useNavigate();
-  const { user, logout, isGroupManager, isManager, isStaff, isDriverOrUser } = useAuth();
+  const { user, logout, isManager, isDriverOrUser } = useAuth();
 
   const handleLogout = () => {
     logout();
@@ -43,8 +43,6 @@ const Sidebar = ({ open, setOpen }) => {
   // Define menu items based on roles
   const getMenuItems = () => {
     const isDriverUser = isDriverOrUser && isDriverOrUser();
-    const isStaffMember = isStaff && isStaff();
-    const isGroupMgr = isGroupManager && isGroupManager();
     const isMgr = isManager && isManager();
 
     if (isDriverUser) {
@@ -73,6 +71,7 @@ const Sidebar = ({ open, setOpen }) => {
       { divider: true, label: 'Operations' },
       { path: '/maintenance', icon: Wrench, label: 'Maintenance Records' },
       { path: '/maintenance-requests', icon: FileCheck, label: 'Maintenance Requests' },
+      { path: '/workshop', icon: Warehouse, label: 'Workshop / Garage' },
       { path: '/tires', icon: CircleDot, label: 'Tire Management' },
       { path: '/inventory', icon: Package, label: 'Inventory' },
       { divider: true, label: 'Finance' },
@@ -85,12 +84,15 @@ const Sidebar = ({ open, setOpen }) => {
       { path: '/safety', icon: AlertTriangle, label: 'Safety' },
       { divider: true, label: 'Analytics' },
       { path: '/reports', icon: BarChart3, label: 'Reports & TCO' },
+      { divider: true, label: 'Configuration' },
+      { path: '/master-data', icon: Database, label: 'Master Data' },
     ];
 
-    // Add admin section for managers
+    // Add admin section for managers (GFM + Fleet Manager)
     if (isMgr) {
       items.push({ divider: true, label: 'Admin' });
       items.push({ path: '/users', icon: UserCog, label: 'User Management' });
+      items.push({ path: '/reminder-settings', icon: Bell, label: 'Driver Reminders' });
     }
 
     return items;

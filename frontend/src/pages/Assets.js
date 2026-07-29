@@ -31,6 +31,11 @@ const assetToFormData = (asset) => ({
   depreciation_rate: asset.depreciation_rate,
 });
 
+const formatUsd = (value) => {
+  if (value == null || Number.isNaN(Number(value))) return null;
+  return `$${Number(value).toLocaleString()}`;
+};
+
 const Assets = () => {
   const { user } = useAuth();
   const canEdit = canEditFleetRecord(user?.role);
@@ -40,9 +45,11 @@ const Assets = () => {
   const [vehicles, setVehicles] = useState([]);
   const [loading, setLoading] = useState(true);
   const [dialogOpen, setDialogOpen] = useState(false);
+  const [predictDialogOpen, setPredictDialogOpen] = useState(false);
   const [predicting, setPredicting] = useState(false);
   const [selectedAsset, setSelectedAsset] = useState('');
   const [editingId, setEditingId] = useState(null);
+  const [editingPredictedResale, setEditingPredictedResale] = useState(null);
   const [deleteTarget, setDeleteTarget] = useState(null);
   const [deleting, setDeleting] = useState(false);
 
@@ -71,18 +78,21 @@ const Assets = () => {
     setDialogOpen(open);
     if (!open) {
       setEditingId(null);
+      setEditingPredictedResale(null);
       setFormData(createInitialFormData());
     }
   };
 
   const openCreateDialog = () => {
     setEditingId(null);
+    setEditingPredictedResale(null);
     setFormData(createInitialFormData());
     setDialogOpen(true);
   };
 
   const openEditDialog = (asset) => {
     setEditingId(asset.id);
+    setEditingPredictedResale(asset.predicted_resale_value ?? null);
     setFormData(assetToFormData(asset));
     setDialogOpen(true);
   };
@@ -133,20 +143,37 @@ const Assets = () => {
     setPredicting(true);
     try {
       const response = await axios.post(`${API}/assets/${selectedAsset}/predict-resale`);
+      const predicted = response.data?.predicted_value_usd;
+      if (predicted == null) {
+        toast.error('Prediction failed — no value returned');
+        return;
+      }
       toast.success(
         <div>
-          <p className="font-semibold">AI Prediction Complete</p>
-          <p className="text-sm mt-1">Predicted Value: ${response.data.predicted_value_usd?.toLocaleString()}</p>
-          <p className="text-xs mt-1">Market Demand: {response.data.market_demand}</p>
+          <p className="font-semibold">Prediction Complete</p>
+          <p className="text-sm mt-1">Predicted Value: ${Number(predicted).toLocaleString()}</p>
+          {response.data.market_demand && (
+            <p className="text-xs mt-1">Market Demand: {response.data.market_demand}</p>
+          )}
+          {response.data.method && (
+            <p className="text-xs mt-1 text-slate-500">Method: {response.data.method}</p>
+          )}
         </div>
       );
-      fetchData();
+      await fetchData();
+      setPredictDialogOpen(false);
+      setSelectedAsset('');
     } catch (error) {
-      toast.error('Prediction failed');
+      const detail = error.response?.data?.detail;
+      toast.error(typeof detail === 'string' ? detail : 'Prediction failed');
     } finally {
       setPredicting(false);
     }
   };
+
+  if (loading) {
+    return <div className="p-8 text-center">Loading assets...</div>;
+  }
 
   return (
     <div className="p-6 lg:p-8" data-testid="assets-page">
@@ -157,7 +184,7 @@ const Assets = () => {
         </div>
         <div className="flex gap-2">
           {canEdit && (
-            <Dialog>
+            <Dialog open={predictDialogOpen} onOpenChange={setPredictDialogOpen}>
               <DialogTrigger asChild>
                 <Button variant="outline" data-testid="predict-resale-btn">
                   <Sparkles size={18} className="mr-2" />
@@ -166,8 +193,10 @@ const Assets = () => {
               </DialogTrigger>
               <DialogContent>
                 <DialogHeader>
-                  <DialogTitle>AI Resale Value Prediction</DialogTitle>
-                  <DialogDescription>Select an asset to predict its market resale value using AI.</DialogDescription>
+                  <DialogTitle>Resale Value Prediction</DialogTitle>
+                  <DialogDescription>
+                    Select an asset to estimate its market resale value (Gemini AI with formula fallback).
+                  </DialogDescription>
                 </DialogHeader>
                 <div className="space-y-4">
                   <div>
@@ -258,6 +287,17 @@ const Assets = () => {
               <Input type="number" step="0.01" min="0" max="1" value={formData.depreciation_rate} onChange={(e) => setFormData({...formData, depreciation_rate: e.target.value})} />
               <p className="text-xs text-slate-500 mt-1">Default: 0.15 (15% per year)</p>
             </div>
+            {editingId && (
+              <div>
+                <Label>Predicted Resale Value (USD)</Label>
+                <Input
+                  type="text"
+                  readOnly
+                  value={editingPredictedResale != null ? formatUsd(editingPredictedResale) : 'Not predicted yet'}
+                  className="bg-slate-50"
+                />
+              </div>
+            )}
             <div className="flex justify-end gap-2 mt-6">
               <Button type="button" variant="outline" onClick={() => handleDialogOpenChange(false)}>Cancel</Button>
               <Button type="submit">{editingId ? 'Save Changes' : 'Add Asset'}</Button>
@@ -308,10 +348,10 @@ const Assets = () => {
                     <td className="font-semibold">${asset.current_value_usd.toLocaleString()}</td>
                     <td>{(asset.depreciation_rate * 100).toFixed(0)}%</td>
                     <td>
-                      {asset.predicted_resale_value ? (
+                      {asset.predicted_resale_value != null ? (
                         <div className="flex items-center gap-1">
                           <TrendingUp size={14} className="text-green-600" />
-                          <span className="font-semibold">${asset.predicted_resale_value.toLocaleString()}</span>
+                          <span className="font-semibold">${Number(asset.predicted_resale_value).toLocaleString()}</span>
                         </div>
                       ) : (
                         <span className="text-slate-400">-</span>

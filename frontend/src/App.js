@@ -25,7 +25,11 @@ import AdminRegister from './pages/AdminRegister';
 import ForgotPassword from './pages/ForgotPassword';
 import ResetPassword from './pages/ResetPassword';
 import UserManagement from './pages/UserManagement';
+import Workshop from './pages/Workshop';
+import MasterData from './pages/MasterData';
+import ReminderSettings from './pages/ReminderSettings';
 import Sidebar from './components/Sidebar';
+import NotificationBell from './components/NotificationBell';
 import { Toaster } from './components/ui/sonner';
 import { Button } from './components/ui/button';
 
@@ -104,6 +108,9 @@ const AppLayout = () => {
     <div className="flex h-screen bg-slate-50">
       <Sidebar open={sidebarOpen} setOpen={setSidebarOpen} />
       <main className={`flex-1 overflow-y-auto transition-all duration-300 ${sidebarOpen ? 'ml-64' : 'ml-0'}`}>
+        <div className="sticky top-0 z-20 flex justify-end px-4 py-2 bg-slate-50/90 backdrop-blur border-b border-slate-100">
+          <NotificationBell />
+        </div>
         <Routes>
           <Route path="/" element={<Dashboard />} />
           <Route path="/vehicles" element={<Vehicles />} />
@@ -111,6 +118,9 @@ const AppLayout = () => {
           <Route path="/fleet-map" element={<VehicleMap />} />
           <Route path="/maintenance" element={<Maintenance />} />
           <Route path="/maintenance-requests" element={<MaintenanceRequests />} />
+          <Route path="/workshop" element={<Workshop />} />
+          <Route path="/master-data" element={<MasterData />} />
+          <Route path="/reminder-settings" element={<ReminderSettings />} />
           <Route path="/pre-trip-checklist" element={<PreTripChecklist />} />
           <Route path="/tires" element={<TireManagement />} />
           <Route path="/logbook" element={<DriverLogbook />} />

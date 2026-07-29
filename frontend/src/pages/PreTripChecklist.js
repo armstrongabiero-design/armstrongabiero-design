@@ -16,6 +16,7 @@ import {
   DropdownMenuTrigger,
 } from '../components/ui/dropdown-menu';
 import ConfirmDeleteDialog from '../components/ConfirmDeleteDialog';
+import FilePreviewModal from '../components/FilePreviewModal';
 import { completeDialogSubmit } from '../utils/formUtils';
 import { downloadExport } from '../utils/downloadExport';
 import { canEditPreTripChecklist, canHardDelete } from '../utils/permissions';
@@ -86,6 +87,7 @@ const PreTripChecklist = () => {
   const [dialogOpen, setDialogOpen] = useState(false);
   const [checklistStatus, setChecklistStatus] = useState(null);
   const [uploadingPhoto, setUploadingPhoto] = useState(false);
+  const [photoPreview, setPhotoPreview] = useState(null);
   const [editingId, setEditingId] = useState(null);
   const [deleteTarget, setDeleteTarget] = useState(null);
   const [deleting, setDeleting] = useState(false);
@@ -485,7 +487,20 @@ const PreTripChecklist = () => {
               {formData.damage_photos.length > 0 && (
                 <div className="flex gap-2 mt-2 flex-wrap">
                   {formData.damage_photos.map((url) => (
-                    <img key={url} src={url} alt="Damage photo" className="w-20 h-20 object-cover rounded" />
+                    <button
+                      key={url}
+                      type="button"
+                      className="p-0 border-0 bg-transparent cursor-pointer"
+                      onClick={() =>
+                        setPhotoPreview({
+                          url: url.startsWith('http') ? url : `${BACKEND_URL}${url}`,
+                          filename: 'damage-photo.jpg',
+                          contentType: 'image/jpeg',
+                        })
+                      }
+                    >
+                      <img src={url.startsWith('http') ? url : `${BACKEND_URL}${url}`} alt="Damage photo" className="w-20 h-20 object-cover rounded" />
+                    </button>
                   ))}
                 </div>
               )}
@@ -515,6 +530,16 @@ const PreTripChecklist = () => {
         description="Permanently delete this pre-trip checklist? This cannot be undone."
         onConfirm={handleDelete}
         loading={deleting}
+      />
+
+      <FilePreviewModal
+        open={!!photoPreview}
+        onOpenChange={(open) => !open && setPhotoPreview(null)}
+        url={photoPreview?.url}
+        filename={photoPreview?.filename}
+        contentType={photoPreview?.contentType}
+        title="Damage photo"
+        authToken={token}
       />
 
       <div className="fleet-card">

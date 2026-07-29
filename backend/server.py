@@ -1,4 +1,5 @@
 from contextlib import asynccontextmanager
+import asyncio
 import base64
 import logging
 import os
@@ -19,7 +20,7 @@ from slowapi.middleware import SlowAPIMiddleware
 from slowapi.util import get_remote_address
 from starlette.middleware.cors import CORSMiddleware
 
-from auth_deps import get_current_user, get_current_user_validated, require_group_manager
+from auth_deps import get_current_user, get_current_user_validated, require_group_manager, require_manager
 from auth_service import (
     assert_jwt_configuration,
     access_token_payload_from_user_record,
@@ -29,7 +30,7 @@ from auth_service import (
 )
 from currency_utils import currency_converter
 from country_utils import normalize_country_code, country_filter_query
-from ai_services import ai_service
+from ai_services import ai_service, formula_resale_value
 from email_service import email_service
 from database import db, client
 from models import (
@@ -37,7 +38,8 @@ from models import (
     Vehicle, VehicleCreate, VehicleUpdate,
     Driver, DriverCreate, DriverUpdate,
     MaintenanceRecord, MaintenanceRecordCreate, MaintenanceRecordUpdate,
-    WorkshopJob, WorkshopJobCreate,
+    WorkshopJob, WorkshopJobCreate, WorkshopJobUpdate,
+    WorkshopMaster, WorkshopMasterCreate, WorkshopMasterUpdate,
     InventoryItem, InventoryItemCreate, InventoryItemUpdate,
     InventoryTransaction, InventoryTransactionCreate,
     FuelTransaction, FuelTransactionCreate, FuelTransactionUpdate,
@@ -47,7 +49,7 @@ from models import (
     SafetyIncident, SafetyIncidentCreate, SafetyIncidentUpdate,
     ExchangeRate, ExchangeRateCreate,
     AIPrediction, AIPredictionCreate,
-    CurrencyEnum, DocumentType,
+    CurrencyEnum, DocumentType, WorkStatus,
     MaintenanceRequest, MaintenanceRequestCreate, MaintenanceRequestUpdate, MaintenanceRequestApproval,
     PreTripChecklist, PreTripChecklistCreate, PreTripChecklistUpdate, ChecklistItem, ChecklistItemStatus,
     FleetManager, FleetManagerCreate, RequestStatus, RequestPriority,
@@ -68,6 +70,9 @@ from driver_bulk_import import build_driver_template_workbook, parse_driver_bulk
 from logbook_bulk_import import build_logbook_template_workbook, parse_logbook_bulk_upload
 from document_bulk_import import build_document_template_workbook, parse_document_bulk_upload
 from maintenance_bulk_import import build_maintenance_template_workbook, parse_maintenance_bulk_upload
+from tire_bulk_import import build_tire_template_workbook, parse_tire_bulk_upload
+from inventory_bulk_import import build_inventory_template_workbook, parse_inventory_bulk_upload
+from expenditure_bulk_import import build_expenditure_template_workbook, parse_expenditure_bulk_upload
 from export_utils import build_export_bytes, export_filename, export_mime
 from security_middleware import JWTAuthMiddleware
 
@@ -165,7 +170,34 @@ async def lifespan(app: FastAPI):
             logging.getLogger(__name__).info("Migrated %s maintenance type(s)", n)
     except Exception as exc:
         logging.getLogger(__name__).warning("Maintenance type migration skipped: %s", exc)
+
+    reminder_task = None
+    if os.environ.get("DRIVER_REMINDERS_ENABLED", "true").lower() not in ("0", "false", "no"):
+        async def _reminder_loop():
+            from driver_reminders import run_reminder_pass
+            await asyncio.sleep(15)
+            while True:
+                try:
+                    stats = await run_reminder_pass(
+                        db,
+                        email_service,
+                        frontend_url=os.environ.get("FRONTEND_URL", ""),
+                    )
+                    if stats.get("reminders_sent"):
+                        logger.info("Driver reminders: %s", stats)
+                except Exception as exc:
+                    logger.warning("Driver reminder pass failed: %s", exc)
+                await asyncio.sleep(60)
+
+        reminder_task = asyncio.create_task(_reminder_loop())
+
     yield
+    if reminder_task:
+        reminder_task.cancel()
+        try:
+            await reminder_task
+        except asyncio.CancelledError:
+            pass
     client.close()
 
 
@@ -748,37 +780,74 @@ async def delete_driver(
 
 
 # ============= MAINTENANCE ROUTES =============
+def _normalize_work_status(value) -> Optional[str]:
+    if value is None:
+        return None
+    return value.value if hasattr(value, "value") else str(value)
+
+
+def _validate_etc_or_raise(work_status, etc_datetime) -> None:
+    status_val = _normalize_work_status(work_status)
+    if status_val == WorkStatus.ETC.value and not etc_datetime:
+        raise HTTPException(
+            status_code=400,
+            detail="ETC datetime is required when Work Status is Estimated Time of Completion (ETC)",
+        )
+
+
 @api_router.post("/maintenance", response_model=MaintenanceRecord)
 async def create_maintenance(input: MaintenanceRecordCreate):
     cost_usd = currency_converter.convert(input.cost, input.currency, CurrencyEnum.USD)
-    
     maintenance_data = input.model_dump()
-    maintenance_data['cost_usd'] = cost_usd
+    maintenance_data["cost_usd"] = cost_usd
+    _validate_etc_or_raise(maintenance_data.get("work_status"), maintenance_data.get("etc_datetime"))
+    if _normalize_work_status(maintenance_data.get("work_status")) == WorkStatus.WORK_COMPLETED.value:
+        maintenance_data["completed_date"] = datetime.now(timezone.utc)
     maintenance = MaintenanceRecord(**maintenance_data)
-    
+
     doc = maintenance.model_dump()
-    doc['scheduled_date'] = doc['scheduled_date'].isoformat()
-    if doc.get('completed_date'):
-        doc['completed_date'] = doc['completed_date'].isoformat()
-    if doc.get('next_due_date'):
-        doc['next_due_date'] = doc['next_due_date'].isoformat()
-    doc['created_at'] = doc['created_at'].isoformat()
-    
+    for field in ("scheduled_date", "completed_date", "next_due_date", "etc_datetime", "created_at"):
+        if doc.get(field):
+            doc[field] = doc[field].isoformat()
+    if hasattr(doc.get("work_status"), "value"):
+        doc["work_status"] = doc["work_status"].value
+
     await db.maintenance_records.insert_one(doc)
     return maintenance
 
 
 @api_router.get("/maintenance", response_model=List[MaintenanceRecord])
-async def get_maintenance_records(vehicle_id: Optional[str] = None):
-    query = {}
+async def get_maintenance_records(
+    vehicle_id: Optional[str] = None,
+    work_status: Optional[str] = None,
+):
+    query: dict = {}
     if vehicle_id:
-        query['vehicle_id'] = vehicle_id
-    
+        query["vehicle_id"] = vehicle_id
+    if work_status == "incomplete":
+        incomplete_clause = {
+            "$or": [
+                {"work_status": {"$in": [
+                    WorkStatus.WORK_IN_PROGRESS.value,
+                    WorkStatus.ETC.value,
+                    WorkStatus.ADDITIONAL_WORK_REQUIRED.value,
+                ]}},
+                {"work_status": {"$exists": False}, "completed_date": None},
+            ]
+        }
+        query = {"$and": [query, incomplete_clause]} if query else incomplete_clause
+    elif work_status:
+        query["work_status"] = work_status
+
     records = await db.maintenance_records.find(query, {"_id": 0}).to_list(1000)
     for r in records:
-        for field in ('scheduled_date', 'completed_date', 'next_due_date', 'created_at'):
+        for field in ("scheduled_date", "completed_date", "next_due_date", "etc_datetime", "created_at"):
             if r.get(field) and isinstance(r[field], str):
                 r[field] = datetime.fromisoformat(r[field])
+        if not r.get("work_status"):
+            r["work_status"] = (
+                WorkStatus.WORK_COMPLETED.value if r.get("completed_date") else WorkStatus.WORK_IN_PROGRESS.value
+            )
     return records
 
 
@@ -898,17 +967,32 @@ async def update_maintenance(
     if not update_data:
         raise HTTPException(status_code=400, detail="No fields to update")
 
+    merged_status = update_data.get("work_status", existing.get("work_status"))
+    merged_etc = update_data.get("etc_datetime", existing.get("etc_datetime"))
+    _validate_etc_or_raise(merged_status, merged_etc)
+
     if "cost" in update_data or "currency" in update_data:
         cost = update_data.get("cost", existing.get("cost"))
         currency = update_data.get("currency", existing.get("currency"))
         update_data["cost_usd"] = currency_converter.convert(cost, currency, CurrencyEnum.USD)
 
+    if _normalize_work_status(merged_status) == WorkStatus.WORK_COMPLETED.value:
+        if not update_data.get("completed_date") and not existing.get("completed_date"):
+            update_data["completed_date"] = datetime.now(timezone.utc)
+
+    if hasattr(update_data.get("work_status"), "value"):
+        update_data["work_status"] = update_data["work_status"].value
+
     update_data = _mongo_update_payload(update_data)
     await db.maintenance_records.update_one({"id": record_id}, {"$set": update_data})
     updated = await db.maintenance_records.find_one({"id": record_id}, {"_id": 0})
-    for field in ("scheduled_date", "completed_date", "next_due_date", "created_at"):
+    for field in ("scheduled_date", "completed_date", "next_due_date", "etc_datetime", "created_at"):
         if updated.get(field) and isinstance(updated[field], str):
             updated[field] = datetime.fromisoformat(updated[field])
+    if not updated.get("work_status"):
+        updated["work_status"] = (
+            WorkStatus.WORK_COMPLETED.value if updated.get("completed_date") else WorkStatus.WORK_IN_PROGRESS.value
+        )
     return MaintenanceRecord(**updated)
 
 
@@ -955,43 +1039,206 @@ async def predict_maintenance(vehicle_id: str):
 
 # ============= WORKSHOP ROUTES =============
 @api_router.post("/workshops", response_model=WorkshopJob)
-async def create_workshop_job(input: WorkshopJobCreate):
+async def create_workshop_job(
+    input: WorkshopJobCreate,
+    current_user: dict = Depends(_require_staff),
+):
     cost_usd = currency_converter.convert(input.cost, input.currency, CurrencyEnum.USD)
-    
     job_data = input.model_dump()
-    job_data['cost_usd'] = cost_usd
+    job_data["cost_usd"] = cost_usd
+    _validate_etc_or_raise(job_data.get("work_status"), job_data.get("etc_datetime"))
+    if _normalize_work_status(job_data.get("work_status")) == WorkStatus.WORK_COMPLETED.value:
+        job_data["actual_completion"] = datetime.now(timezone.utc)
+    job_data["status"] = _normalize_work_status(job_data.get("work_status")) or WorkStatus.WORK_IN_PROGRESS.value
     job = WorkshopJob(**job_data)
-    
+
     doc = job.model_dump()
-    doc['start_date'] = doc['start_date'].isoformat()
-    doc['estimated_completion'] = doc['estimated_completion'].isoformat()
-    if doc.get('actual_completion'):
-        doc['actual_completion'] = doc['actual_completion'].isoformat()
-    doc['created_at'] = doc['created_at'].isoformat()
-    
+    for field in ("start_date", "estimated_completion", "actual_completion", "etc_datetime", "created_at"):
+        if doc.get(field):
+            doc[field] = doc[field].isoformat()
+    if hasattr(doc.get("work_status"), "value"):
+        doc["work_status"] = doc["work_status"].value
+
     await db.workshop_jobs.insert_one(doc)
     return job
 
 
 @api_router.get("/workshops", response_model=List[WorkshopJob])
-async def get_workshop_jobs(vehicle_id: Optional[str] = None, status: Optional[str] = None):
+async def get_workshop_jobs(
+    vehicle_id: Optional[str] = None,
+    status: Optional[str] = None,
+    work_status: Optional[str] = None,
+    country: Optional[str] = None,
+):
     query = {}
     if vehicle_id:
-        query['vehicle_id'] = vehicle_id
-    if status:
-        query['status'] = status
-    
+        query["vehicle_id"] = vehicle_id
+    if work_status:
+        query["work_status"] = work_status
+    elif status:
+        query["$or"] = [{"work_status": status}, {"status": status}]
+
     jobs = await db.workshop_jobs.find(query, {"_id": 0}).to_list(1000)
     for j in jobs:
-        if isinstance(j.get('start_date'), str):
-            j['start_date'] = datetime.fromisoformat(j['start_date'])
-        if isinstance(j.get('estimated_completion'), str):
-            j['estimated_completion'] = datetime.fromisoformat(j['estimated_completion'])
-        if j.get('actual_completion') and isinstance(j['actual_completion'], str):
-            j['actual_completion'] = datetime.fromisoformat(j['actual_completion'])
-        if isinstance(j.get('created_at'), str):
-            j['created_at'] = datetime.fromisoformat(j['created_at'])
+        for field in ("start_date", "estimated_completion", "actual_completion", "etc_datetime", "created_at"):
+            if j.get(field) and isinstance(j[field], str):
+                j[field] = datetime.fromisoformat(j[field])
+        if not j.get("work_status"):
+            legacy = j.get("status") or WorkStatus.WORK_IN_PROGRESS.value
+            if legacy == "IN_PROGRESS":
+                j["work_status"] = WorkStatus.WORK_IN_PROGRESS.value
+            elif legacy in ("COMPLETED", "WORK_COMPLETED"):
+                j["work_status"] = WorkStatus.WORK_COMPLETED.value
+            else:
+                j["work_status"] = legacy
     return jobs
+
+
+@api_router.put("/workshops/{job_id}", response_model=WorkshopJob)
+async def update_workshop_job(
+    job_id: str,
+    input: WorkshopJobUpdate,
+    current_user: dict = Depends(_require_staff),
+):
+    existing = await db.workshop_jobs.find_one({"id": job_id}, {"_id": 0})
+    if not existing:
+        raise HTTPException(status_code=404, detail="Workshop job not found")
+
+    update_data = input.model_dump(exclude_none=True)
+    if not update_data:
+        raise HTTPException(status_code=400, detail="No fields to update")
+
+    merged_status = update_data.get("work_status", existing.get("work_status"))
+    merged_etc = update_data.get("etc_datetime", existing.get("etc_datetime"))
+    _validate_etc_or_raise(merged_status, merged_etc)
+
+    if "cost" in update_data or "currency" in update_data:
+        cost = update_data.get("cost", existing.get("cost"))
+        currency = update_data.get("currency", existing.get("currency"))
+        update_data["cost_usd"] = currency_converter.convert(cost, currency, CurrencyEnum.USD)
+
+    if _normalize_work_status(merged_status) == WorkStatus.WORK_COMPLETED.value:
+        if not update_data.get("actual_completion") and not existing.get("actual_completion"):
+            update_data["actual_completion"] = datetime.now(timezone.utc)
+        update_data["status"] = WorkStatus.WORK_COMPLETED.value
+    elif "work_status" in update_data:
+        update_data["status"] = _normalize_work_status(update_data["work_status"])
+
+    if hasattr(update_data.get("work_status"), "value"):
+        update_data["work_status"] = update_data["work_status"].value
+
+    update_data = _mongo_update_payload(update_data)
+    await db.workshop_jobs.update_one({"id": job_id}, {"$set": update_data})
+    updated = await db.workshop_jobs.find_one({"id": job_id}, {"_id": 0})
+    for field in ("start_date", "estimated_completion", "actual_completion", "etc_datetime", "created_at"):
+        if updated.get(field) and isinstance(updated[field], str):
+            updated[field] = datetime.fromisoformat(updated[field])
+    return WorkshopJob(**updated)
+
+
+@api_router.delete("/workshops/{job_id}")
+async def delete_workshop_job(
+    job_id: str,
+    current_user: dict = Depends(_require_staff),
+):
+    existing = await db.workshop_jobs.find_one({"id": job_id}, {"_id": 0})
+    if not existing:
+        raise HTTPException(status_code=404, detail="Workshop job not found")
+    await db.workshop_jobs.delete_one({"id": job_id})
+    await write_audit_log(
+        action="hard_delete",
+        entity_type="workshop_job",
+        entity_id=job_id,
+        actor_id=current_user["id"],
+        actor_role=current_user.get("role", ""),
+        actor_email=current_user.get("email"),
+        details={"vehicle_id": existing.get("vehicle_id"), "workshop_name": existing.get("workshop_name")},
+    )
+    return {"message": "Workshop job deleted successfully"}
+
+
+# ============= MASTER DATA — WORKSHOPS =============
+@api_router.get("/master/workshops", response_model=List[WorkshopMaster])
+async def list_master_workshops(
+    country: Optional[str] = None,
+    active_only: bool = False,
+    current_user: dict = Depends(_require_staff),
+):
+    query: dict = {}
+    if country:
+        query["country"] = normalize_country_code(country)
+    if active_only:
+        query["active"] = True
+    items = await db.master_workshops.find(query, {"_id": 0}).sort("name", 1).to_list(1000)
+    for item in items:
+        if isinstance(item.get("created_at"), str):
+            item["created_at"] = datetime.fromisoformat(item["created_at"])
+    return items
+
+
+@api_router.post("/master/workshops", response_model=WorkshopMaster)
+async def create_master_workshop(
+    input: WorkshopMasterCreate,
+    current_user: dict = Depends(_require_staff),
+):
+    workshop = WorkshopMaster(**input.model_dump())
+    doc = workshop.model_dump()
+    if hasattr(doc.get("workshop_type"), "value"):
+        doc["workshop_type"] = doc["workshop_type"].value
+    doc["created_at"] = doc["created_at"].isoformat()
+    await db.master_workshops.insert_one(doc)
+    await write_audit_log(
+        action="create",
+        entity_type="master_workshop",
+        entity_id=workshop.id,
+        actor_id=current_user["id"],
+        actor_role=current_user.get("role", ""),
+        actor_email=current_user.get("email"),
+        details={"name": workshop.name},
+    )
+    return workshop
+
+
+@api_router.put("/master/workshops/{workshop_id}", response_model=WorkshopMaster)
+async def update_master_workshop(
+    workshop_id: str,
+    input: WorkshopMasterUpdate,
+    current_user: dict = Depends(_require_staff),
+):
+    existing = await db.master_workshops.find_one({"id": workshop_id}, {"_id": 0})
+    if not existing:
+        raise HTTPException(status_code=404, detail="Workshop not found")
+    update_data = input.model_dump(exclude_none=True)
+    if not update_data:
+        raise HTTPException(status_code=400, detail="No fields to update")
+    if hasattr(update_data.get("workshop_type"), "value"):
+        update_data["workshop_type"] = update_data["workshop_type"].value
+    await db.master_workshops.update_one({"id": workshop_id}, {"$set": update_data})
+    updated = await db.master_workshops.find_one({"id": workshop_id}, {"_id": 0})
+    if isinstance(updated.get("created_at"), str):
+        updated["created_at"] = datetime.fromisoformat(updated["created_at"])
+    return WorkshopMaster(**updated)
+
+
+@api_router.delete("/master/workshops/{workshop_id}")
+async def delete_master_workshop(
+    workshop_id: str,
+    current_user: dict = Depends(_require_staff),
+):
+    existing = await db.master_workshops.find_one({"id": workshop_id}, {"_id": 0})
+    if not existing:
+        raise HTTPException(status_code=404, detail="Workshop not found")
+    await db.master_workshops.delete_one({"id": workshop_id})
+    await write_audit_log(
+        action="hard_delete",
+        entity_type="master_workshop",
+        entity_id=workshop_id,
+        actor_id=current_user["id"],
+        actor_role=current_user.get("role", ""),
+        actor_email=current_user.get("email"),
+        details={"name": existing.get("name")},
+    )
+    return {"message": "Workshop deleted successfully"}
 
 
 # ============= INVENTORY ROUTES =============
@@ -1009,6 +1256,112 @@ async def create_inventory_item(input: InventoryItemCreate):
     
     await db.inventory_items.insert_one(doc)
     return item
+
+
+_INVENTORY_BULK_MAX_BYTES = 5 * 1024 * 1024
+
+
+@api_router.get("/inventory/bulk-upload/template")
+async def download_inventory_bulk_template(
+    current_user: dict = Depends(_require_staff),
+):
+    return Response(
+        content=build_inventory_template_workbook(),
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={
+            "Content-Disposition": 'attachment; filename="inventory-import-template.xlsx"',
+        },
+    )
+
+
+@api_router.post("/inventory/bulk-upload")
+async def bulk_upload_inventory(
+    file: UploadFile = File(...),
+    country: Optional[str] = Form(None),
+    current_user: dict = Depends(_require_staff),
+):
+    """Import inventory items from Excel; upsert by SKU."""
+    filename = (file.filename or "").lower()
+    if not filename.endswith(".xlsx"):
+        raise HTTPException(
+            status_code=400,
+            detail="Please upload an Excel file (.xlsx). Download the template for the correct format.",
+        )
+
+    content = await file.read()
+    if len(content) > _INVENTORY_BULK_MAX_BYTES:
+        raise HTTPException(
+            status_code=400,
+            detail=f"File too large (max {_INVENTORY_BULK_MAX_BYTES // (1024 * 1024)} MB)",
+        )
+
+    default_country = None
+    if country and str(country).strip():
+        try:
+            default_country = normalize_country_code(country)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    try:
+        rows, parse_errors = parse_inventory_bulk_upload(content, default_country=default_country)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    created = 0
+    updated = 0
+    errors: List[dict] = list(parse_errors)
+
+    for row in rows:
+        try:
+            unit_cost_usd = currency_converter.convert(row["unit_cost"], row["currency"], CurrencyEnum.USD)
+            existing = await db.inventory_items.find_one({"sku": row["sku"]}, {"_id": 0})
+            now_iso = datetime.now(timezone.utc).isoformat()
+            if existing:
+                await db.inventory_items.update_one(
+                    {"id": existing["id"]},
+                    {"$set": {
+                        "name": row["name"],
+                        "category": row["category"],
+                        "country": row["country"],
+                        "location": row["location"],
+                        "quantity": row["quantity"],
+                        "reorder_level": row["reorder_level"],
+                        "unit_cost": row["unit_cost"],
+                        "currency": row["currency"],
+                        "unit_cost_usd": unit_cost_usd,
+                        "lead_time_days": row["lead_time_days"],
+                        "updated_at": now_iso,
+                    }},
+                )
+                updated += 1
+            else:
+                item = InventoryItem(
+                    name=row["name"],
+                    sku=row["sku"],
+                    category=row["category"],
+                    country=row["country"],
+                    location=row["location"],
+                    quantity=row["quantity"],
+                    reorder_level=row["reorder_level"],
+                    unit_cost=row["unit_cost"],
+                    currency=row["currency"],
+                    unit_cost_usd=unit_cost_usd,
+                    lead_time_days=row["lead_time_days"],
+                )
+                doc = item.model_dump()
+                doc["created_at"] = doc["created_at"].isoformat()
+                doc["updated_at"] = doc["updated_at"].isoformat()
+                await db.inventory_items.insert_one(doc)
+                created += 1
+        except Exception as exc:
+            errors.append({"row": row["row"], "sku": row.get("sku"), "message": str(exc)})
+
+    return {
+        "created": created,
+        "updated": updated,
+        "failed": len(errors),
+        "errors": errors[:50],
+    }
 
 
 @api_router.get("/inventory", response_model=List[InventoryItem])
@@ -1270,6 +1623,105 @@ async def create_expenditure(input: ExpenditureCreate):
     return expenditure
 
 
+_EXPENDITURE_BULK_MAX_BYTES = 5 * 1024 * 1024
+
+
+@api_router.get("/expenditures/bulk-upload/template")
+async def download_expenditure_bulk_template(
+    current_user: dict = Depends(_require_staff),
+):
+    return Response(
+        content=build_expenditure_template_workbook(),
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={
+            "Content-Disposition": 'attachment; filename="expenditure-import-template.xlsx"',
+        },
+    )
+
+
+@api_router.post("/expenditures/bulk-upload")
+async def bulk_upload_expenditures(
+    file: UploadFile = File(...),
+    country: Optional[str] = Form(None),
+    current_user: dict = Depends(_require_staff),
+):
+    """Import expenditures/expenses from Excel (create only)."""
+    filename = (file.filename or "").lower()
+    if not filename.endswith(".xlsx"):
+        raise HTTPException(
+            status_code=400,
+            detail="Please upload an Excel file (.xlsx). Download the template for the correct format.",
+        )
+
+    content = await file.read()
+    if len(content) > _EXPENDITURE_BULK_MAX_BYTES:
+        raise HTTPException(
+            status_code=400,
+            detail=f"File too large (max {_EXPENDITURE_BULK_MAX_BYTES // (1024 * 1024)} MB)",
+        )
+
+    default_country = None
+    if country and str(country).strip():
+        try:
+            default_country = normalize_country_code(country)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    try:
+        rows, parse_errors = parse_expenditure_bulk_upload(content, default_country=default_country)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    vehicles = await db.vehicles.find({}, {"_id": 0, "id": 1, "registration_number": 1}).to_list(10000)
+    vehicles_by_reg = {(v.get("registration_number") or "").upper(): v for v in vehicles}
+    drivers = await db.drivers.find({}, {"_id": 0, "id": 1, "license_number": 1}).to_list(10000)
+    drivers_by_license = {(d.get("license_number") or "").upper(): d for d in drivers}
+
+    created = 0
+    errors: List[dict] = list(parse_errors)
+
+    for row in rows:
+        try:
+            vehicle_id = None
+            driver_id = None
+            if row.get("registration_number"):
+                vehicle = vehicles_by_reg.get(row["registration_number"].upper())
+                if not vehicle:
+                    raise ValueError(f"No vehicle found with registration {row['registration_number']}")
+                vehicle_id = vehicle["id"]
+            if row.get("license_number"):
+                driver = drivers_by_license.get(row["license_number"].upper())
+                if not driver:
+                    raise ValueError(f"No driver found with license {row['license_number']}")
+                driver_id = driver["id"]
+
+            amount_usd = currency_converter.convert(row["amount"], row["currency"], CurrencyEnum.USD)
+            expenditure = Expenditure(
+                country=row["country"],
+                category=row["category"],
+                description=row["description"],
+                amount=row["amount"],
+                currency=row["currency"],
+                amount_usd=amount_usd,
+                date=row["date"],
+                vehicle_id=vehicle_id,
+                driver_id=driver_id,
+            )
+            doc = expenditure.model_dump()
+            doc["date"] = doc["date"].isoformat()
+            doc["created_at"] = doc["created_at"].isoformat()
+            await db.expenditures.insert_one(doc)
+            created += 1
+        except Exception as exc:
+            errors.append({"row": row["row"], "message": str(exc)})
+
+    return {
+        "created": created,
+        "failed": len(errors),
+        "errors": errors[:50],
+    }
+
+
 @api_router.get("/expenditures", response_model=List[Expenditure])
 async def get_expenditures(country: Optional[str] = None, category: Optional[str] = None):
     query = {}
@@ -1343,6 +1795,15 @@ _ALLOWED_DOCUMENT_CONTENT_TYPES = frozenset(
         "image/webp",
         "image/gif",
         "application/pdf",
+        "application/msword",
+        "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        "application/vnd.ms-excel",
+        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        "application/vnd.ms-powerpoint",
+        "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+        "text/csv",
+        "application/vnd.oasis.opendocument.text",
+        "application/vnd.oasis.opendocument.spreadsheet",
     }
 )
 
@@ -1613,7 +2074,7 @@ async def upload_document_file(
     if content_type not in _ALLOWED_DOCUMENT_CONTENT_TYPES:
         raise HTTPException(
             status_code=400,
-            detail=f"Invalid file type. Allowed: PDF and images ({', '.join(sorted(_ALLOWED_DOCUMENT_CONTENT_TYPES))})",
+            detail=f"Invalid file type. Allowed: PDF, images, and Office documents",
         )
 
     content = await file.read()
@@ -1832,18 +2293,16 @@ async def predict_asset_resale(asset_id: str):
     asset = await db.assets.find_one({"id": asset_id}, {"_id": 0})
     if not asset:
         raise HTTPException(status_code=404, detail="Asset not found")
-    
+
     vehicle = await db.vehicles.find_one({"id": asset['vehicle_id']}, {"_id": 0})
     if not vehicle:
         raise HTTPException(status_code=404, detail="Vehicle not found")
-    
-    # Calculate age
+
     acquisition_date = datetime.fromisoformat(asset['acquisition_date']) if isinstance(asset['acquisition_date'], str) else asset['acquisition_date']
-    # Make both datetimes timezone-naive for comparison
     if acquisition_date.tzinfo is not None:
         acquisition_date = acquisition_date.replace(tzinfo=None)
     age_years = (datetime.utcnow() - acquisition_date).days / 365.25
-    
+
     asset_data = {
         "vehicle_id": vehicle['id'],
         "make": vehicle.get("make"),
@@ -1854,20 +2313,50 @@ async def predict_asset_resale(asset_id: str):
         "condition": "Good",
         "maintenance_score": "Average",
         "country": vehicle.get("country"),
-        "original_cost_usd": asset.get("acquisition_cost_usd")
+        "original_cost_usd": asset.get("acquisition_cost_usd"),
+        "acquisition_cost_usd": asset.get("acquisition_cost_usd"),
+        "depreciation_rate": asset.get("depreciation_rate", 0.15),
     }
-    
+
     prediction = await ai_service.predict_resale_value(asset_data)
-    
-    # Update asset with prediction
+    predicted_value = prediction.get("predicted_value_usd") if isinstance(prediction, dict) else None
+
+    if predicted_value is None:
+        try:
+            predicted_value = formula_resale_value(asset_data)
+            prediction = {
+                **(prediction if isinstance(prediction, dict) else {}),
+                "predicted_value_usd": predicted_value,
+                "method": "formula_fallback",
+                "depreciation_percent": round(
+                    (1 - (predicted_value / float(asset.get("acquisition_cost_usd") or 1))) * 100, 1
+                ) if asset.get("acquisition_cost_usd") else None,
+                "market_demand": prediction.get("market_demand", "MEDIUM") if isinstance(prediction, dict) else "MEDIUM",
+                "best_time_to_sell": prediction.get("best_time_to_sell", "Within 6–12 months") if isinstance(prediction, dict) else "Within 6–12 months",
+                "confidence": prediction.get("confidence", 0.6) if isinstance(prediction, dict) else 0.6,
+            }
+            prediction.pop("error", None)
+        except Exception as exc:
+            raise HTTPException(
+                status_code=502,
+                detail=f"Resale prediction unavailable: {exc}",
+            ) from exc
+
+    try:
+        predicted_value = float(predicted_value)
+    except (TypeError, ValueError) as exc:
+        raise HTTPException(status_code=502, detail="Resale prediction returned an invalid value") from exc
+
+    prediction["predicted_value_usd"] = round(predicted_value, 2)
+
     await db.assets.update_one(
         {"id": asset_id},
         {"$set": {
-            "predicted_resale_value": prediction.get("predicted_value_usd"),
-            "updated_at": datetime.utcnow().isoformat()
-        }}
+            "predicted_resale_value": prediction["predicted_value_usd"],
+            "updated_at": datetime.utcnow().isoformat(),
+        }},
     )
-    
+
     return prediction
 
 
@@ -2198,6 +2687,13 @@ async def get_personal_dashboard(current_user: dict = Depends(get_current_user))
     
     # Speed violations count
     speed_violations = sum(e.get('speed_limit_violations', 0) for e in logbook_entries)
+
+    unread_reminders = await db.driver_notifications.count_documents(
+        {
+            "$or": [{"user_id": user_id}, {"driver_id": driver_id}],
+            "is_read": False,
+        }
+    )
     
     return {
         "user_id": user_id,
@@ -2214,31 +2710,35 @@ async def get_personal_dashboard(current_user: dict = Depends(get_current_user))
         "today_checklist_completed": today_checklist is not None,
         "today_checklist_status": today_checklist.get('overall_status') if today_checklist else None,
         "assigned_vehicle": assigned_vehicle,
-        "speed_violations": speed_violations
+        "speed_violations": speed_violations,
+        "unread_reminders": unread_reminders,
     }
 
 
 @api_router.get("/dashboard/staff")
-async def get_staff_dashboard(current_user: dict = Depends(get_current_user)):
+async def get_staff_dashboard(
+    country: Optional[str] = None,
+    current_user: dict = Depends(get_current_user),
+):
     """Get dashboard stats for Fleet Managers and Fleet Officers (country-specific)"""
     user_role = current_user.get('role')
     user_country = current_user.get('country')
     
     # Normalize country for matching (handle different case formats)
-    def normalize_country(country):
-        if not country:
+    def normalize_country(value):
+        if not value:
             return None
         try:
-            return normalize_country_code(country)
+            return normalize_country_code(value)
         except ValueError:
             return None
     
-    normalized_country = normalize_country(user_country)
-    
-    # Group Fleet Manager sees all, others see their country only
+    # Group Fleet Manager: optional filter from UI; others: locked to their country
     if user_role == 'GROUP_FLEET_MANAGER':
-        country_filter = {}
+        normalized_country = normalize_country(country)
+        country_filter = country_filter_query(normalized_country) if normalized_country else {}
     else:
+        normalized_country = normalize_country(user_country)
         country_filter = country_filter_query(normalized_country) if normalized_country else {"country": {"$exists": False}}
     
     # Basic stats
@@ -2248,7 +2748,7 @@ async def get_staff_dashboard(current_user: dict = Depends(get_current_user)):
     pending_maintenance = await db.maintenance_records.count_documents({**country_filter, "completed_date": None})
     
     # Pending requests for this country
-    request_filter = {} if user_role == 'GROUP_FLEET_MANAGER' else country_filter
+    request_filter = country_filter
     pending_requests = await db.maintenance_requests.find(
         {**request_filter, "status": "PENDING"},
         {"_id": 0}
@@ -2257,7 +2757,8 @@ async def get_staff_dashboard(current_user: dict = Depends(get_current_user)):
     # Pending user approvals based on role
     pending_users_query = {"is_approved": False}
     if user_role == 'GROUP_FLEET_MANAGER':
-        pass  # See all
+        if normalized_country:
+            pending_users_query['country'] = country_filter_query(normalized_country)['country']
     elif user_role == 'FLEET_MANAGER':
         if normalized_country:
             pending_users_query['country'] = country_filter_query(normalized_country)['country']
@@ -2496,6 +2997,35 @@ async def get_dashboard_alerts(country: Optional[str] = None):
                 "country": record.get("country") or (vehicle or {}).get("country"),
                 "days_until_due": days_until,
             })
+
+    # 8. Next service odometer alerts
+    odo_records = await db.maintenance_records.find(
+        {**country_filter, "next_service_odometer": {"$ne": None}},
+        {"_id": 0},
+    ).to_list(1000)
+    for record in odo_records:
+        target_odo = record.get("next_service_odometer")
+        if target_odo is None:
+            continue
+        vehicle = await db.vehicles.find_one(
+            {"id": record.get("vehicle_id")},
+            {"_id": 0, "registration_number": 1, "odometer_reading": 1, "country": 1},
+        )
+        if not vehicle:
+            continue
+        current_odo = vehicle.get("odometer_reading") or 0
+        if current_odo < float(target_odo):
+            continue
+        reg = vehicle.get("registration_number", "Unknown")
+        alerts.append({
+            "type": "MAINTENANCE_ODOMETER_DUE",
+            "severity": "WARNING",
+            "title": f"Service Odometer Reached: {reg}",
+            "message": f"Current {current_odo:,.0f} km ≥ next service {float(target_odo):,.0f} km — {record.get('description', 'Maintenance')}",
+            "entity_type": "maintenance_record",
+            "entity_id": record.get("id"),
+            "country": record.get("country") or vehicle.get("country"),
+        })
     
     # Sort by severity
     severity_order = {"CRITICAL": 0, "WARNING": 1, "INFO": 2}
@@ -2617,7 +3147,12 @@ async def get_fleet_managers():
 # ============= MAINTENANCE REQUEST ROUTES =============
 @api_router.post("/maintenance-requests", response_model=MaintenanceRequest)
 async def create_maintenance_request(input: MaintenanceRequestCreate, current_user: dict = Depends(get_current_user)):
-    request = MaintenanceRequest(**input.model_dump())
+    data = input.model_dump()
+    _validate_etc_or_raise(data.get("work_status"), data.get("etc_datetime"))
+    if _normalize_work_status(data.get("work_status")) == WorkStatus.WORK_COMPLETED.value:
+        data["status"] = RequestStatus.COMPLETED
+        data["completed_at"] = datetime.now(timezone.utc)
+    request = MaintenanceRequest(**data)
     doc = request.model_dump()
     
     # Track who submitted this request (especially if on behalf of another driver)
@@ -2637,9 +3172,13 @@ async def create_maintenance_request(input: MaintenanceRequestCreate, current_us
             doc['country'] = current_user.get('country')
     
     # Convert datetime fields
-    for field in ['created_at', 'updated_at', 'approved_at', 'rejected_at', 'completed_at']:
+    for field in ['created_at', 'updated_at', 'approved_at', 'rejected_at', 'completed_at', 'etc_datetime']:
         if doc.get(field):
             doc[field] = doc[field].isoformat()
+    if hasattr(doc.get("work_status"), "value"):
+        doc["work_status"] = doc["work_status"].value
+    if hasattr(doc.get("status"), "value"):
+        doc["status"] = doc["status"].value
     
     await db.maintenance_requests.insert_one(doc)
     
@@ -2711,7 +3250,14 @@ async def update_maintenance_request(
         raise HTTPException(status_code=404, detail="Request not found")
 
     if request.get("status") != "PENDING":
-        raise HTTPException(status_code=400, detail="Only pending requests can be edited")
+        # Staff may still update work status / ETC after approval
+        role = current_user.get("role")
+        if role not in _STAFF_ROLES:
+            raise HTTPException(status_code=400, detail="Only pending requests can be edited")
+        allowed = {"work_status", "etc_datetime"}
+        incoming = {k for k, v in input.model_dump().items() if v is not None}
+        if not incoming.issubset(allowed):
+            raise HTTPException(status_code=400, detail="Only work status can be updated on non-pending requests")
 
     role = current_user.get("role")
     user_id = current_user.get("id")
@@ -2724,11 +3270,22 @@ async def update_maintenance_request(
     update_data = _mongo_update_payload({k: v for k, v in input.model_dump().items() if v is not None})
     if not update_data:
         raise HTTPException(status_code=400, detail="No fields to update")
+
+    merged_status = update_data.get("work_status", request.get("work_status"))
+    merged_etc = update_data.get("etc_datetime", request.get("etc_datetime"))
+    _validate_etc_or_raise(merged_status, merged_etc)
+    if _normalize_work_status(merged_status) == WorkStatus.WORK_COMPLETED.value:
+        update_data["status"] = RequestStatus.COMPLETED.value
+        if not request.get("completed_at"):
+            update_data["completed_at"] = datetime.now(timezone.utc)
+    if hasattr(update_data.get("work_status"), "value"):
+        update_data["work_status"] = update_data["work_status"].value
+
     update_data["updated_at"] = datetime.now(timezone.utc).isoformat()
 
     await db.maintenance_requests.update_one({"id": request_id}, {"$set": update_data})
     updated = await db.maintenance_requests.find_one({"id": request_id}, {"_id": 0})
-    for field in ["created_at", "updated_at", "approved_at", "rejected_at", "completed_at"]:
+    for field in ["created_at", "updated_at", "approved_at", "rejected_at", "completed_at", "etc_datetime"]:
         if isinstance(updated.get(field), str):
             updated[field] = datetime.fromisoformat(updated[field])
     return updated
@@ -3594,6 +4151,176 @@ async def get_tires(country: Optional[str] = None, vehicle_id: Optional[str] = N
             if isinstance(t.get(field), str):
                 t[field] = datetime.fromisoformat(t[field])
     return tires
+
+
+_TIRE_BULK_MAX_BYTES = 5 * 1024 * 1024
+
+
+@api_router.get("/tires/bulk-upload/template")
+async def download_tire_bulk_template(
+    current_user: dict = Depends(_require_staff),
+):
+    return Response(
+        content=build_tire_template_workbook(),
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={
+            "Content-Disposition": 'attachment; filename="tire-import-template.xlsx"',
+        },
+    )
+
+
+@api_router.post("/tires/bulk-upload")
+async def bulk_upload_tires(
+    file: UploadFile = File(...),
+    country: Optional[str] = Form(None),
+    current_user: dict = Depends(_require_staff),
+):
+    """Import tires from Excel; upsert by serial_number. Match vehicles by registration."""
+    filename = (file.filename or "").lower()
+    if not filename.endswith(".xlsx"):
+        raise HTTPException(
+            status_code=400,
+            detail="Please upload an Excel file (.xlsx). Download the template for the correct format.",
+        )
+
+    content = await file.read()
+    if len(content) > _TIRE_BULK_MAX_BYTES:
+        raise HTTPException(
+            status_code=400,
+            detail=f"File too large (max {_TIRE_BULK_MAX_BYTES // (1024 * 1024)} MB)",
+        )
+
+    default_country = None
+    if country and str(country).strip():
+        try:
+            default_country = normalize_country_code(country)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    try:
+        rows, parse_errors = parse_tire_bulk_upload(content, default_country=default_country)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    vehicles = await db.vehicles.find({}, {"_id": 0, "id": 1, "registration_number": 1}).to_list(10000)
+    vehicles_by_reg = {(v.get("registration_number") or "").upper(): v for v in vehicles}
+
+    existing_tires = await db.tires.find({}, {"_id": 0}).to_list(20000)
+    tires_by_serial = {(t.get("serial_number") or "").upper(): t for t in existing_tires}
+
+    created: List[dict] = []
+    updated: List[dict] = []
+    errors: List[dict] = list(parse_errors)
+
+    for row in rows:
+        registration = row.get("registration_number")
+        vehicle_id = None
+        if registration:
+            vehicle = vehicles_by_reg.get(registration.upper())
+            if not vehicle:
+                errors.append({
+                    "row": row["row"],
+                    "serial_number": row["serial_number"],
+                    "message": f"No vehicle found with registration {registration}",
+                })
+                continue
+            vehicle_id = vehicle["id"]
+
+        serial_key = row["serial_number"].upper()
+        existing = tires_by_serial.get(serial_key)
+
+        try:
+            if existing:
+                update_data = {
+                    "brand": row["brand"],
+                    "model": row["model"],
+                    "size": row["size"],
+                    "country": row["country"],
+                    "purchase_date": row["purchase_date"].isoformat(),
+                    "purchase_cost": row["purchase_cost"],
+                    "currency": row["currency"],
+                    "vehicle_id": vehicle_id,
+                    "position": row.get("position"),
+                    "mileage_at_install": row.get("mileage_at_install"),
+                    "tread_depth_mm": row.get("tread_depth_mm"),
+                    "notes": row.get("notes"),
+                    "updated_at": datetime.now(timezone.utc).isoformat(),
+                }
+                if row.get("status"):
+                    update_data["status"] = row["status"]
+                await db.tires.update_one({"id": existing["id"]}, {"$set": update_data})
+                updated.append({
+                    "id": existing["id"],
+                    "serial_number": row["serial_number"],
+                    "action": "updated",
+                })
+            else:
+                create_kwargs = {
+                    "serial_number": row["serial_number"],
+                    "brand": row["brand"],
+                    "model": row["model"],
+                    "size": row["size"],
+                    "country": row["country"],
+                    "purchase_date": row["purchase_date"],
+                    "purchase_cost": row["purchase_cost"],
+                    "currency": row["currency"],
+                    "vehicle_id": vehicle_id,
+                    "position": row.get("position"),
+                    "mileage_at_install": row.get("mileage_at_install"),
+                    "tread_depth_mm": row.get("tread_depth_mm"),
+                    "notes": row.get("notes"),
+                }
+                tire = Tire(**create_kwargs)
+                if row.get("status"):
+                    tire.status = TireStatus(row["status"])
+                elif vehicle_id:
+                    tire.status = TireStatus.IN_USE
+                doc = tire.model_dump()
+                for field in [
+                    "purchase_date",
+                    "last_rotation_date",
+                    "next_rotation_due",
+                    "created_at",
+                    "updated_at",
+                ]:
+                    if doc.get(field):
+                        doc[field] = doc[field].isoformat()
+                await db.tires.insert_one(doc)
+                tires_by_serial[serial_key] = {"id": tire.id, "serial_number": tire.serial_number}
+                created.append({
+                    "id": tire.id,
+                    "serial_number": tire.serial_number,
+                    "action": "created",
+                })
+        except Exception as exc:
+            errors.append({
+                "row": row["row"],
+                "serial_number": row["serial_number"],
+                "message": str(exc),
+            })
+
+    await write_audit_log(
+        action="bulk_upsert",
+        entity_type="tire",
+        entity_id="bulk",
+        actor_id=current_user["id"],
+        actor_role=current_user.get("role", ""),
+        actor_email=current_user.get("email"),
+        details={
+            "created_count": len(created),
+            "updated_count": len(updated),
+            "failed_count": len(errors),
+            "country": default_country,
+        },
+    )
+
+    return {
+        "created": len(created),
+        "updated": len(updated),
+        "failed": len(errors),
+        "tires": created + updated,
+        "errors": errors,
+    }
 
 
 @api_router.get("/tires/{tire_id}")
@@ -4575,6 +5302,113 @@ async def send_weekly_report(current_user: dict = Depends(require_group_manager(
             return {"status": "info", "message": "Email service not configured. Report generated but not sent.", "report_data": report_data}
     
     return {"status": "error", "message": "User email not found"}
+
+
+# ============= DRIVER REMINDERS (manager settings + in-app notifications) =============
+@api_router.get("/settings/driver-reminders")
+async def get_driver_reminder_settings(
+    current_user: dict = Depends(require_manager()),
+):
+    from driver_reminders import get_or_create_settings
+    settings = await get_or_create_settings(db)
+    return settings.model_dump()
+
+
+@api_router.put("/settings/driver-reminders")
+async def update_driver_reminder_settings(
+    body: dict = Body(...),
+    current_user: dict = Depends(require_manager()),
+):
+    from driver_reminders import get_or_create_settings, save_settings
+    from models.reminders import DriverReminderSettings, DriverReminderCountrySettings
+
+    countries_raw = body.get("countries") or []
+    countries = [DriverReminderCountrySettings(**c) for c in countries_raw]
+    existing = await get_or_create_settings(db)
+    updated = DriverReminderSettings(
+        id=existing.id,
+        countries=countries,
+        updated_by=current_user.get("id"),
+    )
+    saved = await save_settings(db, updated, updated_by=current_user.get("id"))
+    return saved.model_dump()
+
+
+@api_router.post("/reminders/run")
+async def trigger_driver_reminders(
+    request: Request,
+    x_reminder_token: Optional[str] = Header(None, alias="X-Reminder-Token"),
+):
+    """Manual/cron trigger. Accepts REMINDER_CRON_TOKEN header or manager JWT."""
+    from driver_reminders import run_reminder_pass
+
+    cron_token = os.environ.get("REMINDER_CRON_TOKEN", "").strip()
+    is_cron = bool(cron_token and x_reminder_token and x_reminder_token == cron_token)
+    is_manager = False
+    payload = getattr(request.state, "jwt_payload", None)
+    if payload and payload.get("role") in ("GROUP_FLEET_MANAGER", "FLEET_MANAGER"):
+        is_manager = True
+    if not is_cron and not is_manager:
+        raise HTTPException(status_code=403, detail="Insufficient permissions")
+
+    stats = await run_reminder_pass(
+        db,
+        email_service,
+        frontend_url=os.environ.get("FRONTEND_URL", ""),
+    )
+    return {"status": "ok", **stats}
+
+
+@api_router.get("/notifications/mine")
+async def get_my_notifications(
+    unread_only: bool = False,
+    current_user: dict = Depends(get_current_user),
+):
+    user = await db.users.find_one({"id": current_user["id"]}, {"_id": 0, "driver_id": 1})
+    driver_id = (user or {}).get("driver_id") or current_user.get("id")
+    query = {
+        "$or": [
+            {"user_id": current_user["id"]},
+            {"driver_id": driver_id},
+        ]
+    }
+    if unread_only:
+        query["is_read"] = False
+    notes = await db.driver_notifications.find(query, {"_id": 0}).sort("created_at", -1).to_list(50)
+    return {"notifications": notes, "unread_count": sum(1 for n in notes if not n.get("is_read"))}
+
+
+@api_router.post("/notifications/{notification_id}/read")
+async def mark_notification_read(
+    notification_id: str,
+    current_user: dict = Depends(get_current_user),
+):
+    user = await db.users.find_one({"id": current_user["id"]}, {"_id": 0, "driver_id": 1})
+    driver_id = (user or {}).get("driver_id") or current_user.get("id")
+    result = await db.driver_notifications.update_one(
+        {
+            "id": notification_id,
+            "$or": [{"user_id": current_user["id"]}, {"driver_id": driver_id}],
+        },
+        {"$set": {"is_read": True}},
+    )
+    if result.matched_count == 0:
+        raise HTTPException(status_code=404, detail="Notification not found")
+    return {"status": "ok"}
+
+
+@api_router.post("/notifications/read-all")
+async def mark_all_notifications_read(current_user: dict = Depends(get_current_user)):
+    user = await db.users.find_one({"id": current_user["id"]}, {"_id": 0, "driver_id": 1})
+    driver_id = (user or {}).get("driver_id") or current_user.get("id")
+    await db.driver_notifications.update_many(
+        {
+            "$or": [{"user_id": current_user["id"]}, {"driver_id": driver_id}],
+            "is_read": False,
+        },
+        {"$set": {"is_read": True}},
+    )
+    return {"status": "ok"}
 
 
 def _cors_allow_origins() -> list:

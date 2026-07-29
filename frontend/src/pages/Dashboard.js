@@ -5,8 +5,8 @@ import { Truck, Users, Wrench, DollarSign, TrendingUp, AlertCircle, AlertTriangl
 import { toast } from 'sonner';
 import { useAuth } from '../contexts/AuthContext';
 import { Link } from 'react-router-dom';
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '../components/ui/select';
 import { Button } from '../components/ui/button';
+import CountrySelect from '../components/CountrySelect';
 
 const BACKEND_URL = process.env.REACT_APP_BACKEND_URL;
 const API = `${BACKEND_URL}/api`;
@@ -67,6 +67,16 @@ const PersonalDashboard = ({ user, token }) => {
       </div>
 
       {/* Safety Score Banner */}
+      {stats?.unread_reminders > 0 && (
+        <div className="bg-amber-50 border border-amber-200 rounded-xl p-4 mb-6 flex items-start gap-3">
+          <Bell className="text-amber-600 mt-0.5" size={20} />
+          <div>
+            <p className="font-semibold text-slate-800">You have {stats.unread_reminders} unread reminder(s)</p>
+            <p className="text-sm text-slate-600">Complete today&apos;s Pre-Trip Checklist and Daily Logbook to stop reminders. Use the bell icon to review them.</p>
+          </div>
+        </div>
+      )}
+
       <div className={`${safetyColors.light} border ${safetyScore >= 80 ? 'border-green-200' : safetyScore >= 60 ? 'border-yellow-200' : 'border-red-200'} rounded-xl p-6 mb-8`}>
         <div className="flex items-center justify-between">
           <div className="flex items-center gap-4">
@@ -121,34 +131,34 @@ const PersonalDashboard = ({ user, token }) => {
 
       {/* Stats Cards */}
       <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6 mb-8">
-        <div className="bg-white rounded-xl shadow-sm border border-slate-200 p-6">
+        <Link to="/logbook" className="bg-white rounded-xl shadow-sm border border-slate-200 p-6 hover:border-amber-300 hover:shadow-md transition-all cursor-pointer block">
           <div className="bg-blue-100 p-3 rounded-lg w-fit mb-3">
             <Activity className="text-blue-600" size={24} />
           </div>
           <h3 className="text-slate-500 text-sm">Total Trips (30 days)</h3>
           <p className="text-3xl font-bold text-slate-800 mt-1">{stats?.total_trips || 0}</p>
-        </div>
-        <div className="bg-white rounded-xl shadow-sm border border-slate-200 p-6">
+        </Link>
+        <Link to="/logbook" className="bg-white rounded-xl shadow-sm border border-slate-200 p-6 hover:border-amber-300 hover:shadow-md transition-all cursor-pointer block">
           <div className="bg-green-100 p-3 rounded-lg w-fit mb-3">
             <TrendingUp className="text-green-600" size={24} />
           </div>
           <h3 className="text-slate-500 text-sm">Distance Covered</h3>
           <p className="text-3xl font-bold text-slate-800 mt-1">{(stats?.total_distance_km || 0).toLocaleString()} km</p>
-        </div>
-        <div className="bg-white rounded-xl shadow-sm border border-slate-200 p-6">
+        </Link>
+        <Link to="/maintenance-requests?status=PENDING" className="bg-white rounded-xl shadow-sm border border-slate-200 p-6 hover:border-amber-300 hover:shadow-md transition-all cursor-pointer block">
           <div className="bg-orange-100 p-3 rounded-lg w-fit mb-3">
             <Clock className="text-orange-600" size={24} />
           </div>
           <h3 className="text-slate-500 text-sm">Pending Requests</h3>
           <p className="text-3xl font-bold text-slate-800 mt-1">{stats?.pending_requests || 0}</p>
-        </div>
-        <div className="bg-white rounded-xl shadow-sm border border-slate-200 p-6">
+        </Link>
+        <Link to="/driving-metrics" className="bg-white rounded-xl shadow-sm border border-slate-200 p-6 hover:border-amber-300 hover:shadow-md transition-all cursor-pointer block">
           <div className="bg-amber-100 p-3 rounded-lg w-fit mb-3">
             <Gauge className="text-amber-600" size={24} />
           </div>
           <h3 className="text-slate-500 text-sm">Fuel Efficiency</h3>
           <p className="text-3xl font-bold text-slate-800 mt-1">{stats?.avg_fuel_efficiency || 0} km/L</p>
-        </div>
+        </Link>
       </div>
 
       {/* Vehicle Info & Recent Requests */}
@@ -234,17 +244,18 @@ const StaffDashboard = ({ user, token, isGroupManager }) => {
   const [alerts, setAlerts] = useState(null);
   const [compliance, setCompliance] = useState(null);
   const [loading, setLoading] = useState(true);
-  const [selectedCountry, setSelectedCountry] = useState('');
+  const [selectedCountry, setSelectedCountry] = useState('ALL');
   const [showAllPendingUsers, setShowAllPendingUsers] = useState(false);
   const [showAllPendingRequests, setShowAllPendingRequests] = useState(false);
 
   const fetchDashboardData = useCallback(async () => {
     try {
       const headers = { Authorization: `Bearer ${token}` };
-      const countryParam = selectedCountry ? `?country=${selectedCountry}` : '';
+      const countryCode = selectedCountry && selectedCountry !== 'ALL' ? selectedCountry : '';
+      const countryParam = countryCode ? `?country=${encodeURIComponent(countryCode)}` : '';
       
       const [staffRes, alertsRes, complianceRes] = await Promise.all([
-        axios.get(`${API}/dashboard/staff`, { headers }),
+        axios.get(`${API}/dashboard/staff${countryParam}`, { headers }),
         axios.get(`${API}/dashboard/alerts${countryParam}`),
         axios.get(`${API}/dashboard/compliance${countryParam}`),
       ]);
@@ -330,17 +341,14 @@ const StaffDashboard = ({ user, token, isGroupManager }) => {
         </div>
         
         {isGroupManager && isGroupManager() && (
-          <Select value={selectedCountry || "ALL"} onValueChange={(v) => setSelectedCountry(v === "ALL" ? "" : v)}>
-            <SelectTrigger className="w-48" data-testid="country-filter">
-              <SelectValue placeholder="All Countries" />
-            </SelectTrigger>
-            <SelectContent>
-              <SelectItem value="ALL">All Countries</SelectItem>
-              <SelectItem value="Ghana">Ghana</SelectItem>
-              <SelectItem value="Liberia">Liberia</SelectItem>
-              <SelectItem value="São Tomé and Príncipe">São Tomé</SelectItem>
-            </SelectContent>
-          </Select>
+          <CountrySelect
+            value={selectedCountry}
+            onValueChange={setSelectedCountry}
+            includeAllOption
+            allLabel="All Countries"
+            className="w-full lg:w-64"
+            data-testid="country-filter"
+          />
         )}
       </div>
 
@@ -356,7 +364,7 @@ const StaffDashboard = ({ user, token, isGroupManager }) => {
 
       {/* Stats Grid */}
       <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6 mb-8">
-        <div className="stat-card" data-testid="total-vehicles-card">
+        <Link to="/vehicles" className="stat-card hover:opacity-95 transition-all cursor-pointer block" data-testid="total-vehicles-card">
           <div className="flex items-start justify-between">
             <div>
               <p className="text-white/80 text-sm font-medium">Total Vehicles</p>
@@ -367,9 +375,9 @@ const StaffDashboard = ({ user, token, isGroupManager }) => {
               <Truck size={28} />
             </div>
           </div>
-        </div>
+        </Link>
 
-        <div className="stat-card green" data-testid="total-drivers-card">
+        <Link to="/drivers" className="stat-card green hover:opacity-95 transition-all cursor-pointer block" data-testid="total-drivers-card">
           <div className="flex items-start justify-between">
             <div>
               <p className="text-white/80 text-sm font-medium">Total Drivers</p>
@@ -384,9 +392,9 @@ const StaffDashboard = ({ user, token, isGroupManager }) => {
               <Users size={28} />
             </div>
           </div>
-        </div>
+        </Link>
 
-        <div className="stat-card orange" data-testid="pending-maintenance-card">
+        <Link to="/maintenance?work_status=incomplete" className="stat-card orange hover:opacity-95 transition-all cursor-pointer block" data-testid="pending-maintenance-card">
           <div className="flex items-start justify-between">
             <div>
               <p className="text-white/80 text-sm font-medium">Pending Maintenance</p>
@@ -397,9 +405,9 @@ const StaffDashboard = ({ user, token, isGroupManager }) => {
               <Wrench size={28} />
             </div>
           </div>
-        </div>
+        </Link>
 
-        <div className="stat-card blue" data-testid="fleet-value-card">
+        <Link to="/reports" className="stat-card blue hover:opacity-95 transition-all cursor-pointer block" data-testid="fleet-value-card">
           <div className="flex items-start justify-between">
             <div>
               <p className="text-white/80 text-sm font-medium">Fleet Value</p>
@@ -410,9 +418,9 @@ const StaffDashboard = ({ user, token, isGroupManager }) => {
               <TrendingUp size={28} />
             </div>
           </div>
-        </div>
+        </Link>
 
-        <div className="stat-card" data-testid="fuel-cost-card">
+        <Link to="/fuel" className="stat-card hover:opacity-95 transition-all cursor-pointer block" data-testid="fuel-cost-card">
           <div className="flex items-start justify-between">
             <div>
               <p className="text-white/80 text-sm font-medium">Total Fuel Cost</p>
@@ -423,9 +431,9 @@ const StaffDashboard = ({ user, token, isGroupManager }) => {
               <DollarSign size={28} />
             </div>
           </div>
-        </div>
+        </Link>
 
-        <div className="stat-card green" data-testid="maintenance-cost-card">
+        <Link to="/maintenance" className="stat-card green hover:opacity-95 transition-all cursor-pointer block" data-testid="maintenance-cost-card">
           <div className="flex items-start justify-between">
             <div>
               <p className="text-white/80 text-sm font-medium">Maintenance Cost</p>
@@ -436,7 +444,7 @@ const StaffDashboard = ({ user, token, isGroupManager }) => {
               <Wrench size={28} />
             </div>
           </div>
-        </div>
+        </Link>
       </div>
 
       {/* Alerts & Compliance */}

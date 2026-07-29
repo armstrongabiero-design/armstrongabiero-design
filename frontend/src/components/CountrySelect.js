@@ -25,6 +25,7 @@ export async function fetchCountries() {
 export function normalizeCountryCode(code) {
   if (!code) return '';
   const upper = String(code).toUpperCase();
+  if (upper === 'ALL') return 'ALL';
   const legacy = { GHANA: 'GH', LIBERIA: 'LR', SAO_TOME: 'ST' };
   if (legacy[upper]) return legacy[upper];
   if (upper.length === 2) return upper;
@@ -80,6 +81,7 @@ export function CountrySelect({
   className,
   includeAllOption = false,
   allLabel = 'All countries',
+  'data-testid': dataTestId,
 }) {
   const [countries, setCountries] = useState(cachedCountries || []);
   const [search, setSearch] = useState('');
@@ -111,7 +113,7 @@ export function CountrySelect({
   );
 
   return (
-    <div className={className}>
+    <div className={className} data-testid={dataTestId}>
       <input
         type="text"
         placeholder="Search countries…"
@@ -119,7 +121,7 @@ export function CountrySelect({
         value={search}
         onChange={(e) => setSearch(e.target.value)}
       />
-      <Select value={isoValue || ''} onValueChange={onValueChange}>
+      <Select value={isoValue || (includeAllOption ? 'ALL' : '')} onValueChange={onValueChange}>
         <SelectTrigger>
           <SelectValue placeholder={placeholder} />
         </SelectTrigger>

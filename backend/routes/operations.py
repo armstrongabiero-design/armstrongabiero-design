@@ -22,7 +22,7 @@ from models import (
 )
 from auth_service import get_current_user
 from currency_utils import currency_converter
-from ai_services import ai_service
+from ai_services import ai_service, formula_resale_value
 
 router = APIRouter()
 
@@ -254,9 +254,45 @@ async def predict_asset_resale(asset_id: str):
     if acquisition_date.tzinfo is not None:
         acquisition_date = acquisition_date.replace(tzinfo=None)
     age_years = (datetime.utcnow() - acquisition_date).days / 365.25
-    asset_data = {"vehicle_id": vehicle['id'], "make": vehicle.get("make"), "model": vehicle.get("model"), "year": vehicle.get("year"), "age_years": round(age_years, 1), "odometer": vehicle.get("odometer_reading"), "condition": "Good", "maintenance_score": "Average", "country": vehicle.get("country"), "original_cost_usd": asset.get("acquisition_cost_usd")}
+    asset_data = {
+        "vehicle_id": vehicle['id'],
+        "make": vehicle.get("make"),
+        "model": vehicle.get("model"),
+        "year": vehicle.get("year"),
+        "age_years": round(age_years, 1),
+        "odometer": vehicle.get("odometer_reading"),
+        "condition": "Good",
+        "maintenance_score": "Average",
+        "country": vehicle.get("country"),
+        "original_cost_usd": asset.get("acquisition_cost_usd"),
+        "acquisition_cost_usd": asset.get("acquisition_cost_usd"),
+        "depreciation_rate": asset.get("depreciation_rate", 0.15),
+    }
     prediction = await ai_service.predict_resale_value(asset_data)
-    await db.assets.update_one({"id": asset_id}, {"$set": {"predicted_resale_value": prediction.get("predicted_value_usd"), "updated_at": datetime.utcnow().isoformat()}})
+    predicted_value = prediction.get("predicted_value_usd") if isinstance(prediction, dict) else None
+    if predicted_value is None:
+        try:
+            predicted_value = formula_resale_value(asset_data)
+            prediction = {
+                **(prediction if isinstance(prediction, dict) else {}),
+                "predicted_value_usd": predicted_value,
+                "method": "formula_fallback",
+                "market_demand": prediction.get("market_demand", "MEDIUM") if isinstance(prediction, dict) else "MEDIUM",
+                "best_time_to_sell": prediction.get("best_time_to_sell", "Within 6–12 months") if isinstance(prediction, dict) else "Within 6–12 months",
+                "confidence": prediction.get("confidence", 0.6) if isinstance(prediction, dict) else 0.6,
+            }
+            prediction.pop("error", None)
+        except Exception as exc:
+            raise HTTPException(status_code=502, detail=f"Resale prediction unavailable: {exc}") from exc
+    try:
+        predicted_value = float(predicted_value)
+    except (TypeError, ValueError) as exc:
+        raise HTTPException(status_code=502, detail="Resale prediction returned an invalid value") from exc
+    prediction["predicted_value_usd"] = round(predicted_value, 2)
+    await db.assets.update_one(
+        {"id": asset_id},
+        {"$set": {"predicted_resale_value": prediction["predicted_value_usd"], "updated_at": datetime.utcnow().isoformat()}},
+    )
     return prediction
 
 

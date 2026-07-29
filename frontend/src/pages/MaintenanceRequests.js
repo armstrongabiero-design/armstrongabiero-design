@@ -3,6 +3,7 @@ import axios from 'axios';
 import { Plus, Check, X, Clock, AlertTriangle, Pencil, Trash2 } from 'lucide-react';
 import { toast } from 'sonner';
 import { useAuth } from '../contexts/AuthContext';
+import { useSearchParams } from 'react-router-dom';
 import { Button } from '../components/ui/button';
 import { Input } from '../components/ui/input';
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle, DialogTrigger } from '../components/ui/dialog';
@@ -14,6 +15,7 @@ import CountrySelect, { DEFAULT_COUNTRY_CODE, getCountryBadgeClass, getCountryLa
 import ConfirmDeleteDialog from '../components/ConfirmDeleteDialog';
 import { completeDialogSubmit } from '../utils/formUtils';
 import { canEditMaintenanceRequest, canHardDelete } from '../utils/permissions';
+import { WORK_STATUS_OPTIONS, workStatusLabel } from '../utils/workStatus';
 
 const BACKEND_URL = process.env.REACT_APP_BACKEND_URL;
 const API = `${BACKEND_URL}/api`;
@@ -26,6 +28,8 @@ const createInitialRequestForm = (user, isPersonalView) => ({
   priority: 'MEDIUM',
   estimated_cost: '',
   currency: 'GHS',
+  work_status: 'WORK_IN_PROGRESS',
+  etc_datetime: '',
 });
 
 const requestToFormData = (request) => ({
@@ -36,11 +40,15 @@ const requestToFormData = (request) => ({
   priority: request.priority,
   estimated_cost: request.estimated_cost ?? '',
   currency: request.currency || 'GHS',
+  work_status: request.work_status || 'WORK_IN_PROGRESS',
+  etc_datetime: request.etc_datetime ? new Date(request.etc_datetime).toISOString().slice(0, 16) : '',
 });
 
 const MaintenanceRequests = () => {
   const { user, token, isDriverOrUser, isStaff } = useAuth();
   const isPersonalView = isDriverOrUser && isDriverOrUser();
+  const [searchParams] = useSearchParams();
+  const statusFromUrl = searchParams.get('status');
   
   const [requests, setRequests] = useState([]);
   const [vehicles, setVehicles] = useState([]);
@@ -54,17 +62,9 @@ const MaintenanceRequests = () => {
   const [approvalDialogOpen, setApprovalDialogOpen] = useState(false);
   const [managerDialogOpen, setManagerDialogOpen] = useState(false);
   const [selectedRequest, setSelectedRequest] = useState(null);
-  const [activeTab, setActiveTab] = useState('PENDING');
+  const [activeTab, setActiveTab] = useState(statusFromUrl || 'PENDING');
 
-  const [formData, setFormData] = useState({
-    vehicle_id: '',
-    driver_id: user?.id || '',
-    request_type: '',
-    description: '',
-    priority: 'MEDIUM',
-    estimated_cost: '',
-    currency: 'GHS',
-  });
+  const [formData, setFormData] = useState(() => createInitialRequestForm(user, isPersonalView));
 
   const [approvalData, setApprovalData] = useState({
     manager_id: '',
@@ -118,6 +118,10 @@ const MaintenanceRequests = () => {
     fetchData();
   }, [fetchData]);
 
+  useEffect(() => {
+    if (statusFromUrl) setActiveTab(statusFromUrl);
+  }, [statusFromUrl]);
+
   const handleRequestDialogChange = (open) => {
     setRequestDialogOpen(open);
     if (!open) {
@@ -140,11 +144,16 @@ const MaintenanceRequests = () => {
 
   const handleSubmitRequest = async (e) => {
     e.preventDefault();
+    if (formData.work_status === 'ETC' && !formData.etc_datetime) {
+      toast.error('ETC datetime is required for this work status');
+      return;
+    }
     const headers = token ? { Authorization: `Bearer ${token}` } : {};
     const submitData = {
       ...formData,
       driver_id: isPersonalView ? (user?.driver_id || user?.id) : formData.driver_id,
       estimated_cost: formData.estimated_cost ? parseFloat(formData.estimated_cost) : null,
+      etc_datetime: formData.etc_datetime ? new Date(formData.etc_datetime).toISOString() : null,
     };
 
     await completeDialogSubmit({
@@ -374,6 +383,37 @@ const MaintenanceRequests = () => {
                     </SelectContent>
                   </Select>
                 </div>
+                <div>
+                  <Label>Work Status</Label>
+                  <Select
+                    value={formData.work_status}
+                    onValueChange={(value) => setFormData({
+                      ...formData,
+                      work_status: value,
+                      etc_datetime: value === 'ETC' ? formData.etc_datetime : '',
+                    })}
+                  >
+                    <SelectTrigger>
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {WORK_STATUS_OPTIONS.map((o) => (
+                        <SelectItem key={o.value} value={o.value}>{o.label}</SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                </div>
+                {formData.work_status === 'ETC' && (
+                  <div>
+                    <Label>Estimated Time of Completion *</Label>
+                    <Input
+                      type="datetime-local"
+                      value={formData.etc_datetime}
+                      onChange={(e) => setFormData({ ...formData, etc_datetime: e.target.value })}
+                      required
+                    />
+                  </div>
+                )}
                 <div>
                   <Label>Description</Label>
                   <Textarea value={formData.description} onChange={(e) => setFormData({...formData, description: e.target.value})} placeholder="Describe the issue or maintenance needed..." required />

@@ -55,6 +55,13 @@ class MaintenanceType(str, Enum):
     ROUTINE = "ROUTINE"
 
 
+class WorkStatus(str, Enum):
+    WORK_IN_PROGRESS = "WORK_IN_PROGRESS"
+    WORK_COMPLETED = "WORK_COMPLETED"
+    ETC = "ETC"
+    ADDITIONAL_WORK_REQUIRED = "ADDITIONAL_WORK_REQUIRED"
+
+
 class WorkshopType(str, Enum):
     INTERNAL = "INTERNAL"
     EXTERNAL = "EXTERNAL"

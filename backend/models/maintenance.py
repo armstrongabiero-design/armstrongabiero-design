@@ -1,13 +1,18 @@
 """Maintenance models"""
-from pydantic import BaseModel, Field, ConfigDict
+from pydantic import BaseModel, Field, ConfigDict, model_validator
 from typing import Optional, List
 from datetime import datetime, timezone
 import uuid
 
 from .enums import (
     MaintenanceType, WorkshopType, CurrencyEnum, CountryCode,
-    RequestStatus, RequestPriority, ChecklistItemStatus,
+    RequestStatus, RequestPriority, ChecklistItemStatus, WorkStatus,
 )
+
+
+def _require_etc_datetime(work_status: Optional[WorkStatus], etc_datetime: Optional[datetime]) -> None:
+    if work_status == WorkStatus.ETC and etc_datetime is None:
+        raise ValueError("ETC datetime is required when Work Status is Estimated Time of Completion (ETC)")
 
 
 class MaintenanceRecord(BaseModel):
@@ -19,6 +24,7 @@ class MaintenanceRecord(BaseModel):
     scheduled_date: datetime
     completed_date: Optional[datetime] = None
     next_due_date: Optional[datetime] = None
+    next_service_odometer: Optional[float] = None
     odometer_at_maintenance: float
     cost: float
     currency: CurrencyEnum
@@ -26,6 +32,8 @@ class MaintenanceRecord(BaseModel):
     workshop_id: Optional[str] = None
     parts_used: List[str] = Field(default_factory=list)
     notes: Optional[str] = None
+    work_status: WorkStatus = WorkStatus.WORK_IN_PROGRESS
+    etc_datetime: Optional[datetime] = None
     ai_predicted: bool = False
     harshness_score: Optional[float] = None
     created_at: datetime = Field(default_factory=datetime.utcnow)
@@ -37,11 +45,19 @@ class MaintenanceRecordCreate(BaseModel):
     description: str
     scheduled_date: datetime
     next_due_date: Optional[datetime] = None
+    next_service_odometer: Optional[float] = None
     odometer_at_maintenance: float
     cost: float
     currency: CurrencyEnum
     workshop_id: Optional[str] = None
     notes: Optional[str] = None
+    work_status: WorkStatus = WorkStatus.WORK_IN_PROGRESS
+    etc_datetime: Optional[datetime] = None
+
+    @model_validator(mode="after")
+    def validate_etc(self):
+        _require_etc_datetime(self.work_status, self.etc_datetime)
+        return self
 
 
 class MaintenanceRecordUpdate(BaseModel):
@@ -51,11 +67,45 @@ class MaintenanceRecordUpdate(BaseModel):
     scheduled_date: Optional[datetime] = None
     completed_date: Optional[datetime] = None
     next_due_date: Optional[datetime] = None
+    next_service_odometer: Optional[float] = None
     odometer_at_maintenance: Optional[float] = None
     cost: Optional[float] = None
     currency: Optional[CurrencyEnum] = None
     workshop_id: Optional[str] = None
     notes: Optional[str] = None
+    work_status: Optional[WorkStatus] = None
+    etc_datetime: Optional[datetime] = None
+
+
+class WorkshopMaster(BaseModel):
+    """Master Data workshop / garage."""
+    model_config = ConfigDict(extra="ignore")
+    id: str = Field(default_factory=lambda: str(uuid.uuid4()))
+    name: str
+    workshop_type: WorkshopType = WorkshopType.INTERNAL
+    country: CountryCode
+    address: Optional[str] = None
+    phone: Optional[str] = None
+    active: bool = True
+    created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+
+
+class WorkshopMasterCreate(BaseModel):
+    name: str
+    workshop_type: WorkshopType = WorkshopType.INTERNAL
+    country: CountryCode
+    address: Optional[str] = None
+    phone: Optional[str] = None
+    active: bool = True
+
+
+class WorkshopMasterUpdate(BaseModel):
+    name: Optional[str] = None
+    workshop_type: Optional[WorkshopType] = None
+    country: Optional[CountryCode] = None
+    address: Optional[str] = None
+    phone: Optional[str] = None
+    active: Optional[bool] = None
 
 
 class WorkshopJob(BaseModel):
@@ -64,6 +114,8 @@ class WorkshopJob(BaseModel):
     vehicle_id: str
     workshop_type: WorkshopType
     workshop_name: str
+    workshop_id: Optional[str] = None
+    maintenance_record_id: Optional[str] = None
     description: str
     start_date: datetime
     estimated_completion: datetime
@@ -71,7 +123,9 @@ class WorkshopJob(BaseModel):
     cost: float
     currency: CurrencyEnum
     cost_usd: float
-    status: str = "IN_PROGRESS"
+    work_status: WorkStatus = WorkStatus.WORK_IN_PROGRESS
+    etc_datetime: Optional[datetime] = None
+    status: str = "IN_PROGRESS"  # legacy mirror of work_status for old clients
     created_at: datetime = Field(default_factory=datetime.utcnow)
 
 
@@ -79,11 +133,36 @@ class WorkshopJobCreate(BaseModel):
     vehicle_id: str
     workshop_type: WorkshopType
     workshop_name: str
+    workshop_id: Optional[str] = None
+    maintenance_record_id: Optional[str] = None
     description: str
     start_date: datetime
     estimated_completion: datetime
     cost: float
     currency: CurrencyEnum
+    work_status: WorkStatus = WorkStatus.WORK_IN_PROGRESS
+    etc_datetime: Optional[datetime] = None
+
+    @model_validator(mode="after")
+    def validate_etc(self):
+        _require_etc_datetime(self.work_status, self.etc_datetime)
+        return self
+
+
+class WorkshopJobUpdate(BaseModel):
+    vehicle_id: Optional[str] = None
+    workshop_type: Optional[WorkshopType] = None
+    workshop_name: Optional[str] = None
+    workshop_id: Optional[str] = None
+    maintenance_record_id: Optional[str] = None
+    description: Optional[str] = None
+    start_date: Optional[datetime] = None
+    estimated_completion: Optional[datetime] = None
+    actual_completion: Optional[datetime] = None
+    cost: Optional[float] = None
+    currency: Optional[CurrencyEnum] = None
+    work_status: Optional[WorkStatus] = None
+    etc_datetime: Optional[datetime] = None
 
 
 class MaintenanceRequest(BaseModel):
@@ -97,6 +176,8 @@ class MaintenanceRequest(BaseModel):
     estimated_cost: Optional[float] = None
     currency: CurrencyEnum = CurrencyEnum.GHS
     status: RequestStatus = RequestStatus.PENDING
+    work_status: WorkStatus = WorkStatus.WORK_IN_PROGRESS
+    etc_datetime: Optional[datetime] = None
     manager_id: Optional[str] = None
     rejection_reason: Optional[str] = None
     approved_at: Optional[datetime] = None
@@ -125,6 +206,13 @@ class MaintenanceRequestCreate(BaseModel):
     estimated_cost: Optional[float] = None
     currency: CurrencyEnum = CurrencyEnum.GHS
     country: Optional[str] = None
+    work_status: WorkStatus = WorkStatus.WORK_IN_PROGRESS
+    etc_datetime: Optional[datetime] = None
+
+    @model_validator(mode="after")
+    def validate_etc(self):
+        _require_etc_datetime(self.work_status, self.etc_datetime)
+        return self
 
 
 class MaintenanceRequestUpdate(BaseModel):
@@ -136,6 +224,8 @@ class MaintenanceRequestUpdate(BaseModel):
     estimated_cost: Optional[float] = None
     currency: Optional[CurrencyEnum] = None
     country: Optional[str] = None
+    work_status: Optional[WorkStatus] = None
+    etc_datetime: Optional[datetime] = None
 
 
 class MaintenanceRequestApproval(BaseModel):
