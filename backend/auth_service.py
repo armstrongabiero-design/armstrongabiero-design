@@ -96,6 +96,7 @@ def access_token_payload_from_user_record(user: dict) -> dict:
         "role": role,
         "country": user.get("country"),
         "full_name": user["full_name"],
+        "driver_id": user.get("driver_id"),
         "tv": int(user.get("token_version", 0)),
     }
 

@@ -88,7 +88,7 @@ async def login(input: UserLogin):
         return {"requires_otp": True, "email": user['email'], "message": "OTP verification required for Group Fleet Manager login"}
     await db.users.update_one({"id": user['id']}, {"$set": {"last_login": datetime.now(timezone.utc).isoformat()}})
     access_token = create_access_token(data=access_token_payload_from_user_record(user))
-    return Token(access_token=access_token, token_type="bearer", user={"id": user['id'], "email": user['email'], "full_name": user['full_name'], "role": user['role'], "country": user.get('country'), "is_approved": user.get('is_approved', False)})
+    return Token(access_token=access_token, token_type="bearer", user={"id": user['id'], "email": user['email'], "full_name": user['full_name'], "role": user['role'], "country": user.get('country'), "is_approved": user.get('is_approved', False), "driver_id": user.get('driver_id')})
 
 
 @router.post("/auth/send-otp")
@@ -128,7 +128,7 @@ async def verify_otp(email: str = Body(...), otp: str = Body(...)):
         raise HTTPException(status_code=401, detail="User not found")
     await db.users.update_one({"id": user['id']}, {"$set": {"last_login": datetime.now(timezone.utc).isoformat()}})
     access_token = create_access_token(data=access_token_payload_from_user_record(user))
-    return Token(access_token=access_token, token_type="bearer", user={"id": user['id'], "email": user['email'], "full_name": user['full_name'], "role": user['role'], "country": user.get('country'), "is_approved": user.get('is_approved', False)})
+    return Token(access_token=access_token, token_type="bearer", user={"id": user['id'], "email": user['email'], "full_name": user['full_name'], "role": user['role'], "country": user.get('country'), "is_approved": user.get('is_approved', False), "driver_id": user.get('driver_id')})
 
 
 @router.get("/auth/me")
@@ -179,12 +179,15 @@ async def approve_user(user_id: str, current_user: dict = Depends(get_current_us
     )
     if result.matched_count == 0:
         raise HTTPException(status_code=404, detail="User not found")
+    approved_user = {**user_to_approve, "is_approved": True}
+    try:
+        from driver_profile_service import ensure_driver_profile_for_user
+        await ensure_driver_profile_for_user(db, approved_user)
+    except Exception:
+        pass
     email_sent = False
     if not user_to_approve.get("is_approved", False):
-        email_sent = _send_account_status_email(
-            {**user_to_approve, "is_approved": True},
-            "APPROVED",
-        )
+        email_sent = _send_account_status_email(approved_user, "APPROVED")
     return {
         "status": "success",
         "message": f"User approved by {current_user.get('full_name')}",
@@ -223,6 +226,15 @@ async def update_user(user_id: str, input: UserUpdate, current_user: dict = Depe
 
     result = await db.users.update_one({"id": user_id}, {"$set": update_data})
     updated_user = {**existing, **update_data}
+    if (
+        updated_user.get("role") == "DRIVER"
+        and updated_user.get("is_approved")
+    ):
+        try:
+            from driver_profile_service import ensure_driver_profile_for_user
+            await ensure_driver_profile_for_user(db, updated_user)
+        except Exception:
+            pass
     notification_status = None
     approval_changed = (
         "is_approved" in update_data

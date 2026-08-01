@@ -812,6 +812,12 @@ async def bulk_upload_drivers(
 
 @api_router.get("/drivers", response_model=List[Driver])
 async def get_drivers(country: Optional[str] = None):
+    from driver_profile_service import sync_approved_driver_profiles
+    try:
+        await sync_approved_driver_profiles(db)
+    except Exception as exc:
+        logger.warning("Driver profile sync skipped: %s", exc)
+
     query = {}
     if country:
         query['country'] = country
@@ -822,6 +828,15 @@ async def get_drivers(country: Optional[str] = None):
             if isinstance(d.get(date_field), str):
                 d[date_field] = datetime.fromisoformat(d[date_field])
     return drivers
+
+
+@api_router.get("/drivers/invites")
+async def list_driver_invites_endpoint(
+    country: Optional[str] = None,
+    current_user: dict = Depends(_require_staff),
+):
+    from driver_invite_service import list_driver_invites
+    return await list_driver_invites(db, country)
 
 
 @api_router.get("/drivers/{driver_id}", response_model=Driver)
@@ -885,6 +900,94 @@ async def delete_driver(
         },
     )
     return {"message": "Driver deleted successfully"}
+
+
+def _send_driver_invite_email(result: dict) -> bool:
+    from models.invites import INVITE_TTL_HOURS
+    frontend = os.environ.get("FRONTEND_URL", "http://localhost:3000").rstrip("/")
+    link = f"{frontend}/accept-invite?token={result['token']}"
+    return email_service.send_driver_invite_email(
+        result["email"],
+        link,
+        result.get("driver_name") or "Driver",
+        expires_hours=INVITE_TTL_HOURS,
+    )
+
+
+@api_router.post("/drivers/{driver_id}/invite")
+async def invite_driver_endpoint(
+    driver_id: str,
+    current_user: dict = Depends(_require_staff),
+):
+    from driver_invite_service import create_or_refresh_invite
+    try:
+        result = await create_or_refresh_invite(db, driver_id, current_user)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    email_sent = _send_driver_invite_email(result)
+    return {
+        "status": "success",
+        "email_sent": email_sent,
+        "invite": result["invite"],
+        "message": (
+            f"Invite sent to {result['email']}"
+            if email_sent
+            else f"Invite created for {result['email']} (email could not be sent — check Resend config)"
+        ),
+    }
+
+
+@api_router.post("/drivers/invites/{invite_id}/resend")
+async def resend_driver_invite_endpoint(
+    invite_id: str,
+    current_user: dict = Depends(_require_staff),
+):
+    from driver_invite_service import resend_invite
+    try:
+        result = await resend_invite(db, invite_id, current_user)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    email_sent = _send_driver_invite_email(result)
+    return {
+        "status": "success",
+        "email_sent": email_sent,
+        "invite": result["invite"],
+        "message": (
+            f"Invite resent to {result['email']}"
+            if email_sent
+            else f"Invite refreshed for {result['email']} (email could not be sent)"
+        ),
+    }
+
+
+@api_router.delete("/drivers/invites/{invite_id}")
+async def delete_driver_invite_endpoint(
+    invite_id: str,
+    current_user: dict = Depends(_require_staff),
+):
+    from driver_invite_service import delete_invite
+    try:
+        return await delete_invite(db, invite_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@api_router.get("/auth/verify-invite/{token}")
+async def verify_driver_invite_token(token: str):
+    from driver_invite_service import verify_invite_token
+    return await verify_invite_token(db, token)
+
+
+@api_router.post("/auth/accept-invite")
+@limiter.limit("10/minute")
+async def accept_driver_invite(request: Request, body: dict = Body(...)):
+    from driver_invite_service import accept_invite
+    from models.invites import AcceptDriverInviteRequest
+    try:
+        payload = AcceptDriverInviteRequest(**body)
+        return await accept_invite(db, payload.token, payload.new_password)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
 # ============= MAINTENANCE ROUTES =============
@@ -3571,10 +3674,13 @@ async def get_pretrip_checklists(
         query["date"] = date_filter
 
     checklists = await db.pretrip_checklists.find(query, {"_id": 0}).sort("date", -1).to_list(limit)
+    from driver_profile_service import resolve_driver_display_names
+    name_map = await resolve_driver_display_names(db, [c.get("driver_id") for c in checklists])
     for c in checklists:
         for field in ['date', 'created_at']:
             if isinstance(c.get(field), str):
                 c[field] = datetime.fromisoformat(c[field])
+        c["driver_name"] = name_map.get(c.get("driver_id")) or None
     return checklists
 
 
@@ -3957,7 +4063,8 @@ async def login(request: Request, input: UserLogin):
             "full_name": user['full_name'],
             "role": user['role'],
             "country": user.get('country'),
-            "is_approved": user.get('is_approved', False)
+            "is_approved": user.get('is_approved', False),
+            "driver_id": user.get('driver_id'),
         }
     )
 
@@ -4045,7 +4152,8 @@ async def verify_otp(request: Request, email: str = Body(...), otp: str = Body(.
             "full_name": user['full_name'],
             "role": user['role'],
             "country": user.get('country'),
-            "is_approved": user.get('is_approved', False)
+            "is_approved": user.get('is_approved', False),
+            "driver_id": user.get('driver_id'),
         }
     )
 
@@ -4115,9 +4223,15 @@ async def approve_user(user_id: str, current_user: dict = Depends(get_current_us
     if result.matched_count == 0:
         raise HTTPException(status_code=404, detail="User not found")
 
+    approved_user = {**user_to_approve, "is_approved": True}
+    try:
+        from driver_profile_service import ensure_driver_profile_for_user
+        await ensure_driver_profile_for_user(db, approved_user)
+    except Exception as exc:
+        logger.warning("Could not ensure driver profile on approve: %s", exc)
+
     email_sent = False
     if not user_to_approve.get("is_approved", False):
-        approved_user = {**user_to_approve, "is_approved": True}
         email_sent = _send_account_status_email(approved_user, "APPROVED")
 
     return {
@@ -4168,6 +4282,13 @@ async def update_user(user_id: str, input: UserUpdate, current_user: dict = Depe
 
     result = await db.users.update_one({"id": user_id}, {"$set": update_data})
     updated_user = {**existing, **update_data}
+
+    if updated_user.get("role") == "DRIVER" and updated_user.get("is_approved"):
+        try:
+            from driver_profile_service import ensure_driver_profile_for_user
+            await ensure_driver_profile_for_user(db, updated_user)
+        except Exception as exc:
+            logger.warning("Could not ensure driver profile on user update: %s", exc)
 
     notification_status = None
     approval_changed = (

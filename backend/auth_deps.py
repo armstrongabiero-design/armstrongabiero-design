@@ -26,6 +26,7 @@ async def get_current_user(request: Request) -> dict:
         "role": payload.get("role"),
         "country": payload.get("country"),
         "full_name": payload.get("full_name"),
+        "driver_id": payload.get("driver_id"),
     }
 
 
@@ -49,6 +50,7 @@ async def get_current_user_validated(
         "role": user["role"],
         "country": user.get("country"),
         "full_name": user.get("full_name"),
+        "driver_id": user.get("driver_id"),
     }
 
 

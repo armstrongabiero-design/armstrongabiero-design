@@ -1,6 +1,6 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useState, useCallback } from 'react';
 import axios from 'axios';
-import { Plus, Pencil, Trash2, Upload, Download } from 'lucide-react';
+import { Plus, Pencil, Trash2, Upload, Download, Mail, RefreshCw } from 'lucide-react';
 import { toast } from 'sonner';
 import { useAuth } from '../contexts/AuthContext';
 import { Button } from '../components/ui/button';
@@ -50,12 +50,20 @@ const driverToFormData = (driver) => {
   };
 };
 
+const inviteStatusBadge = (status) => {
+  if (status === 'PENDING') return 'status-badge maintenance';
+  if (status === 'EXPIRED') return 'status-badge inactive';
+  if (status === 'ACCEPTED') return 'status-badge active';
+  return 'status-badge';
+};
+
 const Drivers = () => {
   const { user } = useAuth();
   const canEdit = canEditFleetRecord(user?.role);
   const canDelete = canHardDelete(user?.role, 'driver');
 
   const [drivers, setDrivers] = useState([]);
+  const [invites, setInvites] = useState([]);
   const [loading, setLoading] = useState(true);
   const [dialogOpen, setDialogOpen] = useState(false);
   const [editingId, setEditingId] = useState(null);
@@ -67,19 +75,89 @@ const Drivers = () => {
   const [bulkUploading, setBulkUploading] = useState(false);
   const [bulkResult, setBulkResult] = useState(null);
   const [formData, setFormData] = useState(createInitialFormData);
+  const [invitingId, setInvitingId] = useState(null);
+  const [inviteActionId, setInviteActionId] = useState(null);
+  const [deleteInviteTarget, setDeleteInviteTarget] = useState(null);
 
-  useEffect(() => {
-    fetchDrivers();
-  }, []);
+  const fetchInvites = useCallback(async () => {
+    if (!canEdit) return;
+    try {
+      const response = await axios.get(`${API}/drivers/invites`);
+      setInvites(response.data || []);
+    } catch {
+      // Non-blocking
+    }
+  }, [canEdit]);
 
-  const fetchDrivers = async () => {
+  const fetchDrivers = useCallback(async () => {
     try {
       const response = await axios.get(`${API}/drivers`);
       setDrivers(response.data);
+      await fetchInvites();
     } catch {
       toast.error('Failed to load drivers');
     } finally {
       setLoading(false);
+    }
+  }, [fetchInvites]);
+
+  useEffect(() => {
+    fetchDrivers();
+  }, [fetchDrivers]);
+
+  const latestInviteByDriver = React.useMemo(() => {
+    const map = {};
+    invites.forEach((inv) => {
+      if (!map[inv.driver_id]) map[inv.driver_id] = inv;
+    });
+    return map;
+  }, [invites]);
+
+  const openInvites = invites.filter((i) => i.status === 'PENDING' || i.status === 'EXPIRED');
+
+  const handleInvite = async (driver) => {
+    if (!driver.email) {
+      toast.error('Add an email on the driver profile before inviting');
+      return;
+    }
+    setInvitingId(driver.id);
+    try {
+      const { data } = await axios.post(`${API}/drivers/${driver.id}/invite`);
+      toast.success(data.message || 'Invite sent');
+      fetchInvites();
+    } catch (error) {
+      const detail = error.response?.data?.detail;
+      toast.error(typeof detail === 'string' ? detail : 'Failed to send invite');
+    } finally {
+      setInvitingId(null);
+    }
+  };
+
+  const handleResendInvite = async (invite) => {
+    setInviteActionId(invite.id);
+    try {
+      const { data } = await axios.post(`${API}/drivers/invites/${invite.id}/resend`);
+      toast.success(data.message || 'Invite resent (valid 48 hours)');
+      fetchInvites();
+    } catch (error) {
+      toast.error(error.response?.data?.detail || 'Failed to resend invite');
+    } finally {
+      setInviteActionId(null);
+    }
+  };
+
+  const handleDeleteInvite = async () => {
+    if (!deleteInviteTarget) return;
+    setInviteActionId(deleteInviteTarget.id);
+    try {
+      await axios.delete(`${API}/drivers/invites/${deleteInviteTarget.id}`);
+      toast.success('Invite deleted');
+      setDeleteInviteTarget(null);
+      fetchInvites();
+    } catch (error) {
+      toast.error(error.response?.data?.detail || 'Failed to delete invite');
+    } finally {
+      setInviteActionId(null);
     }
   };
 
@@ -378,18 +456,29 @@ const Drivers = () => {
               <th>Email</th>
               <th>Safety Score</th>
               <th>Status</th>
-              {canEdit && <th className="w-24">Actions</th>}
+              <th>Login</th>
+              {canEdit && <th className="w-36">Actions</th>}
             </tr>
           </thead>
           <tbody>
             {drivers.length === 0 ? (
               <tr>
-                <td colSpan={canEdit ? 8 : 7} className="text-center py-8 text-slate-500">
+                <td colSpan={canEdit ? 9 : 8} className="text-center py-8 text-slate-500">
                   No drivers found
                 </td>
               </tr>
             ) : (
-              drivers.map((driver) => (
+              drivers.map((driver) => {
+                const inv = latestInviteByDriver[driver.id];
+                const loginLabel =
+                  inv?.status === 'ACCEPTED'
+                    ? 'Active'
+                    : inv?.status === 'PENDING'
+                      ? 'Invite pending'
+                      : inv?.status === 'EXPIRED'
+                        ? 'Invite expired'
+                        : 'No login';
+                return (
                 <tr key={driver.id}>
                   <td className="font-semibold">
                     {driver.first_name} {driver.last_name}
@@ -406,9 +495,24 @@ const Drivers = () => {
                   <td>
                     <span className={`status-badge ${driver.status?.toLowerCase()}`}>{driver.status}</span>
                   </td>
+                  <td>
+                    <span className={inviteStatusBadge(inv?.status === 'ACCEPTED' ? 'ACCEPTED' : inv?.status || '')}>
+                      {loginLabel}
+                    </span>
+                  </td>
                   {canEdit && (
                     <td>
                       <div className="flex gap-1">
+                        <Button
+                          variant="ghost"
+                          size="icon"
+                          className="h-8 w-8"
+                          title={driver.email ? 'Invite to set password (48h)' : 'Add email first'}
+                          disabled={!driver.email || invitingId === driver.id || inv?.status === 'ACCEPTED'}
+                          onClick={() => handleInvite(driver)}
+                        >
+                          <Mail size={16} />
+                        </Button>
                         <Button
                           variant="ghost"
                           size="icon"
@@ -433,11 +537,80 @@ const Drivers = () => {
                     </td>
                   )}
                 </tr>
-              ))
+                );
+              })
             )}
           </tbody>
         </table>
       </div>
+
+      {canEdit && (
+        <div className="fleet-card table-container mt-6" data-testid="driver-invites-panel">
+          <div className="flex items-center justify-between mb-3">
+            <div>
+              <h2 className="text-lg font-semibold text-slate-800">Login invites</h2>
+              <p className="text-sm text-slate-600">Invites expire after 48 hours. Resend or delete expired invites here.</p>
+            </div>
+            <Button variant="outline" size="sm" onClick={fetchInvites}>
+              <RefreshCw size={14} className="mr-1" />
+              Refresh
+            </Button>
+          </div>
+          <table>
+            <thead>
+              <tr>
+                <th>Driver</th>
+                <th>Email</th>
+                <th>Status</th>
+                <th>Expires</th>
+                <th>Invited by</th>
+                <th className="w-40">Actions</th>
+              </tr>
+            </thead>
+            <tbody>
+              {openInvites.length === 0 ? (
+                <tr>
+                  <td colSpan={6} className="text-center py-6 text-slate-500">No pending or expired invites</td>
+                </tr>
+              ) : (
+                openInvites.map((inv) => (
+                  <tr key={inv.id}>
+                    <td className="font-semibold">{inv.driver_name || '—'}</td>
+                    <td>{inv.email}</td>
+                    <td><span className={inviteStatusBadge(inv.status)}>{inv.status}</span></td>
+                    <td className="text-sm">
+                      {inv.expires_at ? new Date(inv.expires_at).toLocaleString() : '—'}
+                    </td>
+                    <td className="text-sm">{inv.invited_by_name || '—'}</td>
+                    <td>
+                      <div className="flex gap-1">
+                        <Button
+                          variant="outline"
+                          size="sm"
+                          className="h-8"
+                          disabled={inviteActionId === inv.id}
+                          onClick={() => handleResendInvite(inv)}
+                        >
+                          Resend
+                        </Button>
+                        <Button
+                          variant="ghost"
+                          size="sm"
+                          className="h-8 text-red-600"
+                          disabled={inviteActionId === inv.id}
+                          onClick={() => setDeleteInviteTarget(inv)}
+                        >
+                          Delete
+                        </Button>
+                      </div>
+                    </td>
+                  </tr>
+                ))
+              )}
+            </tbody>
+          </table>
+        </div>
+      )}
 
       <ConfirmDeleteDialog
         open={!!deleteTarget}
@@ -448,6 +621,19 @@ const Drivers = () => {
         description={
           deleteTarget
             ? `Permanently delete ${deleteTarget.first_name} ${deleteTarget.last_name}? This cannot be undone.`
+            : undefined
+        }
+      />
+
+      <ConfirmDeleteDialog
+        open={!!deleteInviteTarget}
+        onOpenChange={(open) => !open && setDeleteInviteTarget(null)}
+        onConfirm={handleDeleteInvite}
+        loading={inviteActionId === deleteInviteTarget?.id}
+        title="Delete invite?"
+        description={
+          deleteInviteTarget
+            ? `Remove the invite for ${deleteInviteTarget.email}? They will not be able to use the old link.`
             : undefined
         }
       />

@@ -251,6 +251,7 @@ class PreTripChecklist(BaseModel):
     overall_status: str = "PENDING"
     completed: bool = False
     notes: Optional[str] = None
+    driver_name: Optional[str] = None  # enriched on read
     created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
 
 

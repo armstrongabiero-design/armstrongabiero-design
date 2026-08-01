@@ -242,6 +242,48 @@ class EmailService:
         """
         return self.send_email(email, context["subject"], html_content)
     
+    def send_driver_invite_email(
+        self,
+        email: str,
+        invite_link: str,
+        driver_name: str,
+        expires_hours: int = 48,
+    ) -> bool:
+        """Send driver login invite with set-password link."""
+        subject = "GTI Fleet Solutions - You're invited to set up your driver account"
+        html_content = f"""
+        <html>
+        <body style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
+            <div style="background: linear-gradient(135deg, #e3aa27, #c4912a); color: white; padding: 20px; border-radius: 8px 8px 0 0;">
+                <h2 style="margin: 0;">GTI Fleet Solutions - Driver Invite</h2>
+            </div>
+            <div style="padding: 20px; border: 1px solid #e5e7eb; border-top: none; border-radius: 0 0 8px 8px;">
+                <p>Hello <strong>{driver_name}</strong>,</p>
+                <p>You have been invited to access GTI Fleet Solutions as a driver. Click below to create your password and activate your account.</p>
+
+                <div style="text-align: center; margin: 30px 0;">
+                    <a href="{invite_link}" style="background: linear-gradient(135deg, #e3aa27, #c4912a); color: white; padding: 15px 30px; text-decoration: none; border-radius: 8px; font-weight: bold; display: inline-block;">
+                        Set Password &amp; Activate
+                    </a>
+                </div>
+
+                <p style="color: #6b7280; font-size: 14px;">Or copy and paste this link into your browser:</p>
+                <p style="background: #f3f4f6; padding: 10px; border-radius: 4px; word-break: break-all; font-size: 12px;">{invite_link}</p>
+
+                <div style="background: #fef3c7; border-left: 4px solid #e3aa27; padding: 15px; margin: 20px 0;">
+                    <strong>Important:</strong>
+                    <ul style="margin: 10px 0; padding-left: 20px;">
+                        <li>This invite expires in {expires_hours} hours</li>
+                        <li>If it expires, ask your fleet administrator to resend the invite</li>
+                        <li>If you did not expect this email, you can ignore it</li>
+                    </ul>
+                </div>
+            </div>
+        </body>
+        </html>
+        """
+        return self.send_email(email, subject, html_content)
+
     def send_password_reset_email(self, email: str, reset_link: str, user_name: str) -> bool:
         """Send password reset email"""
         subject = "GTI Fleet Solutions - Password Reset Request"

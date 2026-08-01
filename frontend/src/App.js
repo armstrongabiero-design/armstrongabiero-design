@@ -24,6 +24,7 @@ import Login from './pages/Login';
 import AdminRegister from './pages/AdminRegister';
 import ForgotPassword from './pages/ForgotPassword';
 import ResetPassword from './pages/ResetPassword';
+import AcceptInvite from './pages/AcceptInvite';
 import UserManagement from './pages/UserManagement';
 import Workshop from './pages/Workshop';
 import MasterData from './pages/MasterData';
@@ -150,6 +151,7 @@ function App() {
             <Route path="/admin-register" element={<AdminRegister />} />
             <Route path="/forgot-password" element={<ForgotPassword />} />
             <Route path="/reset-password" element={<ResetPassword />} />
+            <Route path="/accept-invite" element={<AcceptInvite />} />
             <Route path="/*" element={<AppLayout />} />
           </Routes>
         </BrowserRouter>

@@ -32,6 +32,11 @@ async def create_driver(input: DriverCreate):
 
 @router.get("/drivers", response_model=List[Driver])
 async def get_drivers(country: Optional[str] = None):
+    try:
+        from driver_profile_service import sync_approved_driver_profiles
+        await sync_approved_driver_profiles(db)
+    except Exception:
+        pass
     query = {}
     if country:
         query['country'] = country

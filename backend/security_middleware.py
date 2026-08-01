@@ -20,6 +20,7 @@ _PUBLIC_EXACT = frozenset(
         ("POST", "/api/auth/bootstrap"),
         ("POST", "/api/auth/forgot-password"),
         ("POST", "/api/auth/reset-password"),
+        ("POST", "/api/auth/accept-invite"),
         ("POST", "/api/auth/send-otp"),
         ("POST", "/api/auth/verify-otp"),
     }
@@ -27,6 +28,7 @@ _PUBLIC_EXACT = frozenset(
 
 _PUBLIC_PREFIXES = (
     ("GET", "/api/auth/verify-reset-token/"),
+    ("GET", "/api/auth/verify-invite/"),
 )
 
 

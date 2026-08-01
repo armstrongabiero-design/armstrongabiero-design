@@ -281,6 +281,13 @@ const PreTripChecklist = () => {
     setDialogOpen(true);
   };
 
+  const resolveDriverName = (driverId, checklist) => {
+    if (checklist?.driver_name) return checklist.driver_name;
+    const driver = drivers.find((d) => d.id === driverId);
+    if (driver) return `${driver.first_name} ${driver.last_name}`.trim();
+    return '—';
+  };
+
   const historyRows = useMemo(() => checklists, [checklists]);
 
   const handleExport = async (format) => {
@@ -676,7 +683,6 @@ const PreTripChecklist = () => {
                 </tr>
               ) : (
                 historyRows.map((checklist) => {
-                  const driver = drivers.find((d) => d.id === checklist.driver_id);
                   const vehicle = vehicles.find((v) => v.id === checklist.vehicle_id);
                   const canEdit = canEditPreTripChecklist(user?.role, isPersonalView, checklist, user);
                   return (
@@ -688,9 +694,7 @@ const PreTripChecklist = () => {
                         </span>
                       </td>
                       <td>
-                        {driver
-                          ? `${driver.first_name} ${driver.last_name}`
-                          : '—'}
+                        {resolveDriverName(checklist.driver_id, checklist)}
                       </td>
                       <td className="font-semibold">{vehicle?.registration_number || 'N/A'}</td>
                       <td>
