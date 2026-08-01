@@ -3,6 +3,7 @@ import axios from 'axios';
 import { Plus, Search, Pencil, Trash2, Upload, Download } from 'lucide-react';
 import { toast } from 'sonner';
 import { useAuth } from '../contexts/AuthContext';
+import { useSearchParams } from 'react-router-dom';
 import { Button } from '../components/ui/button';
 import { Input } from '../components/ui/input';
 import {
@@ -21,6 +22,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from '../components/ui/select';
+import { Tabs, TabsContent, TabsList, TabsTrigger } from '../components/ui/tabs';
 import CountrySelect, {
   DEFAULT_COUNTRY_CODE,
   getCountryBadgeClass,
@@ -29,6 +31,7 @@ import CountrySelect, {
   normalizeCountryCode,
 } from '../components/CountrySelect';
 import ConfirmDeleteDialog from '../components/ConfirmDeleteDialog';
+import VehicleAvailabilityPanel from '../components/VehicleAvailabilityPanel';
 import { completeDialogSubmit } from '../utils/formUtils';
 import { canEditFleetRecord, canHardDelete } from '../utils/permissions';
 
@@ -75,12 +78,16 @@ const Vehicles = () => {
   const { user } = useAuth();
   const canEdit = canEditFleetRecord(user?.role);
   const canDelete = canHardDelete(user?.role, 'vehicle');
+  const [searchParams, setSearchParams] = useSearchParams();
+  const tabFromUrl = searchParams.get('tab') === 'availability' ? 'availability' : 'fleet';
+  const countryFromUrl = searchParams.get('country') || 'ALL';
 
+  const [activeTab, setActiveTab] = useState(tabFromUrl);
   const [vehicles, setVehicles] = useState([]);
   const [filteredVehicles, setFilteredVehicles] = useState([]);
   const [loading, setLoading] = useState(true);
   const [searchTerm, setSearchTerm] = useState('');
-  const [countryFilter, setCountryFilter] = useState('ALL');
+  const [countryFilter, setCountryFilter] = useState(countryFromUrl === 'ALL' ? 'ALL' : countryFromUrl);
   const [dialogOpen, setDialogOpen] = useState(false);
   const [editingId, setEditingId] = useState(null);
   const [deleteTarget, setDeleteTarget] = useState(null);
@@ -131,6 +138,23 @@ const Vehicles = () => {
     filterVehicles();
   }, [filterVehicles]);
 
+  useEffect(() => {
+    setActiveTab(tabFromUrl);
+  }, [tabFromUrl]);
+
+  useEffect(() => {
+    if (countryFromUrl && countryFromUrl !== 'ALL') {
+      setCountryFilter(countryFromUrl);
+    }
+  }, [countryFromUrl]);
+
+  const handleTabChange = (tab) => {
+    setActiveTab(tab);
+    const next = new URLSearchParams(searchParams);
+    if (tab === 'availability') next.set('tab', 'availability');
+    else next.delete('tab');
+    setSearchParams(next, { replace: true });
+  };
   const handleDialogOpenChange = (open) => {
     setDialogOpen(open);
     if (!open) {
@@ -276,7 +300,7 @@ const Vehicles = () => {
           <h1 className="text-3xl font-bold text-slate-800">Vehicles</h1>
           <p className="text-slate-600 mt-1">Manage your fleet across all countries</p>
         </div>
-        {canEdit && (
+        {canEdit && activeTab === 'fleet' && (
           <div className="flex flex-wrap gap-2 mt-4 lg:mt-0">
           <Dialog open={dialogOpen} onOpenChange={handleDialogOpenChange}>
             <DialogTrigger asChild>
@@ -491,6 +515,13 @@ const Vehicles = () => {
         )}
       </div>
 
+      <Tabs value={activeTab} onValueChange={handleTabChange} className="w-full">
+        <TabsList className="mb-4">
+          <TabsTrigger value="fleet" data-testid="fleet-tab">Fleet</TabsTrigger>
+          <TabsTrigger value="availability" data-testid="availability-tab">Availability</TabsTrigger>
+        </TabsList>
+
+        <TabsContent value="fleet">
       <div className="flex flex-col lg:flex-row gap-4 mb-6">
         <div className="relative flex-1">
           <Search className="absolute left-3 top-1/2 transform -translate-y-1/2 text-slate-400" size={18} />
@@ -507,7 +538,7 @@ const Vehicles = () => {
           onValueChange={setCountryFilter}
           includeAllOption
           allLabel="All Countries"
-          className="w-full lg:w-48"
+          className="w-full lg:w-56"
         />
       </div>
 
@@ -582,6 +613,15 @@ const Vehicles = () => {
           </tbody>
         </table>
       </div>
+        </TabsContent>
+
+        <TabsContent value="availability">
+          <VehicleAvailabilityPanel
+            canEdit={canEdit}
+            initialCountry={countryFromUrl !== 'ALL' ? countryFromUrl : countryFilter}
+          />
+        </TabsContent>
+      </Tabs>
 
       <ConfirmDeleteDialog
         open={!!deleteTarget}

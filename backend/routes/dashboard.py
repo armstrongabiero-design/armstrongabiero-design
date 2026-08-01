@@ -39,6 +39,8 @@ async def get_dashboard_stats(country: Optional[str] = None):
     total_drivers = await db.drivers.count_documents(country_filter)
     pending_maintenance = await db.maintenance_records.count_documents({**country_filter, "completed_date": None})
     pending_requests = await db.maintenance_requests.count_documents({**country_filter, "status": "PENDING"})
+    from availability_service import get_availability_summary
+    availability = await get_availability_summary(db, country)
     assets = await db.assets.find(country_filter, {"_id": 0, "current_value_usd": 1}).to_list(1000)
     total_fleet_value = sum(a.get('current_value_usd', 0) for a in assets)
     fuel_txns = await db.fuel_transactions.find(country_filter, {"_id": 0, "cost_usd": 1}).to_list(1000)
@@ -56,6 +58,10 @@ async def get_dashboard_stats(country: Optional[str] = None):
     return {
         "total_vehicles": total_vehicles,
         "active_vehicles": active_vehicles,
+        "inactive_vehicles": availability.get("inactive", 0),
+        "maintenance_vehicles": availability.get("maintenance", 0),
+        "availability_pct": availability.get("availability_pct", 0),
+        "available_vehicles": availability.get("available", 0),
         "total_drivers": total_drivers,
         "pending_maintenance": pending_maintenance,
         "pending_requests": pending_requests,

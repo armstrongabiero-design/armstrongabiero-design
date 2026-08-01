@@ -191,11 +191,33 @@ async def lifespan(app: FastAPI):
 
         reminder_task = asyncio.create_task(_reminder_loop())
 
+    snapshot_task = None
+
+    async def _availability_snapshot_loop():
+        from availability_service import take_daily_snapshots
+        await asyncio.sleep(20)
+        while True:
+            try:
+                stats = await take_daily_snapshots(db)
+                logging.getLogger(__name__).info("Availability snapshot: %s", stats)
+            except Exception as exc:
+                logging.getLogger(__name__).warning("Availability snapshot failed: %s", exc)
+            # Re-check roughly hourly; upsert is idempotent per UTC date
+            await asyncio.sleep(3600)
+
+    snapshot_task = asyncio.create_task(_availability_snapshot_loop())
+
     yield
     if reminder_task:
         reminder_task.cancel()
         try:
             await reminder_task
+        except asyncio.CancelledError:
+            pass
+    if snapshot_task:
+        snapshot_task.cancel()
+        try:
+            await snapshot_task
         except asyncio.CancelledError:
             pass
     client.close()
@@ -506,10 +528,96 @@ async def get_vehicles(country: Optional[str] = None, status: Optional[str] = No
     
     vehicles = await db.vehicles.find(query, {"_id": 0}).to_list(1000)
     for v in vehicles:
-        for date_field in ['acquisition_date', 'created_at', 'updated_at']:
+        for date_field in ['acquisition_date', 'created_at', 'updated_at', 'availability_changed_at']:
             if isinstance(v.get(date_field), str):
                 v[date_field] = datetime.fromisoformat(v[date_field])
     return vehicles
+
+
+@api_router.get("/vehicles/availability/summary")
+async def vehicles_availability_summary(
+    country: Optional[str] = None,
+    current_user: dict = Depends(get_current_user),
+):
+    from availability_service import get_availability_summary
+    return await get_availability_summary(db, country)
+
+
+@api_router.get("/vehicles/availability/weekly")
+async def vehicles_availability_weekly(
+    country: Optional[str] = None,
+    weeks: int = Query(12, ge=1, le=52),
+    current_user: dict = Depends(get_current_user),
+):
+    from availability_service import get_weekly_series
+    return {"weeks": await get_weekly_series(db, country, weeks)}
+
+
+@api_router.get("/vehicles/availability/monthly")
+async def vehicles_availability_monthly(
+    country: Optional[str] = None,
+    months: int = Query(12, ge=1, le=36),
+    current_user: dict = Depends(get_current_user),
+):
+    from availability_service import get_monthly_series
+    return {"months": await get_monthly_series(db, country, months)}
+
+
+@api_router.get("/vehicles/availability/events")
+async def vehicles_availability_events(
+    country: Optional[str] = None,
+    vehicle_id: Optional[str] = None,
+    limit: int = Query(100, ge=1, le=500),
+    current_user: dict = Depends(get_current_user),
+):
+    from availability_service import list_availability_events
+    return await list_availability_events(db, country, vehicle_id, limit)
+
+
+@api_router.post("/vehicles/availability/snapshot")
+async def vehicles_availability_snapshot(
+    request: Request,
+    x_reminder_token: Optional[str] = Header(None, alias="X-Reminder-Token"),
+):
+    """Manual/cron trigger for daily availability snapshots."""
+    from availability_service import take_daily_snapshots
+
+    cron_token = os.environ.get("REMINDER_CRON_TOKEN", "").strip()
+    is_cron = bool(cron_token and x_reminder_token and x_reminder_token == cron_token)
+    payload = getattr(request.state, "jwt_payload", None) or {}
+    is_staff = payload.get("role") in (
+        "GROUP_FLEET_MANAGER", "FLEET_MANAGER", "FLEET_OFFICER"
+    )
+    if not is_cron and not is_staff:
+        raise HTTPException(status_code=403, detail="Insufficient permissions")
+
+    return {"status": "ok", **(await take_daily_snapshots(db))}
+
+
+@api_router.put("/vehicles/{vehicle_id}/availability", response_model=Vehicle)
+async def update_vehicle_availability_endpoint(
+    vehicle_id: str,
+    body: dict = Body(...),
+    current_user: dict = Depends(_require_staff),
+):
+    from availability_service import update_vehicle_availability
+    from models.availability import VehicleAvailabilityUpdate
+    from models.enums import VehicleStatus as VS
+
+    try:
+        payload = VehicleAvailabilityUpdate(
+            status=VS(body.get("status")),
+            reason=body.get("reason") or None,
+            notes=body.get("notes"),
+        )
+        updated = await update_vehicle_availability(db, vehicle_id, payload, current_user)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    for date_field in ["acquisition_date", "created_at", "updated_at", "availability_changed_at"]:
+        if isinstance(updated.get(date_field), str):
+            updated[date_field] = datetime.fromisoformat(updated[date_field])
+    return Vehicle(**updated)
 
 
 @api_router.get("/vehicles/{vehicle_id}", response_model=Vehicle)
@@ -517,7 +625,7 @@ async def get_vehicle(vehicle_id: str):
     vehicle = await db.vehicles.find_one({"id": vehicle_id}, {"_id": 0})
     if not vehicle:
         raise HTTPException(status_code=404, detail="Vehicle not found")
-    for date_field in ['acquisition_date', 'created_at', 'updated_at']:
+    for date_field in ['acquisition_date', 'created_at', 'updated_at', 'availability_changed_at']:
         if isinstance(vehicle.get(date_field), str):
             vehicle[date_field] = datetime.fromisoformat(vehicle[date_field])
     return vehicle
@@ -549,7 +657,7 @@ async def update_vehicle(
     await db.vehicles.update_one({"id": vehicle_id}, {"$set": update_data})
     updated_vehicle = await db.vehicles.find_one({"id": vehicle_id}, {"_id": 0})
 
-    for date_field in ["acquisition_date", "created_at", "updated_at"]:
+    for date_field in ["acquisition_date", "created_at", "updated_at", "availability_changed_at"]:
         if isinstance(updated_vehicle.get(date_field), str):
             updated_vehicle[date_field] = datetime.fromisoformat(updated_vehicle[date_field])
 
@@ -2600,8 +2708,9 @@ async def get_dashboard_stats(country: Optional[str] = None):
     total_drivers = await db.drivers.count_documents(country_filter)
     pending_maintenance = await db.maintenance_records.count_documents({**country_filter, "completed_date": None})
     pending_requests = await db.maintenance_requests.count_documents({**country_filter, "status": "PENDING"})
-    
-    # Total fleet value
+
+    from availability_service import get_availability_summary
+    availability = await get_availability_summary(db, country)
     assets = await db.assets.find(country_filter, {"_id": 0, "current_value_usd": 1}).to_list(1000)
     total_fleet_value = sum(a.get('current_value_usd', 0) for a in assets)
     
@@ -2628,6 +2737,10 @@ async def get_dashboard_stats(country: Optional[str] = None):
     return {
         "total_vehicles": total_vehicles,
         "active_vehicles": active_vehicles,
+        "inactive_vehicles": availability.get("inactive", 0),
+        "maintenance_vehicles": availability.get("maintenance", 0),
+        "availability_pct": availability.get("availability_pct", 0),
+        "available_vehicles": availability.get("available", 0),
         "total_drivers": total_drivers,
         "pending_maintenance": pending_maintenance,
         "pending_requests": pending_requests,
@@ -2746,8 +2859,11 @@ async def get_staff_dashboard(
     active_vehicles = await db.vehicles.count_documents({**country_filter, "status": "ACTIVE"})
     total_drivers = await db.drivers.count_documents(country_filter)
     pending_maintenance = await db.maintenance_records.count_documents({**country_filter, "completed_date": None})
-    
-    # Pending requests for this country
+
+    from availability_service import get_availability_summary
+    availability = await get_availability_summary(
+        db, normalized_country if user_role == 'GROUP_FLEET_MANAGER' else (normalized_country or None)
+    )
     request_filter = country_filter
     pending_requests = await db.maintenance_requests.find(
         {**request_filter, "status": "PENDING"},
@@ -2806,6 +2922,10 @@ async def get_staff_dashboard(
         "user_country": user_country,
         "total_vehicles": total_vehicles,
         "active_vehicles": active_vehicles,
+        "inactive_vehicles": availability.get("inactive", 0),
+        "maintenance_vehicles": availability.get("maintenance", 0),
+        "availability_pct": availability.get("availability_pct", 0),
+        "available_vehicles": availability.get("available", 0),
         "total_drivers": total_drivers,
         "pending_maintenance": pending_maintenance,
         "pending_requests_count": len(pending_requests),
@@ -4969,7 +5089,9 @@ async def delete_vendor(
 @api_router.post("/vehicle-locations", response_model=VehicleLocation)
 async def create_vehicle_location(input: VehicleLocationCreate):
     """Update vehicle location (GPS or Manual)"""
-    location = VehicleLocation(**input.model_dump())
+    data = input.model_dump()
+    data["country"] = normalize_country_code(data.get("country"))
+    location = VehicleLocation(**data)
     doc = location.model_dump()
     doc['timestamp'] = doc['timestamp'].isoformat()
     
@@ -4983,7 +5105,11 @@ async def create_vehicle_location(input: VehicleLocationCreate):
                 "latitude": input.latitude,
                 "longitude": input.longitude,
                 "address": input.address,
-                "timestamp": doc['timestamp']
+                "city": input.city,
+                "country": data["country"],
+                "timestamp": doc['timestamp'],
+                "speed_kmh": input.speed_kmh,
+                "source": input.source,
             }
         }}
     )

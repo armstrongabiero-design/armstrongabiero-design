@@ -42,6 +42,10 @@ class Vehicle(BaseModel):
     acquisition_currency: CurrencyEnum
     acquisition_cost_usd: float
     country_specific_fields: Dict[str, Any] = Field(default_factory=dict)
+    availability_reason: Optional[str] = None
+    availability_notes: Optional[str] = None
+    availability_changed_at: Optional[datetime] = None
+    availability_changed_by: Optional[str] = None
     created_at: datetime = Field(default_factory=datetime.utcnow)
     updated_at: datetime = Field(default_factory=datetime.utcnow)
 

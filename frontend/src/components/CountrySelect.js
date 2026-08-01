@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import axios from 'axios';
 import {
   Select,
@@ -73,6 +73,7 @@ export function getCountryFlag(code) {
 
 /**
  * Searchable country dropdown — stores ISO alpha-2 in `value`.
+ * @param {string[]} [allowedCodes] — when set, only these ISO codes appear (plus All if enabled)
  */
 export function CountrySelect({
   value,
@@ -81,6 +82,8 @@ export function CountrySelect({
   className,
   includeAllOption = false,
   allLabel = 'All countries',
+  allowedCodes,
+  required = false,
   'data-testid': dataTestId,
 }) {
   const [countries, setCountries] = useState(cachedCountries || []);
@@ -107,33 +110,67 @@ export function CountrySelect({
   }, []);
 
   const isoValue = normalizeCountryCode(value);
+  const allowedSet = useMemo(() => {
+    if (!allowedCodes || allowedCodes.length === 0) return null;
+    return new Set(allowedCodes.map((c) => normalizeCountryCode(c)).filter(Boolean));
+  }, [allowedCodes]);
 
-  const filtered = countries.filter((c) =>
-    c.name.toLowerCase().includes(search.toLowerCase())
-  );
+  const filtered = countries.filter((c) => {
+    if (allowedSet && !allowedSet.has(c.code)) return false;
+    const q = search.trim().toLowerCase();
+    if (!q) return true;
+    return (
+      c.name.toLowerCase().includes(q) ||
+      c.code.toLowerCase().includes(q)
+    );
+  });
+
+  const selectedLabel =
+    isoValue && isoValue !== 'ALL'
+      ? getCountryLabel(isoValue, countries) || isoValue
+      : includeAllOption
+        ? allLabel
+        : '';
 
   return (
     <div className={className} data-testid={dataTestId}>
-      <input
-        type="text"
-        placeholder="Search countries…"
-        className="mb-2 w-full rounded-md border border-slate-200 px-3 py-2 text-sm"
-        value={search}
-        onChange={(e) => setSearch(e.target.value)}
-      />
-      <Select value={isoValue || (includeAllOption ? 'ALL' : '')} onValueChange={onValueChange}>
+      <Select
+        value={isoValue || (includeAllOption ? 'ALL' : '')}
+        onValueChange={(v) => {
+          setSearch('');
+          onValueChange(v);
+        }}
+        required={required}
+      >
         <SelectTrigger>
-          <SelectValue placeholder={placeholder} />
+          <SelectValue placeholder={placeholder}>
+            {selectedLabel || undefined}
+          </SelectValue>
         </SelectTrigger>
-        <SelectContent className="max-h-[240px]">
+        <SelectContent className="max-h-[280px]">
+          <div className="sticky top-0 z-10 bg-white p-2 border-b border-slate-100">
+            <input
+              type="text"
+              autoFocus
+              placeholder="Search by name or code…"
+              className="w-full rounded-md border border-slate-200 px-3 py-2 text-sm"
+              value={search}
+              onChange={(e) => setSearch(e.target.value)}
+              onKeyDown={(e) => e.stopPropagation()}
+            />
+          </div>
           {includeAllOption && (
             <SelectItem value="ALL">{allLabel}</SelectItem>
           )}
-          {filtered.map((country) => (
-            <SelectItem key={country.code} value={country.code}>
-              {country.name}
-            </SelectItem>
-          ))}
+          {filtered.length === 0 ? (
+            <div className="px-3 py-4 text-sm text-slate-500">No countries match</div>
+          ) : (
+            filtered.map((country) => (
+              <SelectItem key={country.code} value={country.code}>
+                {country.name} ({country.code})
+              </SelectItem>
+            ))
+          )}
         </SelectContent>
       </Select>
     </div>

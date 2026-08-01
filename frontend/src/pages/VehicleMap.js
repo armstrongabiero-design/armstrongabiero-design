@@ -1,4 +1,4 @@
-import React, { useEffect, useState, useCallback } from 'react';
+import React, { useEffect, useState, useCallback, useMemo } from 'react';
 import axios from 'axios';
 import { MapPin, RefreshCw, Clock } from 'lucide-react';
 import { Button } from '../components/ui/button';
@@ -9,6 +9,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '.
 import CountrySelect, {
   DEFAULT_COUNTRY_CODE,
   getCountryFlag,
+  getCountryLabel,
   countryMatchesFilter,
   normalizeCountryCode,
 } from '../components/CountrySelect';
@@ -16,13 +17,6 @@ import { completeDialogSubmit } from '../utils/formUtils';
 
 const BACKEND_URL = process.env.REACT_APP_BACKEND_URL;
 const API = `${BACKEND_URL}/api`;
-
-// Country center coordinates (ISO alpha-2)
-const COUNTRY_COORDS = {
-  GH: { lat: 7.9465, lng: -1.0232, zoom: 7, label: 'Ghana' },
-  LR: { lat: 6.4281, lng: -9.4295, zoom: 7, label: 'Liberia' },
-  ST: { lat: 0.1864, lng: 6.6131, zoom: 10, label: 'São Tomé and Príncipe' },
-};
 
 const createInitialFormData = (userCountry) => ({
   vehicle_id: '',
@@ -69,10 +63,29 @@ const VehicleMap = () => {
     return () => clearInterval(interval);
   }, [fetchData]);
 
+  const countriesWithLocations = useMemo(() => {
+    const codes = new Set();
+    locations.forEach((l) => {
+      const code = normalizeCountryCode(l.country);
+      if (code) codes.add(code);
+    });
+    return Array.from(codes).sort();
+  }, [locations]);
+
+  const onVehicleChange = (vehicleId) => {
+    const vehicle = vehicles.find((item) => item.id === vehicleId);
+    setFormData({
+      ...formData,
+      vehicle_id: vehicleId,
+      country: normalizeCountryCode(vehicle?.country) || formData.country || DEFAULT_COUNTRY_CODE,
+    });
+  };
+
   const handleSubmit = async (e) => {
     e.preventDefault();
-
-    const vehicle = vehicles.find((item) => item.id === formData.vehicle_id);
+    if (!formData.country) {
+      return;
+    }
 
     await completeDialogSubmit({
       submit: () =>
@@ -81,7 +94,9 @@ const VehicleMap = () => {
           latitude: parseFloat(formData.latitude),
           longitude: parseFloat(formData.longitude),
           speed_kmh: formData.speed_kmh ? parseFloat(formData.speed_kmh) : null,
-          country: vehicle?.country || formData.country,
+          country: normalizeCountryCode(formData.country),
+          city: formData.city?.trim() || null,
+          driver_id: formData.driver_id || null,
         }),
       setDialogOpen,
       setFormData,
@@ -96,6 +111,10 @@ const VehicleMap = () => {
     ? locations.filter((l) => countryMatchesFilter(l.country, selectedCountry))
     : locations;
 
+  if (loading) {
+    return <div className="p-8 text-center">Loading fleet map...</div>;
+  }
+
   return (
     <div className="p-6 lg:p-8" data-testid="vehicle-map-page">
       <div className="flex flex-col lg:flex-row lg:justify-between lg:items-center mb-6 gap-4">
@@ -103,13 +122,14 @@ const VehicleMap = () => {
           <h1 className="text-3xl font-bold text-slate-800">Fleet Map</h1>
           <p className="text-slate-600 mt-1">Real-time vehicle locations across all countries</p>
         </div>
-        <div className="flex gap-2 flex-wrap">
+        <div className="flex gap-2 flex-wrap items-start">
           <CountrySelect
             value={selectedCountry || 'ALL'}
             onValueChange={(v) => setSelectedCountry(v === 'ALL' ? '' : v)}
             includeAllOption
             allLabel="All Countries"
-            className="w-40"
+            allowedCodes={countriesWithLocations}
+            className="w-56"
           />
           <Button variant="outline" onClick={fetchData}>
             <RefreshCw size={18} className="mr-2" />
@@ -125,19 +145,27 @@ const VehicleMap = () => {
             <DialogContent>
               <DialogHeader>
                 <DialogTitle>Update Vehicle Location</DialogTitle>
-                <DialogDescription>Manually update a vehicle's location (GPS backup).</DialogDescription>
+                <DialogDescription>Manually update a vehicle&apos;s location (GPS backup).</DialogDescription>
               </DialogHeader>
               <form onSubmit={handleSubmit} className="space-y-4">
                 <div>
                   <Label>Vehicle</Label>
-                  <Select value={formData.vehicle_id} onValueChange={(value) => setFormData({...formData, vehicle_id: value})}>
+                  <Select value={formData.vehicle_id} onValueChange={onVehicleChange}>
                     <SelectTrigger><SelectValue placeholder="Select vehicle" /></SelectTrigger>
                     <SelectContent>
                       {vehicles.map(veh => (
-                        <SelectItem key={veh.id} value={veh.id}>{veh.registration_number} - {veh.country}</SelectItem>
+                        <SelectItem key={veh.id} value={veh.id}>{veh.registration_number} - {getCountryLabel(veh.country) || veh.country}</SelectItem>
                       ))}
                     </SelectContent>
                   </Select>
+                </div>
+                <div>
+                  <Label>Country *</Label>
+                  <CountrySelect
+                    value={formData.country}
+                    onValueChange={(v) => setFormData({ ...formData, country: v })}
+                    required
+                  />
                 </div>
                 <div className="grid grid-cols-2 gap-4">
                   <div>
@@ -155,7 +183,7 @@ const VehicleMap = () => {
                     <Input value={formData.address} onChange={(e) => setFormData({...formData, address: e.target.value})} placeholder="Street address" />
                   </div>
                   <div>
-                    <Label>City</Label>
+                    <Label>City (optional)</Label>
                     <Input value={formData.city} onChange={(e) => setFormData({...formData, city: e.target.value})} placeholder="City name" />
                   </div>
                 </div>
@@ -166,9 +194,10 @@ const VehicleMap = () => {
                   </div>
                   <div>
                     <Label>Driver</Label>
-                    <Select value={formData.driver_id} onValueChange={(value) => setFormData({...formData, driver_id: value})}>
+                    <Select value={formData.driver_id || 'NONE'} onValueChange={(value) => setFormData({...formData, driver_id: value === 'NONE' ? '' : value})}>
                       <SelectTrigger><SelectValue placeholder="Select driver" /></SelectTrigger>
                       <SelectContent>
+                        <SelectItem value="NONE">None</SelectItem>
                         {drivers.map(d => (
                           <SelectItem key={d.id} value={d.id}>{d.first_name} {d.last_name}</SelectItem>
                         ))}
@@ -186,28 +215,29 @@ const VehicleMap = () => {
         </div>
       </div>
 
-      {/* Country Summary Cards */}
-      <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mb-6">
-        {Object.entries(COUNTRY_COORDS).map(([code, meta]) => {
-          const countryLocations = locations.filter((l) => countryMatchesFilter(l.country, code));
-
-          return (
-            <div
-              key={code}
-              className={`fleet-card cursor-pointer hover:shadow-lg transition-shadow ${selectedCountry && countryMatchesFilter(selectedCountry, code) ? 'ring-2 ring-amber-500' : ''}`}
-              onClick={() => setSelectedCountry(selectedCountry && countryMatchesFilter(selectedCountry, code) ? '' : code)}
-            >
-              <div className="flex items-center justify-between">
-                <div>
-                  <h3 className="font-semibold text-lg">{meta.label}</h3>
-                  <p className="text-slate-500 text-sm">{countryLocations.length} vehicles tracked</p>
+      {/* Country Summary Cards — only countries that currently have locations */}
+      {countriesWithLocations.length > 0 && (
+        <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mb-6">
+          {countriesWithLocations.map((code) => {
+            const countryLocations = locations.filter((l) => countryMatchesFilter(l.country, code));
+            return (
+              <div
+                key={code}
+                className={`fleet-card cursor-pointer hover:shadow-lg transition-shadow ${selectedCountry && countryMatchesFilter(selectedCountry, code) ? 'ring-2 ring-amber-500' : ''}`}
+                onClick={() => setSelectedCountry(selectedCountry && countryMatchesFilter(selectedCountry, code) ? '' : code)}
+              >
+                <div className="flex items-center justify-between">
+                  <div>
+                    <h3 className="font-semibold text-lg">{getCountryLabel(code) || code}</h3>
+                    <p className="text-slate-500 text-sm">{countryLocations.length} vehicles tracked</p>
+                  </div>
+                  <div className="text-4xl">{getCountryFlag(code) || '📍'}</div>
                 </div>
-                <div className="text-4xl">{getCountryFlag(code)}</div>
               </div>
-            </div>
-          );
-        })}
-      </div>
+            );
+          })}
+        </div>
+      )}
 
       {/* Map Placeholder */}
       <div className="fleet-card mb-6">
@@ -223,8 +253,7 @@ const VehicleMap = () => {
               Integrate with Google Maps API for full map functionality
             </p>
           </div>
-          
-          {/* Mini vehicle indicators */}
+
           <div className="absolute bottom-4 left-4 right-4 flex gap-2 flex-wrap">
             {filteredLocations.slice(0, 10).map((loc) => (
               <div key={loc.vehicle_id} className="bg-white rounded-full px-2 py-1 text-xs shadow flex items-center gap-1">
@@ -267,7 +296,9 @@ const VehicleMap = () => {
                     </td>
                     <td>
                       <div>{loc.address || '-'}</div>
-                      <div className="text-xs text-slate-500">{loc.city || loc.country}</div>
+                      <div className="text-xs text-slate-500">
+                        {[loc.city, getCountryLabel(loc.country) || loc.country].filter(Boolean).join(', ')}
+                      </div>
                     </td>
                     <td className="font-mono text-sm">
                       {loc.latitude?.toFixed(4)}, {loc.longitude?.toFixed(4)}

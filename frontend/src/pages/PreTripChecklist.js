@@ -355,11 +355,26 @@ const PreTripChecklist = () => {
                   ))}
                 </SelectContent>
               </Select>
+              {selectedDriver && (
+                <p className="text-xs text-slate-500 mt-1">
+                  Checklist will be recorded for{' '}
+                  {(() => {
+                    const d = drivers.find((x) => x.id === selectedDriver);
+                    return d ? `${d.first_name} ${d.last_name}` : 'selected driver';
+                  })()}
+                </p>
+              )}
             </div>
           ) : (
             <div className="bg-slate-50 p-3 rounded-lg">
               <Label className="text-xs text-slate-500">Driver</Label>
-              <p className="font-medium text-slate-800">{user?.full_name}</p>
+              <p className="font-medium text-slate-800">
+                {(() => {
+                  const driverId = user?.driver_id || user?.id;
+                  const d = drivers.find((x) => x.id === driverId);
+                  return d ? `${d.first_name} ${d.last_name}` : (user?.full_name || '—');
+                })()}
+              </p>
             </div>
           )}
           <div>
@@ -434,6 +449,18 @@ const PreTripChecklist = () => {
             <DialogDescription>Check each item and note any issues</DialogDescription>
           </DialogHeader>
           <form onSubmit={handleSubmit} className="space-y-4">
+            <div className="rounded-lg border border-slate-200 bg-slate-50 p-3">
+              <Label className="text-xs text-slate-500">Driver</Label>
+              <p className="font-medium text-slate-800">
+                {(() => {
+                  const driverId = isPersonalView
+                    ? (user?.driver_id || user?.id)
+                    : (formData.driver_id || selectedDriver);
+                  const d = drivers.find((x) => x.id === driverId);
+                  return d ? `${d.first_name} ${d.last_name}` : '—';
+                })()}
+              </p>
+            </div>
             {CHECKLIST_ITEMS.map(item => (
               <div key={item.key} className="border rounded-lg p-4">
                 <div className="flex items-center justify-between mb-2">
@@ -634,7 +661,7 @@ const PreTripChecklist = () => {
             <thead>
               <tr>
                 <th>Date</th>
-                {!isPersonalView && <th>Driver</th>}
+                <th>Driver</th>
                 <th>Vehicle</th>
                 <th>Status</th>
                 <th className="w-24">Actions</th>
@@ -643,7 +670,7 @@ const PreTripChecklist = () => {
             <tbody>
               {historyRows.length === 0 ? (
                 <tr>
-                  <td colSpan={isPersonalView ? 4 : 5} className="text-center py-8 text-slate-500">
+                  <td colSpan={5} className="text-center py-8 text-slate-500">
                     No checklists found
                   </td>
                 </tr>
@@ -660,9 +687,11 @@ const PreTripChecklist = () => {
                           {new Date(checklist.created_at).toLocaleTimeString()}
                         </span>
                       </td>
-                      {!isPersonalView && (
-                        <td>{driver ? `${driver.first_name} ${driver.last_name}` : '—'}</td>
-                      )}
+                      <td>
+                        {driver
+                          ? `${driver.first_name} ${driver.last_name}`
+                          : '—'}
+                      </td>
                       <td className="font-semibold">{vehicle?.registration_number || 'N/A'}</td>
                       <td>
                         <span className={getOverallStatusBadge(checklist.overall_status)}>

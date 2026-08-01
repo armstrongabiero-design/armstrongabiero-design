@@ -411,6 +411,26 @@ const StaffDashboard = ({ user, token, isGroupManager }) => {
           </div>
         </Link>
 
+        <Link
+          to={`/vehicles?tab=availability${selectedCountry && selectedCountry !== 'ALL' ? `&country=${encodeURIComponent(selectedCountry)}` : ''}`}
+          className="stat-card green hover:opacity-95 transition-all cursor-pointer block"
+          data-testid="availability-card"
+        >
+          <div className="flex items-start justify-between">
+            <div>
+              <p className="text-white/80 text-sm font-medium">Fleet Availability</p>
+              <h3 className="text-4xl font-bold mt-2">{stats?.availability_pct ?? 0}%</h3>
+              <p className="text-white/70 text-xs mt-1">
+                Active {stats?.active_vehicles || 0} · Inactive {stats?.inactive_vehicles || 0}
+                {(stats?.maintenance_vehicles || 0) > 0 ? ` · Maint ${stats.maintenance_vehicles}` : ''}
+              </p>
+            </div>
+            <div className="bg-white/20 p-3 rounded-lg">
+              <Activity size={28} />
+            </div>
+          </div>
+        </Link>
+
         <Link to="/reports" className="stat-card blue hover:opacity-95 transition-all cursor-pointer block" data-testid="fleet-value-card">
           <div className="flex items-start justify-between">
             <div>

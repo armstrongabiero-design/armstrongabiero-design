@@ -1,6 +1,6 @@
 import React, { useCallback, useEffect, useState } from 'react';
 import axios from 'axios';
-import { Plus, Pencil, Trash2 } from 'lucide-react';
+import { Plus, Pencil, Trash2, CheckCircle2 } from 'lucide-react';
 import { toast } from 'sonner';
 import { useAuth } from '../contexts/AuthContext';
 import { Button } from '../components/ui/button';
@@ -16,6 +16,11 @@ import { completeDialogSubmit } from '../utils/formUtils';
 
 const BACKEND_URL = process.env.REACT_APP_BACKEND_URL;
 const API = `${BACKEND_URL}/api`;
+
+const isJobIncomplete = (job) => {
+  const status = job?.work_status || job?.status;
+  return status !== 'WORK_COMPLETED' && status !== 'COMPLETED';
+};
 
 const createInitial = () => ({
   vehicle_id: '',
@@ -164,6 +169,19 @@ const Workshop = () => {
       toast.error(error.response?.data?.detail || 'Failed to delete');
     } finally {
       setDeleting(false);
+    }
+  };
+
+  const markWorkCompleted = async (job) => {
+    if (!canEdit || !isJobIncomplete(job)) return;
+    try {
+      await axios.put(`${API}/workshops/${job.id}`, {
+        work_status: 'WORK_COMPLETED',
+      });
+      toast.success('Marked as work completed');
+      fetchData();
+    } catch (error) {
+      toast.error(error.response?.data?.detail || 'Failed to mark work completed');
     }
   };
 
@@ -339,7 +357,19 @@ const Workshop = () => {
                     <td>${Number(job.cost_usd || 0).toLocaleString()}</td>
                     <td><span className="status-badge">{workStatusLabel(job.work_status)}</span></td>
                     <td>
-                      <div className="flex gap-1">
+                      <div className="flex gap-1 items-center">
+                        {isJobIncomplete(job) && (
+                          <Button
+                            variant="outline"
+                            size="sm"
+                            className="h-8"
+                            onClick={() => markWorkCompleted(job)}
+                            title="Mark work completed"
+                          >
+                            <CheckCircle2 size={14} className="mr-1" />
+                            Complete
+                          </Button>
+                        )}
                         <Button variant="ghost" size="icon" className="h-8 w-8" onClick={() => openEdit(job)}>
                           <Pencil size={16} />
                         </Button>

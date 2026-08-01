@@ -63,3 +63,12 @@ from .vendors import Vendor, VendorCreate, VendorUpdate
 
 # Location models
 from .locations import VehicleLocation, VehicleLocationCreate
+
+# Availability models
+from .availability import (
+    AvailabilityReason,
+    AVAILABILITY_REASON_LABELS,
+    VehicleAvailabilityUpdate,
+    VehicleAvailabilityEvent,
+    VehicleAvailabilitySnapshot,
+)

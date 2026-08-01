@@ -1,6 +1,6 @@
 import React, { useCallback, useEffect, useState, useMemo } from 'react';
 import axios from 'axios';
-import { Plus, Sparkles, Upload, Download } from 'lucide-react';
+import { Plus, Sparkles, Upload, Download, CheckCircle2 } from 'lucide-react';
 import { toast } from 'sonner';
 import { useAuth } from '../contexts/AuthContext';
 import { useSearchParams } from 'react-router-dom';
@@ -16,6 +16,7 @@ import { WORK_STATUS_OPTIONS, workStatusLabel } from '../utils/workStatus';
 
 const BACKEND_URL = process.env.REACT_APP_BACKEND_URL;
 const API = `${BACKEND_URL}/api`;
+const NEXT_SERVICE_ODOMETER_INTERVAL_KM = 5000;
 
 const createInitialFormData = () => ({
   vehicle_id: '',
@@ -32,6 +33,11 @@ const createInitialFormData = () => ({
   etc_datetime: '',
   workshop_id: '',
 });
+
+const isWorkIncomplete = (record) => {
+  if (record?.work_status === 'WORK_COMPLETED' || record?.completed_date) return false;
+  return true;
+};
 
 const Maintenance = () => {
   const { user } = useAuth();
@@ -84,17 +90,49 @@ const Maintenance = () => {
     if (!open) setFormData(createInitialFormData());
   };
 
+  const applyOdometerSuggestion = (odometerValue, nextServiceValue) => {
+    const odo = parseFloat(odometerValue);
+    if (Number.isNaN(odo)) return nextServiceValue;
+    if (nextServiceValue !== '' && nextServiceValue != null) return nextServiceValue;
+    return String(odo + NEXT_SERVICE_ODOMETER_INTERVAL_KM);
+  };
+
+  const handleOdometerChange = (value) => {
+    setFormData((prev) => ({
+      ...prev,
+      odometer_at_maintenance: value,
+      next_service_odometer: applyOdometerSuggestion(value, prev.next_service_odometer),
+    }));
+  };
+
+  const markWorkCompleted = async (record) => {
+    if (!canBulkUpload || !isWorkIncomplete(record)) return;
+    try {
+      await axios.put(`${API}/maintenance/${record.id}`, {
+        work_status: 'WORK_COMPLETED',
+      });
+      toast.success('Marked as work completed');
+      fetchData();
+    } catch (error) {
+      toast.error(error.response?.data?.detail || 'Failed to mark work completed');
+    }
+  };
+
   const handleSubmit = async (e) => {
     e.preventDefault();
     if (formData.work_status === 'ETC' && !formData.etc_datetime) {
       toast.error('ETC datetime is required for this work status');
       return;
     }
+    const nextOdo =
+      formData.next_service_odometer !== '' && formData.next_service_odometer != null
+        ? parseFloat(formData.next_service_odometer)
+        : applyOdometerSuggestion(formData.odometer_at_maintenance, '');
     const payload = {
       ...formData,
       scheduled_date: new Date(formData.scheduled_date).toISOString(),
       next_due_date: formData.next_due_date ? new Date(formData.next_due_date).toISOString() : null,
-      next_service_odometer: formData.next_service_odometer !== '' ? parseFloat(formData.next_service_odometer) : null,
+      next_service_odometer: nextOdo !== '' && nextOdo != null ? parseFloat(nextOdo) : null,
       odometer_at_maintenance: parseFloat(formData.odometer_at_maintenance),
       cost: parseFloat(formData.cost),
       etc_datetime: formData.etc_datetime ? new Date(formData.etc_datetime).toISOString() : null,
@@ -341,11 +379,24 @@ const Maintenance = () => {
                 <div className="grid grid-cols-2 gap-4">
                   <div>
                     <Label>Odometer at Service (km)</Label>
-                    <Input type="number" value={formData.odometer_at_maintenance} onChange={(e) => setFormData({ ...formData, odometer_at_maintenance: e.target.value })} required />
+                    <Input
+                      type="number"
+                      value={formData.odometer_at_maintenance}
+                      onChange={(e) => handleOdometerChange(e.target.value)}
+                      required
+                    />
                   </div>
                   <div>
                     <Label>Next Service Odometer (km)</Label>
-                    <Input type="number" value={formData.next_service_odometer} onChange={(e) => setFormData({ ...formData, next_service_odometer: e.target.value })} />
+                    <Input
+                      type="number"
+                      value={formData.next_service_odometer}
+                      onChange={(e) => setFormData({ ...formData, next_service_odometer: e.target.value })}
+                      placeholder={`Auto: odometer + ${NEXT_SERVICE_ODOMETER_INTERVAL_KM}`}
+                    />
+                    <p className="text-xs text-slate-500 mt-1">
+                      Defaults to odometer + {NEXT_SERVICE_ODOMETER_INTERVAL_KM.toLocaleString()} km when left empty
+                    </p>
                   </div>
                 </div>
                 {masterWorkshops.length > 0 && (
@@ -467,22 +518,24 @@ const Maintenance = () => {
               <th>Description</th>
               <th>Scheduled Date</th>
               <th>Next Service Date</th>
-              <th>Next Service Odo</th>
               <th>Odometer</th>
+              <th>Next Service Odo</th>
               <th>Cost (USD)</th>
               <th>Work Status</th>
+              {canBulkUpload && <th className="w-36">Actions</th>}
             </tr>
           </thead>
           <tbody>
             {records.length === 0 ? (
               <tr>
-                <td colSpan="9" className="text-center py-8 text-slate-500">No maintenance records</td>
+                <td colSpan={canBulkUpload ? 10 : 9} className="text-center py-8 text-slate-500">No maintenance records</td>
               </tr>
             ) : (
               records.map((record) => {
                 const vehicle = vehicles.find((v) => v.id === record.vehicle_id);
                 const nextDue = record.next_due_date ? new Date(record.next_due_date) : null;
                 const overdue = nextDue && nextDue < new Date();
+                const incomplete = isWorkIncomplete(record);
                 return (
                   <tr key={record.id}>
                     <td className="font-semibold">{vehicle?.registration_number || 'N/A'}</td>
@@ -492,12 +545,12 @@ const Maintenance = () => {
                     <td className={overdue ? 'text-red-600 font-semibold' : ''}>
                       {nextDue ? nextDue.toLocaleDateString() : '—'}
                     </td>
+                    <td>{Number(record.odometer_at_maintenance || 0).toLocaleString()} km</td>
                     <td>
                       {record.next_service_odometer != null
                         ? `${Number(record.next_service_odometer).toLocaleString()} km`
                         : '—'}
                     </td>
-                    <td>{Number(record.odometer_at_maintenance || 0).toLocaleString()} km</td>
                     <td>${Number(record.cost_usd || 0).toLocaleString()}</td>
                     <td>
                       <span className={
@@ -508,6 +561,22 @@ const Maintenance = () => {
                         {workStatusLabel(record.work_status) || (record.completed_date ? 'Work Completed' : 'Work in Progress')}
                       </span>
                     </td>
+                    {canBulkUpload && (
+                      <td>
+                        {incomplete && (
+                          <Button
+                            variant="outline"
+                            size="sm"
+                            className="h-8"
+                            onClick={() => markWorkCompleted(record)}
+                            data-testid={`mark-complete-${record.id}`}
+                          >
+                            <CheckCircle2 size={14} className="mr-1" />
+                            Complete
+                          </Button>
+                        )}
+                      </td>
+                    )}
                   </tr>
                 );
               })
