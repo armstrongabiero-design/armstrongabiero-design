@@ -1,6 +1,6 @@
 import React, { useCallback, useEffect, useState } from 'react';
 import axios from 'axios';
-import { Plus, Pencil, Trash2, Link as LinkIcon } from 'lucide-react';
+import { Plus, Pencil, Trash2, Link as LinkIcon, Download } from 'lucide-react';
 import { toast } from 'sonner';
 import { Link } from 'react-router-dom';
 import { useAuth } from '../contexts/AuthContext';
@@ -12,7 +12,8 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '.
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '../components/ui/tabs';
 import CountrySelect, { DEFAULT_COUNTRY_CODE, fetchCountries, getCountryLabel } from '../components/CountrySelect';
 import ConfirmDeleteDialog from '../components/ConfirmDeleteDialog';
-import { canEditFleetRecord, canHardDelete } from '../utils/permissions';
+import VehicleMasterPanel from '../components/VehicleMasterPanel';
+import { canEditFleetRecord, canHardDelete, canExportMasterData } from '../utils/permissions';
 import { WORK_STATUS_OPTIONS } from '../utils/workStatus';
 import { completeDialogSubmit } from '../utils/formUtils';
 
@@ -34,6 +35,14 @@ const MAINTENANCE_TYPES = [
   { value: 'ROUTINE', label: 'Routine' },
 ];
 
+const EXPORT_ENTITIES = [
+  { id: 'vehicles', label: 'Vehicle Master' },
+  { id: 'workshops', label: 'Workshops / Garages' },
+  { id: 'document_types', label: 'Document Types' },
+  { id: 'maintenance_types', label: 'Maintenance Types' },
+  { id: 'work_statuses', label: 'Work Statuses' },
+];
+
 const createWorkshopForm = () => ({
   name: '',
   workshop_type: 'INTERNAL',
@@ -44,9 +53,11 @@ const createWorkshopForm = () => ({
 });
 
 const MasterData = () => {
-  const { user } = useAuth();
+  const { user, token } = useAuth();
   const canEdit = canEditFleetRecord(user?.role);
   const canDelete = canHardDelete(user?.role, 'master_workshop');
+  const canExport = canExportMasterData(user?.role);
+  const canDeleteVehicleMaster = canHardDelete(user?.role, 'vehicle_master');
 
   const [workshops, setWorkshops] = useState([]);
   const [countries, setCountries] = useState([]);
@@ -57,6 +68,10 @@ const MasterData = () => {
   const [deleteTarget, setDeleteTarget] = useState(null);
   const [deleting, setDeleting] = useState(false);
   const [countryFilter, setCountryFilter] = useState('ALL');
+  const [exportOpen, setExportOpen] = useState(false);
+  const [exportFmt, setExportFmt] = useState('xlsx');
+  const [exportEntities, setExportEntities] = useState(['vehicles', 'workshops']);
+  const [exporting, setExporting] = useState(false);
 
   const fetchWorkshops = useCallback(async () => {
     try {
@@ -148,6 +163,43 @@ const MasterData = () => {
     }
   };
 
+  const toggleExportEntity = (id) => {
+    setExportEntities((prev) =>
+      prev.includes(id) ? prev.filter((x) => x !== id) : [...prev, id]
+    );
+  };
+
+  const handleExport = async () => {
+    if (!exportEntities.length) {
+      toast.error('Select at least one entity');
+      return;
+    }
+    setExporting(true);
+    try {
+      const res = await axios.post(
+        `${API}/master/export`,
+        { entities: exportEntities, fmt: exportFmt },
+        {
+          headers: { Authorization: `Bearer ${token}` },
+          responseType: 'blob',
+        }
+      );
+      const blob = new Blob([res.data], { type: res.headers['content-type'] });
+      const url = window.URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `master-data-export.${exportFmt}`;
+      a.click();
+      window.URL.revokeObjectURL(url);
+      toast.success('Export downloaded');
+      setExportOpen(false);
+    } catch (error) {
+      toast.error(error.response?.data?.detail || 'Export failed');
+    } finally {
+      setExporting(false);
+    }
+  };
+
   if (!canEdit) {
     return <div className="p-8 text-center text-slate-600">Staff access required</div>;
   }
@@ -158,18 +210,30 @@ const MasterData = () => {
 
   return (
     <div className="p-6 lg:p-8" data-testid="master-data-page">
-      <div className="mb-6">
-        <h1 className="text-3xl font-bold text-slate-800">Master Data</h1>
-        <p className="text-slate-600 mt-1">Reference configuration used across fleet modules</p>
-        <p className="text-sm text-slate-500 mt-2 flex items-center gap-1">
-          <LinkIcon size={14} />
-          Vendors are managed under{' '}
-          <Link to="/vendors" className="text-amber-700 underline">Vendors</Link>
-        </p>
+      <div className="mb-6 flex flex-wrap items-start justify-between gap-3">
+        <div>
+          <h1 className="text-3xl font-bold text-slate-800">Master Data</h1>
+          <p className="text-slate-600 mt-1">Reference configuration used across fleet modules</p>
+          <p className="text-sm text-slate-500 mt-2 flex items-center gap-1">
+            <LinkIcon size={14} />
+            Vendors are managed under{' '}
+            <Link to="/vendors" className="text-amber-700 underline">Vendors</Link>
+            {' · '}
+            Operational fleet under{' '}
+            <Link to="/vehicles" className="text-amber-700 underline">Vehicles</Link>
+          </p>
+        </div>
+        {canExport && (
+          <Button variant="outline" onClick={() => setExportOpen(true)}>
+            <Download size={16} className="mr-2" />
+            Export
+          </Button>
+        )}
       </div>
 
-      <Tabs defaultValue="workshops">
+      <Tabs defaultValue="vehicles">
         <TabsList className="flex flex-wrap h-auto gap-1 mb-4">
+          <TabsTrigger value="vehicles">Vehicle Master</TabsTrigger>
           <TabsTrigger value="workshops">Workshops / Garages</TabsTrigger>
           <TabsTrigger value="countries">Countries</TabsTrigger>
           <TabsTrigger value="document-types">Document Types</TabsTrigger>
@@ -178,6 +242,10 @@ const MasterData = () => {
           <TabsTrigger value="validation">Validation Process</TabsTrigger>
           <TabsTrigger value="safety-score">Safety Score</TabsTrigger>
         </TabsList>
+
+        <TabsContent value="vehicles">
+          <VehicleMasterPanel canEdit={canEdit} canDelete={canDeleteVehicleMaster} />
+        </TabsContent>
 
         <TabsContent value="workshops">
           <div className="flex justify-between items-center mb-4 gap-2 flex-wrap">
@@ -359,8 +427,8 @@ const MasterData = () => {
 
             <section>
               <h3 className="font-semibold text-slate-800 mb-2">Documents</h3>
-              <p className="mb-1"><span className="text-slate-500">Create required:</span> Country, Document Type, Entity (vehicle or driver), Document Number, Issue Date, Expiry Date.</p>
-              <p><span className="text-slate-500">File:</span> Optional on metadata create; upload validates MIME and size. Expiry drives compliance alerts when past or near due.</p>
+              <p className="mb-1"><span className="text-slate-500">Create required:</span> Country, Document Type, Entity (vehicle or driver), Document Number, Issue Date. Expiry Date required except for Vehicle Registration Certificate (VRC), where it is optional.</p>
+              <p><span className="text-slate-500">File:</span> Optional on metadata create; upload validates MIME and size. Expiry drives compliance alerts only when a date is present.</p>
             </section>
 
             <section>
@@ -575,6 +643,48 @@ const MasterData = () => {
         title="Delete workshop?"
         description={deleteTarget ? `Permanently delete ${deleteTarget.name}?` : undefined}
       />
+
+      <Dialog open={exportOpen} onOpenChange={setExportOpen}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Export Master Data</DialogTitle>
+            <DialogDescription>
+              Choose entities and format. Available to Group Fleet Manager and Fleet Manager.
+            </DialogDescription>
+          </DialogHeader>
+          <div className="space-y-4">
+            <div className="space-y-2">
+              {EXPORT_ENTITIES.map((ent) => (
+                <label key={ent.id} className="flex items-center gap-2 text-sm">
+                  <input
+                    type="checkbox"
+                    checked={exportEntities.includes(ent.id)}
+                    onChange={() => toggleExportEntity(ent.id)}
+                  />
+                  {ent.label}
+                </label>
+              ))}
+            </div>
+            <div>
+              <Label>Format</Label>
+              <Select value={exportFmt} onValueChange={setExportFmt}>
+                <SelectTrigger><SelectValue /></SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="xlsx">Excel (.xlsx)</SelectItem>
+                  <SelectItem value="pdf">PDF</SelectItem>
+                  <SelectItem value="docx">Word (.docx)</SelectItem>
+                </SelectContent>
+              </Select>
+            </div>
+            <div className="flex justify-end gap-2">
+              <Button type="button" variant="outline" onClick={() => setExportOpen(false)}>Cancel</Button>
+              <Button onClick={handleExport} disabled={exporting}>
+                {exporting ? 'Exporting…' : 'Download'}
+              </Button>
+            </div>
+          </div>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 };

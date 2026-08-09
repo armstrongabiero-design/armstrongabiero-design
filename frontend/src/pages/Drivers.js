@@ -16,6 +16,7 @@ import CountrySelect, {
 import ConfirmDeleteDialog from '../components/ConfirmDeleteDialog';
 import { completeDialogSubmit } from '../utils/formUtils';
 import { canEditFleetRecord, canHardDelete } from '../utils/permissions';
+import { safetyScoreTextClass, safetyScoreBadgeClass, safetyScoreLabel } from '../utils/safetyScore';
 
 const BACKEND_URL = process.env.REACT_APP_BACKEND_URL;
 const API = `${BACKEND_URL}/api`;
@@ -491,7 +492,15 @@ const Drivers = () => {
                   </td>
                   <td>{driver.phone}</td>
                   <td>{driver.email || '-'}</td>
-                  <td>{driver.safety_score ?? '-'}</td>
+                  <td>
+                    {driver.safety_score == null ? (
+                      '-'
+                    ) : (
+                      <span className={`${safetyScoreBadgeClass(driver.safety_score)} ${safetyScoreTextClass(driver.safety_score)}`} title={safetyScoreLabel(driver.safety_score)}>
+                        {driver.safety_score}
+                      </span>
+                    )}
+                  </td>
                   <td>
                     <span className={`status-badge ${driver.status?.toLowerCase()}`}>{driver.status}</span>
                   </td>

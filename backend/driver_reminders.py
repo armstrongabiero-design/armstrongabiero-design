@@ -1,4 +1,11 @@
-"""Daily logbook + pre-trip reminder engine (email + in-app)."""
+"""Daily logbook + pre-trip reminder engine (portal + email).
+
+Rules (defaults):
+- Timezone: country TZ (Africa/Accra = GMT for Ghana)
+- Only drivers with an assigned vehicle
+- Logbook: one reminder at start time if no entry for today; stop when done
+- Pre-trip: up to 4 reminders every 15 minutes from start time per assigned vehicle; stop when done
+"""
 from __future__ import annotations
 
 import logging
@@ -75,72 +82,40 @@ async def save_settings(db, settings: DriverReminderSettings, updated_by: Option
     return settings
 
 
-def should_fire_now(cfg: DriverReminderCountrySettings, now_local: datetime) -> bool:
+def _slot_minutes_from_start(cfg: DriverReminderCountrySettings, now_local: datetime) -> Optional[int]:
+    """Minutes since reminder start for current local clock (exact minute match), or None."""
+    start = cfg.reminder_hour * 60 + cfg.reminder_minute
+    now_m = now_local.hour * 60 + now_local.minute
+    return now_m - start if now_m >= start else None
+
+
+def active_reminder_kinds(cfg: DriverReminderCountrySettings, now_local: datetime) -> List[Tuple[str, str]]:
+    """
+    Return list of (kind, slot_key) that should fire at this local minute.
+    kind: 'logbook' | 'pretrip'
+    """
     if not cfg.enabled:
-        return False
+        return []
     if cfg.skip_non_working_days and now_local.weekday() not in (cfg.working_days or []):
-        return False
+        return []
 
-    at_slot = now_local.hour == cfg.reminder_hour and now_local.minute == cfg.reminder_minute
-    if at_slot:
-        return True
-    if cfg.hourly_repeat_enabled and now_local.hour > cfg.reminder_hour and now_local.minute == 0:
-        # After initial reminder time, fire at the top of each hour
-        return True
-    if cfg.hourly_repeat_enabled and now_local.hour == cfg.reminder_hour and now_local.minute == 0:
-        return True
-    return False
+    delta = _slot_minutes_from_start(cfg, now_local)
+    if delta is None:
+        return []
 
+    kinds: List[Tuple[str, str]] = []
+    # Logbook once at exact start
+    if cfg.logbook_once and delta == 0:
+        kinds.append(("logbook", "logbook:once"))
 
-async def driver_completed_today(
-    db,
-    driver_id: str,
-    vehicle_id: str,
-    start_utc: datetime,
-    end_utc: datetime,
-) -> Tuple[bool, bool]:
-    """Return (pretrip_done, logbook_done) for local day window."""
-    pretrip = await db.pretrip_checklists.find_one(
-        {
-            "driver_id": driver_id,
-            "vehicle_id": vehicle_id,
-            "date": {"$gte": start_utc.isoformat(), "$lt": end_utc.isoformat()},
-        },
-        {"_id": 0, "id": 1},
-    )
-    # Also accept date stored as date-only string
-    if not pretrip:
-        local_date = start_utc.astimezone(timezone.utc)  # fallback
-        # Try matching date field as YYYY-MM-DD prefix via range already; also check completed flag any
-        pretrip = await db.pretrip_checklists.find_one(
-            {
-                "driver_id": driver_id,
-                "vehicle_id": vehicle_id,
-                "$or": [
-                    {"date": {"$gte": start_utc.isoformat(), "$lt": end_utc.isoformat()}},
-                    {"completed": True, "created_at": {"$gte": start_utc.isoformat(), "$lt": end_utc.isoformat()}},
-                ],
-            },
-            {"_id": 0, "id": 1},
-        )
+    interval = max(1, int(cfg.pretrip_repeat_minutes or 15))
+    max_n = max(1, int(cfg.pretrip_max_reminders or 4))
+    if delta % interval == 0:
+        index = (delta // interval) + 1
+        if 1 <= index <= max_n:
+            kinds.append(("pretrip", f"pretrip:{index}"))
 
-    logbook = await db.driver_logbook.find_one(
-        {
-            "driver_id": driver_id,
-            "vehicle_id": vehicle_id,
-            "$or": [
-                {"date": {"$gte": start_utc.isoformat(), "$lt": end_utc.isoformat()}},
-                {"created_at": {"$gte": start_utc.isoformat(), "$lt": end_utc.isoformat()}},
-            ],
-        },
-        {"_id": 0, "id": 1},
-    )
-    # Logbook dates are often date-only strings YYYY-MM-DD
-    if not logbook:
-        # Derive local date string from start_utc in UTC — caller should pass local_date
-        pass
-
-    return bool(pretrip), bool(logbook)
+    return kinds
 
 
 async def driver_completed_for_local_date(
@@ -181,20 +156,27 @@ async def driver_completed_for_local_date(
 async def _already_sent_this_slot(
     db,
     driver_id: str,
+    vehicle_id: str,
     local_date: str,
     slot_key: str,
 ) -> bool:
     existing = await db.reminder_send_log.find_one(
-        {"driver_id": driver_id, "local_date": local_date, "slot_key": slot_key},
+        {
+            "driver_id": driver_id,
+            "vehicle_id": vehicle_id,
+            "local_date": local_date,
+            "slot_key": slot_key,
+        },
         {"_id": 1},
     )
     return existing is not None
 
 
-async def _mark_sent(db, driver_id: str, local_date: str, slot_key: str) -> None:
+async def _mark_sent(db, driver_id: str, vehicle_id: str, local_date: str, slot_key: str) -> None:
     await db.reminder_send_log.insert_one(
         {
             "driver_id": driver_id,
+            "vehicle_id": vehicle_id,
             "local_date": local_date,
             "slot_key": slot_key,
             "sent_at": datetime.now(timezone.utc).isoformat(),
@@ -208,12 +190,13 @@ async def _create_in_app(
     user_id: Optional[str],
     local_date: str,
     missing: List[str],
+    notification_type: str = "DAILY_COMPLIANCE",
 ) -> None:
-    title = "Daily compliance reminder"
+    title = "Daily operations reminder"
     missing_label = " and ".join(missing)
     message = (
         f"Please complete your {missing_label} for today ({local_date}). "
-        "This reminder stops once both Daily Logbook and Pre-Trip Checklist are done."
+        "Reminders stop once the required item is completed."
     )
     notif = DriverNotification(
         driver_id=driver["id"],
@@ -221,6 +204,7 @@ async def _create_in_app(
         country=driver.get("country"),
         title=title,
         message=message,
+        notification_type=notification_type,
         local_date=local_date,
     )
     doc = notif.model_dump()
@@ -229,9 +213,14 @@ async def _create_in_app(
 
 
 async def run_reminder_pass(db, email_service, frontend_url: str = "") -> Dict[str, Any]:
-    """Evaluate all country configs and notify incomplete drivers. Safe to call every minute."""
+    """Evaluate country configs and notify incomplete assigned drivers. Safe every minute."""
     settings = await get_or_create_settings(db)
-    stats = {"checked_countries": 0, "reminders_sent": 0, "skipped_complete": 0, "skipped_slot": 0}
+    stats = {
+        "checked_countries": 0,
+        "reminders_sent": 0,
+        "skipped_complete": 0,
+        "skipped_slot": 0,
+    }
 
     for cfg in settings.countries:
         try:
@@ -241,13 +230,12 @@ async def run_reminder_pass(db, email_service, frontend_url: str = "") -> Dict[s
 
         tz_name = cfg.timezone or COUNTRY_TIMEZONES.get(country, "UTC")
         now_local = local_now(tz_name)
-        # Fire only within the matching minute (loop may run once per minute)
-        if not should_fire_now(cfg, now_local):
+        kinds = active_reminder_kinds(cfg, now_local)
+        if not kinds:
             continue
 
         stats["checked_countries"] += 1
         start_utc, end_utc, local_date = local_day_bounds_utc(tz_name, now_local)
-        slot_key = f"{now_local.hour:02d}:{now_local.minute:02d}"
 
         country_q = country_filter_query(country)
         drivers = await db.drivers.find(
@@ -261,22 +249,9 @@ async def run_reminder_pass(db, email_service, frontend_url: str = "") -> Dict[s
             if not driver_id or not vehicle_id:
                 continue
 
-            if await _already_sent_this_slot(db, driver_id, local_date, slot_key):
-                stats["skipped_slot"] += 1
-                continue
-
             pretrip_done, logbook_done = await driver_completed_for_local_date(
                 db, driver_id, vehicle_id, local_date, start_utc, end_utc
             )
-            if pretrip_done and logbook_done:
-                stats["skipped_complete"] += 1
-                continue
-
-            missing = []
-            if not pretrip_done:
-                missing.append("Pre-Trip Checklist")
-            if not logbook_done:
-                missing.append("Daily Logbook")
 
             user = await db.users.find_one(
                 {"$or": [{"driver_id": driver_id}, {"id": driver_id}], "role": "DRIVER"},
@@ -284,23 +259,38 @@ async def run_reminder_pass(db, email_service, frontend_url: str = "") -> Dict[s
             )
             user_id = user.get("id") if user else None
             email = (driver.get("email") or (user or {}).get("email") or "").strip()
+            name = f"{driver.get('first_name', '')} {driver.get('last_name', '')}".strip() or "Driver"
+            login_hint = frontend_url or "the GTI Fleet app"
 
-            await _create_in_app(db, driver, user_id, local_date, missing)
+            for kind, slot_key in kinds:
+                if kind == "logbook" and logbook_done:
+                    stats["skipped_complete"] += 1
+                    continue
+                if kind == "pretrip" and pretrip_done:
+                    stats["skipped_complete"] += 1
+                    continue
 
-            if email and email_service:
-                name = f"{driver.get('first_name', '')} {driver.get('last_name', '')}".strip() or "Driver"
-                login_hint = frontend_url or "the GTI Fleet app"
-                email_service.send_daily_compliance_reminder(
-                    email,
-                    {
-                        "driver_name": name,
-                        "local_date": local_date,
-                        "missing": missing,
-                        "login_url": login_hint,
-                    },
-                )
+                if await _already_sent_this_slot(db, driver_id, vehicle_id, local_date, slot_key):
+                    stats["skipped_slot"] += 1
+                    continue
 
-            await _mark_sent(db, driver_id, local_date, slot_key)
-            stats["reminders_sent"] += 1
+                missing = ["Daily Logbook"] if kind == "logbook" else ["Pre-Trip Checklist"]
+                notif_type = "LOGBOOK_REMINDER" if kind == "logbook" else "PRETRIP_REMINDER"
+
+                await _create_in_app(db, driver, user_id, local_date, missing, notif_type)
+
+                if email and email_service:
+                    email_service.send_daily_compliance_reminder(
+                        email,
+                        {
+                            "driver_name": name,
+                            "local_date": local_date,
+                            "missing": missing,
+                            "login_url": login_hint,
+                        },
+                    )
+
+                await _mark_sent(db, driver_id, vehicle_id, local_date, slot_key)
+                stats["reminders_sent"] += 1
 
     return stats

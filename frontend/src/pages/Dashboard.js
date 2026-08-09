@@ -8,6 +8,13 @@ import { Link } from 'react-router-dom';
 import { Button } from '../components/ui/button';
 import CountrySelect from '../components/CountrySelect';
 
+import {
+  safetyScoreTextClass,
+  safetyScoreBarClass,
+  safetyScoreLabel,
+  safetyScoreBand,
+} from '../utils/safetyScore';
+
 const BACKEND_URL = process.env.REACT_APP_BACKEND_URL;
 const API = `${BACKEND_URL}/api`;
 
@@ -52,12 +59,13 @@ const PersonalDashboard = ({ user, token }) => {
   }
 
   const safetyScore = Math.max(0, 100 - (stats?.speed_violations || 0) * 10);
-  const getSafetyColor = (score) => {
-    if (score >= 80) return { bg: 'bg-green-500', text: 'text-green-600', light: 'bg-green-100' };
-    if (score >= 60) return { bg: 'bg-yellow-500', text: 'text-yellow-600', light: 'bg-yellow-100' };
-    return { bg: 'bg-red-500', text: 'text-red-600', light: 'bg-red-100' };
-  };
-  const safetyColors = getSafetyColor(safetyScore);
+  const band = safetyScoreBand(safetyScore);
+  const borderClass =
+    band === 'good' ? 'border-green-200' : band === 'attention' ? 'border-yellow-200' : 'border-red-200';
+  const lightClass =
+    band === 'good' ? 'bg-green-100' : band === 'attention' ? 'bg-yellow-100' : 'bg-red-100';
+  const iconBg =
+    band === 'good' ? 'bg-green-500' : band === 'attention' ? 'bg-yellow-500' : 'bg-red-500';
 
   return (
     <div className="p-6 lg:p-8" data-testid="personal-dashboard">
@@ -77,21 +85,24 @@ const PersonalDashboard = ({ user, token }) => {
         </div>
       )}
 
-      <div className={`${safetyColors.light} border ${safetyScore >= 80 ? 'border-green-200' : safetyScore >= 60 ? 'border-yellow-200' : 'border-red-200'} rounded-xl p-6 mb-8`}>
+      <div className={`${lightClass} border ${borderClass} rounded-xl p-6 mb-8`}>
         <div className="flex items-center justify-between">
           <div className="flex items-center gap-4">
-            <div className={`${safetyColors.bg} p-4 rounded-full`}>
+            <div className={`${iconBg} p-4 rounded-full`}>
               <Shield className="text-white" size={32} />
             </div>
             <div>
               <h2 className="text-xl font-bold text-slate-800">Safety Score</h2>
-              <p className="text-slate-600 text-sm">Based on your driving behavior this month</p>
+              <p className="text-slate-600 text-sm">Based on your driving behavior this month · {safetyScoreLabel(safetyScore)}</p>
             </div>
           </div>
           <div className="text-right">
-            <p className={`text-5xl font-bold ${safetyColors.text}`}>{safetyScore}</p>
+            <p className={`text-5xl font-bold ${safetyScoreTextClass(safetyScore)}`}>{safetyScore}</p>
             <p className="text-slate-500 text-sm">out of 100</p>
           </div>
+        </div>
+        <div className="w-full bg-white/60 rounded-full h-2 mt-4">
+          <div className={`h-2 rounded-full ${safetyScoreBarClass(safetyScore)}`} style={{ width: `${safetyScore}%` }} />
         </div>
       </div>
 
@@ -273,6 +284,43 @@ const StaffDashboard = ({ user, token, isGroupManager }) => {
   useEffect(() => {
     fetchDashboardData();
   }, [fetchDashboardData]);
+
+  useEffect(() => {
+    const id = setInterval(() => {
+      fetchDashboardData();
+    }, 45000);
+    return () => clearInterval(id);
+  }, [fetchDashboardData]);
+
+  const alertHref = (alert) => {
+    const docType = alert.document_type || '';
+    if (alert.type === 'DOCUMENT_EXPIRY' || alert.type === 'DOCUMENT_MISSING') {
+      if (docType === 'DRIVER_LICENSE' || alert.link_entity_type === 'DRIVER') {
+        return '/drivers';
+      }
+      const params = new URLSearchParams();
+      if (docType) params.set('type', docType);
+      if (alert.link_entity_id) params.set('entity_id', alert.link_entity_id);
+      const qs = params.toString();
+      return qs ? `/documents?${qs}` : '/documents';
+    }
+    if (alert.type?.startsWith('MAINTENANCE')) return '/maintenance';
+    if (alert.type === 'FUEL_ANOMALY') return '/fuel';
+    if (alert.type === 'SPEEDING') return '/logbook';
+    if (alert.type === 'LOW_STOCK') return '/inventory';
+    if (alert.type?.startsWith('TIRE')) return '/tires';
+    return null;
+  };
+
+  const complianceHref = (item) => {
+    if (item.check_type === 'DRIVER_LICENSE' || item.entity_type === 'driver') {
+      return '/drivers';
+    }
+    const params = new URLSearchParams();
+    if (item.check_type) params.set('type', item.check_type);
+    if (item.entity_id) params.set('entity_id', item.entity_id);
+    return `/documents?${params.toString()}`;
+  };
 
   const handleApproveUser = async (userId) => {
     try {
@@ -485,17 +533,25 @@ const StaffDashboard = ({ user, token, isGroupManager }) => {
                 <p>No active alerts</p>
               </div>
             ) : (
-              alerts?.alerts?.slice(0, 8).map((alert) => (
-                <div key={alert.id || alert.title} className={`p-3 rounded-lg border ${getSeverityBg(alert.severity)}`}>
-                  <div className="flex items-start gap-2">
-                    {getSeverityIcon(alert.severity)}
-                    <div className="flex-1">
-                      <p className="font-medium text-sm text-slate-800">{alert.title}</p>
-                      <p className="text-xs text-slate-600">{alert.description}</p>
+              alerts?.alerts?.slice(0, 12).map((alert) => {
+                const href = alertHref(alert);
+                const body = (
+                  <div className={`p-3 rounded-lg border ${getSeverityBg(alert.severity)} ${href ? 'hover:opacity-90 cursor-pointer' : ''}`}>
+                    <div className="flex items-start gap-2">
+                      {getSeverityIcon(alert.severity)}
+                      <div className="flex-1">
+                        <p className="font-medium text-sm text-slate-800">{alert.title}</p>
+                        <p className="text-xs text-slate-600">{alert.message || alert.description}</p>
+                      </div>
                     </div>
                   </div>
-                </div>
-              ))
+                );
+                return href ? (
+                  <Link key={`${alert.type}-${alert.entity_id}-${alert.title}`} to={href}>{body}</Link>
+                ) : (
+                  <div key={`${alert.type}-${alert.entity_id}-${alert.title}`}>{body}</div>
+                );
+              })
             )}
           </div>
         </div>
@@ -503,7 +559,7 @@ const StaffDashboard = ({ user, token, isGroupManager }) => {
         <div className="fleet-card">
           <h3 className="text-lg font-semibold text-slate-800 mb-4 flex items-center gap-2">
             <CheckCircle size={20} style={{color: '#e3aa27'}} />
-            Compliance Overview
+            Compliance Review
           </h3>
           <div className="space-y-4">
             <div>
@@ -538,6 +594,21 @@ const StaffDashboard = ({ user, token, isGroupManager }) => {
                 <p className="text-2xl font-bold" style={{color: '#c4912a'}}>{stats?.pending_users_count || 0}</p>
                 <p className="text-xs" style={{color: '#b8860b'}}>Pending Users</p>
               </div>
+            </div>
+            <div className="max-h-48 overflow-y-auto space-y-2 border-t border-slate-100 pt-3">
+              {(compliance?.issues || compliance?.items?.filter((i) => i.status !== 'COMPLIANT') || []).slice(0, 15).map((item) => (
+                <Link
+                  key={`${item.entity_id}-${item.check_type}-${item.status}`}
+                  to={complianceHref(item)}
+                  className="block p-2 rounded-md bg-slate-50 hover:bg-slate-100"
+                >
+                  <p className="text-sm font-medium text-slate-800">{item.entity_name}</p>
+                  <p className="text-xs text-slate-600">{item.message}</p>
+                </Link>
+              ))}
+              {(compliance?.issues || []).length === 0 && (compliance?.items || []).every((i) => i.status === 'COMPLIANT') && (
+                <p className="text-sm text-slate-500 text-center py-2">No open compliance issues</p>
+              )}
             </div>
           </div>
         </div>

@@ -29,6 +29,9 @@ const emptyCountry = () => ({
   timezone: 'Africa/Accra',
   reminder_hour: 7,
   reminder_minute: 0,
+  pretrip_repeat_minutes: 15,
+  pretrip_max_reminders: 4,
+  logbook_once: true,
   hourly_repeat_enabled: false,
   skip_non_working_days: true,
   working_days: [0, 1, 2, 3, 4],
@@ -126,8 +129,9 @@ const ReminderSettings = () => {
             Driver Reminders
           </h1>
           <p className="text-slate-600 mt-2">
-            Per-country schedule for Daily Logbook and Pre-Trip Checklist reminders (email + in-app).
-            Reminders stop once both are completed for the assigned vehicle.
+            Per-country schedule (portal + email). Default 07:00 in country timezone (Africa/Accra = GMT).
+            Logbook reminds once; Pre-Trip repeats every 15 minutes up to 4 times. Stops when each item is completed.
+            Only drivers with an assigned vehicle are notified.
           </p>
         </div>
         <div className="flex gap-2">
@@ -208,12 +212,34 @@ const ReminderSettings = () => {
                 />
               </div>
               <div className="flex flex-col justify-end gap-3">
+                <div className="grid grid-cols-2 gap-2">
+                  <div>
+                    <Label>Pre-trip interval (min)</Label>
+                    <Input
+                      type="number"
+                      min={5}
+                      max={60}
+                      value={row.pretrip_repeat_minutes ?? 15}
+                      onChange={(e) => updateRow(index, { pretrip_repeat_minutes: Number(e.target.value) })}
+                    />
+                  </div>
+                  <div>
+                    <Label>Pre-trip max</Label>
+                    <Input
+                      type="number"
+                      min={1}
+                      max={8}
+                      value={row.pretrip_max_reminders ?? 4}
+                      onChange={(e) => updateRow(index, { pretrip_max_reminders: Number(e.target.value) })}
+                    />
+                  </div>
+                </div>
                 <div className="flex items-center justify-between gap-2">
-                  <Label htmlFor={`hourly-${index}`}>Hourly repeat until done</Label>
+                  <Label htmlFor={`logbook-once-${index}`}>Logbook once only</Label>
                   <Switch
-                    id={`hourly-${index}`}
-                    checked={!!row.hourly_repeat_enabled}
-                    onCheckedChange={(v) => updateRow(index, { hourly_repeat_enabled: v })}
+                    id={`logbook-once-${index}`}
+                    checked={row.logbook_once !== false}
+                    onCheckedChange={(v) => updateRow(index, { logbook_once: v })}
                   />
                 </div>
                 <div className="flex items-center justify-between gap-2">

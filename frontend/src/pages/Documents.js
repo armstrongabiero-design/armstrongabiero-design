@@ -74,8 +74,12 @@ const documentToFormData = (doc) => ({
   entity_type: doc.entity_type,
   document_number: doc.document_number,
   issue_date: typeof doc.issue_date === 'string' ? doc.issue_date.split('T')[0] : new Date(doc.issue_date).toISOString().split('T')[0],
-  expiry_date: typeof doc.expiry_date === 'string' ? doc.expiry_date.split('T')[0] : new Date(doc.expiry_date).toISOString().split('T')[0],
+  expiry_date: doc.expiry_date
+    ? (typeof doc.expiry_date === 'string' ? doc.expiry_date.split('T')[0] : new Date(doc.expiry_date).toISOString().split('T')[0])
+    : '',
 });
+
+const isVrcType = (type) => type === 'VEHICLE_REGISTRATION';
 
 const Documents = () => {
   const { user, token } = useAuth();
@@ -95,7 +99,10 @@ const Documents = () => {
   const [uploading, setUploading] = useState(false);
   const [ocrRunningId, setOcrRunningId] = useState(null);
   const [formData, setFormData] = useState(createInitialFormData);
-  const [activeTab, setActiveTab] = useState('ALL');
+  const searchParams = new URLSearchParams(typeof window !== 'undefined' ? window.location.search : '');
+  const initialTab = searchParams.get('type') || 'ALL';
+  const [activeTab, setActiveTab] = useState(initialTab);
+  const [entityFilter, setEntityFilter] = useState(searchParams.get('entity_id') || '');
   const [bulkDialogOpen, setBulkDialogOpen] = useState(false);
   const [bulkCountry, setBulkCountry] = useState(DEFAULT_COUNTRY_CODE);
   const [bulkMetaFile, setBulkMetaFile] = useState(null);
@@ -110,6 +117,9 @@ const Documents = () => {
       if (documentType && documentType !== 'ALL') {
         params.document_type = documentType;
       }
+      if (entityFilter) {
+        params.entity_id = entityFilter;
+      }
       const [docsRes, vehiclesRes, driversRes] = await Promise.all([
         axios.get(`${API}/documents`, { params }),
         axios.get(`${API}/vehicles`),
@@ -123,7 +133,7 @@ const Documents = () => {
     } finally {
       setLoading(false);
     }
-  }, [activeTab]);
+  }, [activeTab, entityFilter]);
 
   useEffect(() => {
     fetchData(activeTab);
@@ -185,8 +195,15 @@ const Documents = () => {
     const payload = {
       ...formData,
       issue_date: new Date(formData.issue_date).toISOString(),
-      expiry_date: new Date(formData.expiry_date).toISOString(),
+      expiry_date: formData.expiry_date
+        ? new Date(formData.expiry_date).toISOString()
+        : null,
     };
+
+    if (!isVrcType(formData.document_type) && !formData.expiry_date) {
+      toast.error('Expiry date is required for this document type');
+      return;
+    }
 
     setUploading(true);
     try {
@@ -390,7 +407,11 @@ const Documents = () => {
               <div className="grid grid-cols-2 gap-4">
                 <div>
                   <Label>Document Type</Label>
-                  <Select value={formData.document_type} onValueChange={(value) => setFormData({ ...formData, document_type: value })}>
+                  <Select value={formData.document_type} onValueChange={(value) => setFormData({
+                    ...formData,
+                    document_type: value,
+                    expiry_date: isVrcType(value) ? '' : (formData.expiry_date || new Date(Date.now() + 365 * 24 * 60 * 60 * 1000).toISOString().split('T')[0]),
+                  })}>
                     <SelectTrigger>
                       <SelectValue />
                     </SelectTrigger>
@@ -448,8 +469,16 @@ const Documents = () => {
                   <Input type="date" value={formData.issue_date} onChange={(e) => setFormData({ ...formData, issue_date: e.target.value })} required />
                 </div>
                 <div>
-                  <Label>Expiry Date</Label>
-                  <Input type="date" value={formData.expiry_date} onChange={(e) => setFormData({ ...formData, expiry_date: e.target.value })} required />
+                  <Label>
+                    Expiry Date
+                    {isVrcType(formData.document_type) ? ' (optional for VRC)' : ' *'}
+                  </Label>
+                  <Input
+                    type="date"
+                    value={formData.expiry_date || ''}
+                    onChange={(e) => setFormData({ ...formData, expiry_date: e.target.value })}
+                    required={!isVrcType(formData.document_type)}
+                  />
                 </div>
               </div>
               <div>
@@ -606,7 +635,7 @@ const Documents = () => {
                 const entity = doc.entity_type === 'VEHICLE'
                   ? vehicles.find((v) => v.id === doc.entity_id)
                   : drivers.find((d) => d.id === doc.entity_id);
-                const isExpired = new Date(doc.expiry_date) < new Date();
+                const isExpired = doc.expiry_date && new Date(doc.expiry_date) < new Date();
                 const hasFile = !!(doc.s3_key || doc.file_url);
                 return (
                   <tr key={doc.id}>
@@ -620,7 +649,7 @@ const Documents = () => {
                     <td><span className={getCountryBadgeClass(doc.country)}>{getCountryLabel(doc.country)}</span></td>
                     <td>{new Date(doc.issue_date).toLocaleDateString()}</td>
                     <td className={isExpired ? 'text-red-600 font-semibold' : ''}>
-                      {new Date(doc.expiry_date).toLocaleDateString()}
+                      {doc.expiry_date ? new Date(doc.expiry_date).toLocaleDateString() : '—'}
                     </td>
                     <td>
                       {hasFile ? (

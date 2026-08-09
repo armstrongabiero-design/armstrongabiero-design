@@ -72,3 +72,11 @@ from .availability import (
     VehicleAvailabilityEvent,
     VehicleAvailabilitySnapshot,
 )
+
+# Vehicle master data
+from .vehicle_master import (
+    VEHICLE_MASTER_COLUMNS,
+    VehicleMaster,
+    VehicleMasterCreate,
+    VehicleMasterUpdate,
+)

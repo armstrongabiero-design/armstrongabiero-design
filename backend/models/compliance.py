@@ -16,7 +16,7 @@ class Document(BaseModel):
     entity_type: str
     document_number: str
     issue_date: datetime
-    expiry_date: datetime
+    expiry_date: Optional[datetime] = None  # Optional for VRC; required for other types at API layer
     file_url: str = ""
     s3_key: Optional[str] = None
     original_filename: Optional[str] = None
@@ -35,7 +35,7 @@ class DocumentCreate(BaseModel):
     entity_type: str
     document_number: str
     issue_date: datetime
-    expiry_date: datetime
+    expiry_date: Optional[datetime] = None
     file_url: str = ""
 
 

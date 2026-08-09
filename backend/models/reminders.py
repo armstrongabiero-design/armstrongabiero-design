@@ -8,7 +8,7 @@ import uuid
 from pydantic import BaseModel, ConfigDict, Field
 
 
-# ISO country → default IANA timezone for local 07:00 reminders
+# ISO country → default IANA timezone (GMT / Accra for Ghana)
 COUNTRY_TIMEZONES = {
     "GH": "Africa/Accra",
     "LR": "Africa/Monrovia",
@@ -23,6 +23,12 @@ class DriverReminderCountrySettings(BaseModel):
     timezone: str = "Africa/Accra"
     reminder_hour: int = 7
     reminder_minute: int = 0
+    # Pre-trip: first at reminder time, then every N minutes up to max_count
+    pretrip_repeat_minutes: int = 15
+    pretrip_max_reminders: int = 4
+    # Logbook: single reminder at start time only
+    logbook_once: bool = True
+    # Legacy field kept for UI compatibility; ignored by engine when pretrip slots used
     hourly_repeat_enabled: bool = False
     skip_non_working_days: bool = True
     # Monday=0 … Sunday=6

@@ -3,7 +3,7 @@ import axios from 'axios';
 import { Plus, Search, Pencil, Trash2, Upload, Download } from 'lucide-react';
 import { toast } from 'sonner';
 import { useAuth } from '../contexts/AuthContext';
-import { useSearchParams } from 'react-router-dom';
+import { Link, useSearchParams } from 'react-router-dom';
 import { Button } from '../components/ui/button';
 import { Input } from '../components/ui/input';
 import {
@@ -299,6 +299,10 @@ const Vehicles = () => {
         <div>
           <h1 className="text-3xl font-bold text-slate-800">Vehicles</h1>
           <p className="text-slate-600 mt-1">Manage your fleet across all countries</p>
+          <p className="text-sm text-slate-500 mt-1">
+            Full template fields live in{' '}
+            <Link to="/master-data" className="text-amber-700 underline">Master Data → Vehicle Master</Link>
+          </p>
         </div>
         {canEdit && activeTab === 'fleet' && (
           <div className="flex flex-wrap gap-2 mt-4 lg:mt-0">

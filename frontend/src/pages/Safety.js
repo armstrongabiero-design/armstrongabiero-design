@@ -12,6 +12,7 @@ import { Textarea } from '../components/ui/textarea';
 import ConfirmDeleteDialog from '../components/ConfirmDeleteDialog';
 import { completeDialogSubmit } from '../utils/formUtils';
 import { canEditFleetRecord, canHardDelete } from '../utils/permissions';
+import { safetyScoreTextClass, safetyScoreBarClass, safetyScoreLabel } from '../utils/safetyScore';
 
 const BACKEND_URL = process.env.REACT_APP_BACKEND_URL;
 const API = `${BACKEND_URL}/api`;
@@ -275,11 +276,13 @@ const Safety = () => {
                 <h3 className="font-semibold text-slate-800">{driver.first_name} {driver.last_name}</h3>
                 <p className="text-xs text-slate-500">{driver.license_number}</p>
               </div>
-              <span className="text-2xl font-bold text-amber-600">{driver.safety_score}</span>
+              <span className={`text-2xl font-bold ${safetyScoreTextClass(driver.safety_score)}`} title={safetyScoreLabel(driver.safety_score)}>
+                {driver.safety_score}
+              </span>
             </div>
             <div className="w-full bg-slate-200 rounded-full h-2">
               <div 
-                className={`h-2 rounded-full ${driver.safety_score >= 80 ? 'bg-green-500' : driver.safety_score >= 60 ? 'bg-amber-500' : 'bg-red-500'}`}
+                className={`h-2 rounded-full ${safetyScoreBarClass(driver.safety_score)}`}
                 style={{width: `${driver.safety_score}%`}}
               ></div>
             </div>

@@ -6,7 +6,7 @@ import os
 import uuid
 from datetime import datetime, timezone, timedelta
 from pathlib import Path
-from typing import List, Optional
+from typing import List, Optional, Tuple
 
 from dotenv import load_dotenv
 
@@ -62,6 +62,12 @@ from models import (
     Alert, AlertType, AlertSeverity,
     TCORecord, ComplianceCheck, ComplianceStatus, ExpenseCategory,
     ForgotPasswordRequest, ResetPasswordRequest, PasswordResetToken
+)
+from models.vehicle_master import (
+    VEHICLE_MASTER_COLUMNS,
+    VehicleMaster,
+    VehicleMasterCreate,
+    VehicleMasterUpdate,
 )
 from audit_service import assert_can_hard_delete, write_audit_log
 from storage_service import upload_bytes, read_bytes, delete_object, presigned_download_url, storage_enabled
@@ -170,6 +176,13 @@ async def lifespan(app: FastAPI):
             logging.getLogger(__name__).info("Migrated %s maintenance type(s)", n)
     except Exception as exc:
         logging.getLogger(__name__).warning("Maintenance type migration skipped: %s", exc)
+    try:
+        from vrc_expiry_migration import clear_vrc_expiry_dates
+        n = await clear_vrc_expiry_dates()
+        if n:
+            logging.getLogger(__name__).info("Cleared expiry on %s VRC document(s)", n)
+    except Exception as exc:
+        logging.getLogger(__name__).warning("VRC expiry migration skipped: %s", exc)
 
     reminder_task = None
     if os.environ.get("DRIVER_REMINDERS_ENABLED", "true").lower() not in ("0", "false", "no"):
@@ -1452,6 +1465,213 @@ async def delete_master_workshop(
     return {"message": "Workshop deleted successfully"}
 
 
+# ============= MASTER DATA — VEHICLE MASTER =============
+def _parse_vehicle_master_dates(item: dict) -> dict:
+    for field in ("created_at", "updated_at"):
+        if isinstance(item.get(field), str):
+            item[field] = datetime.fromisoformat(item[field])
+    return item
+
+
+@api_router.get("/master/vehicles", response_model=List[VehicleMaster])
+async def list_vehicle_masters(
+    country: Optional[str] = None,
+    current_user: dict = Depends(_require_staff),
+):
+    query: dict = {}
+    if country:
+        query["country"] = normalize_country_code(country)
+    items = await db.vehicle_masters.find(query, {"_id": 0}).sort("registration_number", 1).to_list(5000)
+    return [_parse_vehicle_master_dates(i) for i in items]
+
+
+@api_router.post("/master/vehicles", response_model=VehicleMaster)
+async def create_vehicle_master(
+    input: VehicleMasterCreate,
+    current_user: dict = Depends(_require_staff),
+):
+    record = VehicleMaster(**input.model_dump())
+    doc = record.model_dump()
+    if doc.get("country"):
+        doc["country"] = normalize_country_code(doc["country"]) if isinstance(doc["country"], str) else doc["country"]
+    doc["created_at"] = doc["created_at"].isoformat()
+    doc["updated_at"] = doc["updated_at"].isoformat()
+    await db.vehicle_masters.insert_one(doc)
+    await write_audit_log(
+        action="create",
+        entity_type="vehicle_master",
+        entity_id=record.id,
+        actor_id=current_user["id"],
+        actor_role=current_user.get("role", ""),
+        actor_email=current_user.get("email"),
+        details={"registration_number": record.registration_number, "chassis_vin": record.chassis_vin},
+    )
+    return record
+
+
+@api_router.put("/master/vehicles/{record_id}", response_model=VehicleMaster)
+async def update_vehicle_master(
+    record_id: str,
+    input: VehicleMasterUpdate,
+    current_user: dict = Depends(_require_staff),
+):
+    existing = await db.vehicle_masters.find_one({"id": record_id}, {"_id": 0})
+    if not existing:
+        raise HTTPException(status_code=404, detail="Vehicle master record not found")
+    update_data = _mongo_update_payload({k: v for k, v in input.model_dump().items() if v is not None})
+    if "country" in update_data and update_data["country"]:
+        update_data["country"] = normalize_country_code(update_data["country"])
+    update_data["updated_at"] = datetime.now(timezone.utc).isoformat()
+    await db.vehicle_masters.update_one({"id": record_id}, {"$set": update_data})
+    updated = await db.vehicle_masters.find_one({"id": record_id}, {"_id": 0})
+    return VehicleMaster(**_parse_vehicle_master_dates(updated))
+
+
+@api_router.delete("/master/vehicles/{record_id}")
+async def delete_vehicle_master(
+    record_id: str,
+    current_user: dict = Depends(_require_staff),
+):
+    existing = await db.vehicle_masters.find_one({"id": record_id}, {"_id": 0})
+    if not existing:
+        raise HTTPException(status_code=404, detail="Vehicle master record not found")
+    await assert_can_hard_delete(current_user, "vehicle_master")
+    await db.vehicle_masters.delete_one({"id": record_id})
+    await write_audit_log(
+        action="hard_delete",
+        entity_type="vehicle_master",
+        entity_id=record_id,
+        actor_id=current_user["id"],
+        actor_role=current_user.get("role", ""),
+        actor_email=current_user.get("email"),
+        details={"registration_number": existing.get("registration_number")},
+    )
+    return {"message": "Vehicle master record deleted"}
+
+
+@api_router.post("/master/export")
+async def export_master_data(
+    payload: dict = Body(...),
+    current_user: dict = Depends(require_manager()),
+):
+    """Export selected master-data entities (GFM / FM only)."""
+    entities = payload.get("entities") or []
+    fmt = payload.get("fmt") or "xlsx"
+    selected = {str(e).strip().lower() for e in entities}
+    if not selected:
+        raise HTTPException(status_code=400, detail="Select at least one entity to export")
+    try:
+        media_type = export_mime(fmt)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    sheets: List[Tuple[str, List[str], List[List[object]]]] = []
+
+    if "workshops" in selected:
+        items = await db.master_workshops.find({}, {"_id": 0}).sort("name", 1).to_list(5000)
+        headers = ["Name", "Type", "Country", "Address", "Phone", "Active"]
+        rows = [
+            [
+                i.get("name"),
+                i.get("workshop_type"),
+                i.get("country"),
+                i.get("address"),
+                i.get("phone"),
+                "Yes" if i.get("active", True) else "No",
+            ]
+            for i in items
+        ]
+        sheets.append(("Workshops", headers, rows))
+
+    if "vehicles" in selected or "vehicle_master" in selected:
+        items = await db.vehicle_masters.find({}, {"_id": 0}).to_list(5000)
+        headers = [label for _, label in VEHICLE_MASTER_COLUMNS]
+        rows = []
+        for i in items:
+            rows.append([i.get(key) for key, _ in VEHICLE_MASTER_COLUMNS])
+        sheets.append(("Vehicle Master", headers, rows))
+
+    if "document_types" in selected:
+        headers = ["Code", "Label"]
+        rows = [
+            ["ROADWORTHY_CERT", "Roadworthy Certificate"],
+            ["AMA_STICKER", "AMA Sticker"],
+            ["VEHICLE_REGISTRATION", "Vehicle Registration Certificate (VRC)"],
+            ["INSURANCE", "Insurance Document"],
+            ["DRIVER_LICENSE", "Driver's License"],
+            ["OTHER", "Other Document"],
+        ]
+        sheets.append(("Document Types", headers, rows))
+
+    if "maintenance_types" in selected:
+        headers = ["Code", "Label"]
+        rows = [
+            ["PREDICTIVE", "Predictive"],
+            ["CORRECTIVE", "Corrective"],
+            ["ROUTINE", "Routine"],
+        ]
+        sheets.append(("Maintenance Types", headers, rows))
+
+    if "work_statuses" in selected:
+        headers = ["Code", "Label"]
+        rows = [
+            ["WORK_IN_PROGRESS", "Work in Progress"],
+            ["WORK_COMPLETED", "Work Completed"],
+            ["ETC", "Estimated Time of Completion (ETC)"],
+            ["ADDITIONAL_WORK_REQUIRED", "Additional Work Required"],
+        ]
+        sheets.append(("Work Statuses", headers, rows))
+
+    if not sheets:
+        raise HTTPException(status_code=400, detail="No supported entities selected")
+
+    # Multi-sheet: for xlsx combine; for pdf/docx concatenate sections
+    if fmt.lower() == "xlsx" and len(sheets) > 1:
+        from openpyxl import Workbook
+        from openpyxl.styles import Font, PatternFill
+        from openpyxl.utils import get_column_letter
+        import io as _io
+
+        wb = Workbook()
+        wb.remove(wb.active)
+        header_fill = PatternFill("solid", fgColor="1E3A5F")
+        header_font = Font(bold=True, color="FFFFFF")
+        for title, headers, rows in sheets:
+            ws = wb.create_sheet(title=title[:31])
+            for col, name in enumerate(headers, start=1):
+                cell = ws.cell(row=1, column=col, value=name)
+                cell.fill = header_fill
+                cell.font = header_font
+            for r_idx, row in enumerate(rows, start=2):
+                for c_idx, value in enumerate(row, start=1):
+                    ws.cell(row=r_idx, column=c_idx, value="" if value is None else str(value))
+            for col in range(1, len(headers) + 1):
+                ws.column_dimensions[get_column_letter(col)].width = 16
+        buf = _io.BytesIO()
+        wb.save(buf)
+        content = buf.getvalue()
+    else:
+        # Single sheet or non-xlsx: use first sheet title; append others as extra tables for docx/pdf via one combined table block
+        title, headers, rows = sheets[0]
+        if len(sheets) > 1:
+            for extra_title, extra_headers, extra_rows in sheets[1:]:
+                rows.append([])
+                rows.append([extra_title] + [""] * (len(headers) - 1))
+                # Align extra headers into primary width
+                padded_h = list(extra_headers) + [""] * max(0, len(headers) - len(extra_headers))
+                rows.append(padded_h[: len(headers)])
+                for er in extra_rows:
+                    padded = list(er) + [""] * max(0, len(headers) - len(er))
+                    rows.append(padded[: len(headers)])
+        content = build_export_bytes(f"Master Data — {title}", headers, rows, fmt)
+
+    return Response(
+        content=content,
+        media_type=media_type,
+        headers={"Content-Disposition": f'attachment; filename="{export_filename("master-data-export", fmt)}"'},
+    )
+
+
 # ============= INVENTORY ROUTES =============
 @api_router.post("/inventory", response_model=InventoryItem)
 async def create_inventory_item(input: InventoryItemCreate):
@@ -2059,13 +2279,19 @@ def _document_ocr_updates(ocr_result: dict) -> dict:
 
 @api_router.post("/documents", response_model=Document)
 async def create_document(input: DocumentCreate):
+    doc_type = input.document_type.value if hasattr(input.document_type, "value") else str(input.document_type)
+    if doc_type != "VEHICLE_REGISTRATION" and not input.expiry_date:
+        raise HTTPException(status_code=400, detail="Expiry date is required for this document type")
+
     document = Document(**input.model_dump())
-    
     doc = document.model_dump()
     doc['issue_date'] = doc['issue_date'].isoformat()
-    doc['expiry_date'] = doc['expiry_date'].isoformat()
+    if doc.get('expiry_date'):
+        doc['expiry_date'] = doc['expiry_date'].isoformat()
+    else:
+        doc['expiry_date'] = None
     doc['created_at'] = doc['created_at'].isoformat()
-    
+
     await db.documents.insert_one(doc)
     return document
 
@@ -2082,8 +2308,11 @@ async def get_documents(entity_id: Optional[str] = None, document_type: Optional
     for d in documents:
         if isinstance(d.get('issue_date'), str):
             d['issue_date'] = datetime.fromisoformat(d['issue_date'])
-        if isinstance(d.get('expiry_date'), str):
-            d['expiry_date'] = datetime.fromisoformat(d['expiry_date'])
+        expiry = d.get('expiry_date')
+        if isinstance(expiry, str) and expiry:
+            d['expiry_date'] = datetime.fromisoformat(expiry)
+        elif not expiry:
+            d['expiry_date'] = None
         if isinstance(d.get('created_at'), str):
             d['created_at'] = datetime.fromisoformat(d['created_at'])
     return documents
@@ -2215,18 +2444,31 @@ async def bulk_upload_documents(
                 continue
 
         try:
+            row_doc_type = row["document_type"]
+            row_doc_type_str = row_doc_type.value if hasattr(row_doc_type, "value") else str(row_doc_type)
+            if row_doc_type_str != "VEHICLE_REGISTRATION" and not row.get("expiry_date"):
+                errors.append({
+                    "row": row["row"],
+                    "filename": row["filename"],
+                    "message": "Expiry date is required for this document type",
+                })
+                continue
+
             document = Document(
                 country=country_code,
-                document_type=row["document_type"],
+                document_type=row_doc_type,
                 entity_id=entity["id"],
                 entity_type=row["entity_type"],
                 document_number=row["document_number"],
                 issue_date=row["issue_date"],
-                expiry_date=row["expiry_date"],
+                expiry_date=row.get("expiry_date"),
             )
             doc = document.model_dump()
             doc["issue_date"] = doc["issue_date"].isoformat()
-            doc["expiry_date"] = doc["expiry_date"].isoformat()
+            if doc.get("expiry_date"):
+                doc["expiry_date"] = doc["expiry_date"].isoformat()
+            else:
+                doc["expiry_date"] = None
             doc["created_at"] = doc["created_at"].isoformat()
 
             object_key, file_ref = upload_bytes(
@@ -3054,37 +3296,44 @@ async def get_dashboard_alerts(country: Optional[str] = None):
     now = datetime.now(timezone.utc)
     warning_threshold = now + timedelta(days=30)
     
-    # 1. Document Expiry Alerts
+    # 1. Document Expiry Alerts (only when expiry_date is set — VRC without date is skipped)
     documents = await db.documents.find(country_filter, {"_id": 0}).to_list(1000)
     for doc in documents:
         expiry = doc.get('expiry_date')
-        if expiry:
-            if isinstance(expiry, str):
-                expiry = datetime.fromisoformat(expiry.replace('Z', '+00:00'))
-            
-            days_until = (expiry - now).days
-            if days_until < 0:
-                alerts.append({
-                    "type": "DOCUMENT_EXPIRY",
-                    "severity": "CRITICAL",
-                    "title": f"Expired: {doc.get('document_type', 'Document')}",
-                    "message": f"Document expired {abs(days_until)} days ago",
-                    "entity_type": "document",
-                    "entity_id": doc.get('id'),
-                    "country": doc.get('country'),
-                    "days_until_expiry": days_until
-                })
-            elif days_until <= 30:
-                alerts.append({
-                    "type": "DOCUMENT_EXPIRY",
-                    "severity": "WARNING",
-                    "title": f"Expiring Soon: {doc.get('document_type', 'Document')}",
-                    "message": f"Document expires in {days_until} days",
-                    "entity_type": "document",
-                    "entity_id": doc.get('id'),
-                    "country": doc.get('country'),
-                    "days_until_expiry": days_until
-                })
+        if not expiry:
+            continue
+        if isinstance(expiry, str):
+            expiry = datetime.fromisoformat(expiry.replace('Z', '+00:00'))
+        if expiry.tzinfo is None:
+            expiry = expiry.replace(tzinfo=timezone.utc)
+
+        days_until = (expiry - now).days
+        doc_type = doc.get('document_type', 'Document')
+        base = {
+            "entity_type": "document",
+            "entity_id": doc.get('id'),
+            "document_type": doc_type,
+            "link_entity_id": doc.get('entity_id'),
+            "link_entity_type": doc.get('entity_type'),
+            "country": doc.get('country'),
+            "days_until_expiry": days_until,
+        }
+        if days_until < 0:
+            alerts.append({
+                **base,
+                "type": "DOCUMENT_EXPIRY",
+                "severity": "CRITICAL",
+                "title": f"Expired: {doc_type}",
+                "message": f"Document expired {abs(days_until)} days ago",
+            })
+        elif days_until <= 30:
+            alerts.append({
+                **base,
+                "type": "DOCUMENT_EXPIRY",
+                "severity": "WARNING",
+                "title": f"Expiring Soon: {doc_type}",
+                "message": f"Document expires in {days_until} days",
+            })
     
     # 2. Fuel Anomalies
     fuel_txns = await db.fuel_transactions.find({**country_filter, "anomaly_detected": True}, {"_id": 0}).to_list(100)
@@ -3249,7 +3498,33 @@ async def get_dashboard_alerts(country: Optional[str] = None):
             "entity_id": record.get("id"),
             "country": record.get("country") or vehicle.get("country"),
         })
-    
+
+    # 9. Missing required vehicle documents
+    vehicles_for_docs = await db.vehicles.find(country_filter, {"_id": 0}).to_list(1000)
+    required_vehicle_docs = ["ROADWORTHY_CERT", "INSURANCE", "VEHICLE_REGISTRATION"]
+    for vehicle in vehicles_for_docs:
+        vehicle_docs = await db.documents.find(
+            {"entity_id": vehicle["id"], "entity_type": "VEHICLE"},
+            {"_id": 0, "document_type": 1},
+        ).to_list(100)
+        present = {d.get("document_type") for d in vehicle_docs}
+        for doc_type in required_vehicle_docs:
+            if doc_type in present:
+                continue
+            label = doc_type.replace("_", " ").title()
+            alerts.append({
+                "type": "DOCUMENT_MISSING",
+                "severity": "CRITICAL",
+                "title": f"Missing: {label}",
+                "message": f"{vehicle.get('registration_number', 'Vehicle')} — {label}",
+                "entity_type": "vehicle",
+                "entity_id": vehicle["id"],
+                "document_type": doc_type,
+                "link_entity_id": vehicle["id"],
+                "link_entity_type": "VEHICLE",
+                "country": vehicle.get("country"),
+            })
+
     # Sort by severity
     severity_order = {"CRITICAL": 0, "WARNING": 1, "INFO": 2}
     alerts.sort(key=lambda x: severity_order.get(x['severity'], 3))
@@ -3265,77 +3540,159 @@ async def get_dashboard_alerts(country: Optional[str] = None):
 
 @api_router.get("/dashboard/compliance")
 async def get_compliance_status(country: Optional[str] = None):
-    """Get compliance status for all vehicles and drivers"""
+    """Stricter compliance checklist: required docs present; expiry rules when dates exist."""
     country_filter = country_filter_query(country) if country else {}
     now = datetime.now(timezone.utc)
-    
+
     compliance_items = []
-    
-    # Check vehicle documents
+    missing_alerts = []
+
     vehicles = await db.vehicles.find(country_filter, {"_id": 0}).to_list(1000)
     for vehicle in vehicles:
         vehicle_docs = await db.documents.find(
-            {"vehicle_id": vehicle['id']},
-            {"_id": 0}
+            {"entity_id": vehicle["id"], "entity_type": "VEHICLE"},
+            {"_id": 0},
         ).to_list(100)
-        
-        required_docs = ['ROADWORTHY_CERT', 'INSURANCE', 'VEHICLE_REGISTRATION']
+
+        required_docs = ["ROADWORTHY_CERT", "INSURANCE", "VEHICLE_REGISTRATION"]
         for doc_type in required_docs:
-            doc = next((d for d in vehicle_docs if d.get('document_type') == doc_type), None)
-            
+            doc = next((d for d in vehicle_docs if d.get("document_type") == doc_type), None)
+            label = doc_type.replace("_", " ").title()
+
             if not doc:
-                compliance_items.append({
+                item = {
                     "entity_type": "vehicle",
-                    "entity_id": vehicle['id'],
-                    "entity_name": vehicle.get('registration_number'),
-                    "country": vehicle.get('country'),
+                    "entity_id": vehicle["id"],
+                    "entity_name": vehicle.get("registration_number"),
+                    "country": vehicle.get("country"),
                     "check_type": doc_type,
                     "status": "NON_COMPLIANT",
-                    "message": f"Missing {doc_type.replace('_', ' ').title()}"
+                    "message": f"Missing {label}",
+                }
+                compliance_items.append(item)
+                missing_alerts.append({
+                    "type": "DOCUMENT_MISSING",
+                    "severity": "CRITICAL",
+                    "title": f"Missing: {label}",
+                    "message": f"{vehicle.get('registration_number', 'Vehicle')} — {label}",
+                    "entity_type": "vehicle",
+                    "entity_id": vehicle["id"],
+                    "document_type": doc_type,
+                    "link_entity_id": vehicle["id"],
+                    "link_entity_type": "VEHICLE",
+                    "country": vehicle.get("country"),
                 })
+                continue
+
+            expiry = doc.get("expiry_date")
+            # VRC without expiry is compliant (presence only)
+            if doc_type == "VEHICLE_REGISTRATION" and not expiry:
+                compliance_items.append({
+                    "entity_type": "vehicle",
+                    "entity_id": vehicle["id"],
+                    "entity_name": vehicle.get("registration_number"),
+                    "country": vehicle.get("country"),
+                    "check_type": doc_type,
+                    "status": "COMPLIANT",
+                    "message": f"{label} on file (no expiry)",
+                    "expiry_date": None,
+                    "days_until_expiry": None,
+                })
+                continue
+
+            if not expiry:
+                compliance_items.append({
+                    "entity_type": "vehicle",
+                    "entity_id": vehicle["id"],
+                    "entity_name": vehicle.get("registration_number"),
+                    "country": vehicle.get("country"),
+                    "check_type": doc_type,
+                    "status": "NON_COMPLIANT",
+                    "message": f"{label} missing expiry date",
+                    "expiry_date": None,
+                    "days_until_expiry": None,
+                })
+                continue
+
+            if isinstance(expiry, str):
+                expiry = datetime.fromisoformat(expiry.replace("Z", "+00:00"))
+            if expiry.tzinfo is None:
+                expiry = expiry.replace(tzinfo=timezone.utc)
+            days_until = (expiry - now).days
+
+            if days_until < 0:
+                status, message = "NON_COMPLIANT", f"{label} expired"
+            elif days_until <= 30:
+                status, message = "WARNING", f"{label} expires in {days_until} days"
             else:
-                expiry = doc.get('expiry_date')
-                if expiry:
-                    if isinstance(expiry, str):
-                        expiry = datetime.fromisoformat(expiry.replace('Z', '+00:00'))
-                    days_until = (expiry - now).days
-                    
-                    if days_until < 0:
-                        status = "NON_COMPLIANT"
-                        message = f"{doc_type.replace('_', ' ').title()} expired"
-                    elif days_until <= 30:
-                        status = "WARNING"
-                        message = f"{doc_type.replace('_', ' ').title()} expires in {days_until} days"
-                    else:
-                        status = "COMPLIANT"
-                        message = f"{doc_type.replace('_', ' ').title()} valid until {expiry.strftime('%Y-%m-%d')}"
-                    
-                    compliance_items.append({
-                        "entity_type": "vehicle",
-                        "entity_id": vehicle['id'],
-                        "entity_name": vehicle.get('registration_number'),
-                        "country": vehicle.get('country'),
-                        "check_type": doc_type,
-                        "status": status,
-                        "message": message,
-                        "expiry_date": expiry.isoformat() if expiry else None,
-                        "days_until_expiry": days_until
-                    })
-    
-    # Summary
-    compliant = len([c for c in compliance_items if c['status'] == 'COMPLIANT'])
-    warning = len([c for c in compliance_items if c['status'] == 'WARNING'])
-    non_compliant = len([c for c in compliance_items if c['status'] == 'NON_COMPLIANT'])
-    
+                status, message = "COMPLIANT", f"{label} valid until {expiry.strftime('%Y-%m-%d')}"
+
+            compliance_items.append({
+                "entity_type": "vehicle",
+                "entity_id": vehicle["id"],
+                "entity_name": vehicle.get("registration_number"),
+                "country": vehicle.get("country"),
+                "check_type": doc_type,
+                "status": status,
+                "message": message,
+                "expiry_date": expiry.isoformat(),
+                "days_until_expiry": days_until,
+            })
+
+    # Driver licenses (profile expiry + document if present)
+    drivers = await db.drivers.find(country_filter, {"_id": 0}).to_list(1000)
+    for driver in drivers:
+        name = f"{driver.get('first_name', '')} {driver.get('last_name', '')}".strip() or "Driver"
+        license_expiry = driver.get("license_expiry")
+        if license_expiry:
+            if isinstance(license_expiry, str):
+                license_expiry = datetime.fromisoformat(license_expiry.replace("Z", "+00:00"))
+            if license_expiry.tzinfo is None:
+                license_expiry = license_expiry.replace(tzinfo=timezone.utc)
+            days_until = (license_expiry - now).days
+            if days_until < 0:
+                status, message = "NON_COMPLIANT", "Driver license expired"
+            elif days_until <= 30:
+                status, message = "WARNING", f"Driver license expires in {days_until} days"
+            else:
+                status, message = "COMPLIANT", f"Driver license valid until {license_expiry.strftime('%Y-%m-%d')}"
+            compliance_items.append({
+                "entity_type": "driver",
+                "entity_id": driver["id"],
+                "entity_name": name,
+                "country": driver.get("country"),
+                "check_type": "DRIVER_LICENSE",
+                "status": status,
+                "message": message,
+                "expiry_date": license_expiry.isoformat(),
+                "days_until_expiry": days_until,
+            })
+        else:
+            compliance_items.append({
+                "entity_type": "driver",
+                "entity_id": driver["id"],
+                "entity_name": name,
+                "country": driver.get("country"),
+                "check_type": "DRIVER_LICENSE",
+                "status": "NON_COMPLIANT",
+                "message": "Missing driver license expiry",
+            })
+
+    compliant = len([c for c in compliance_items if c["status"] == "COMPLIANT"])
+    warning = len([c for c in compliance_items if c["status"] == "WARNING"])
+    non_compliant = len([c for c in compliance_items if c["status"] == "NON_COMPLIANT"])
+
     return {
         "items": compliance_items,
+        "issues": [c for c in compliance_items if c["status"] != "COMPLIANT"],
+        "missing_document_alerts": missing_alerts,
         "summary": {
             "compliant": compliant,
             "warning": warning,
             "non_compliant": non_compliant,
             "total": len(compliance_items),
-            "compliance_rate": round((compliant / len(compliance_items) * 100) if compliance_items else 100, 1)
-        }
+            "compliance_rate": round((compliant / len(compliance_items) * 100) if compliance_items else 100, 1),
+        },
     }
 
 

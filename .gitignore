@@ -75,6 +75,9 @@ agenthub/agents/youtube/db
 
 backend/uploads/
 
+# Commercial invoices (local only)
+docs/invoices/
+
 # Mobile development
 android-sdk/ -e 
 # Environment files

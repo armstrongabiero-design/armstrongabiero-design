@@ -40,6 +40,11 @@ export function canEditFleetRecord(role) {
   return STAFF_ROLES.includes(role);
 }
 
+/** Master-data export: Group Fleet Manager + Fleet Manager only. */
+export function canExportMasterData(role) {
+  return MANAGER_ROLES.includes(role);
+}
+
 /** Edit pending maintenance: staff or the submitting driver. */
 export function canEditMaintenanceRequest(role, isPersonalView, request) {
   if (!request || request.status !== 'PENDING') return false;

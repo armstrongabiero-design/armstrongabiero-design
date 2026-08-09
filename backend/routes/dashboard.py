@@ -216,9 +216,11 @@ async def get_dashboard_alerts(country: Optional[str] = None):
                 expiry = datetime.fromisoformat(expiry.replace('Z', '+00:00'))
             days_until = (expiry - now).days
             if days_until < 0:
-                alerts.append({"type": "DOCUMENT_EXPIRY", "severity": "CRITICAL", "title": f"Expired: {doc.get('document_type', 'Document')}", "description": f"Document expired {abs(days_until)} days ago", "entity_type": "document", "entity_id": doc.get('id'), "country": doc.get('country'), "id": doc.get('id')})
+                msg = f"Document expired {abs(days_until)} days ago"
+                alerts.append({"type": "DOCUMENT_EXPIRY", "severity": "CRITICAL", "title": f"Expired: {doc.get('document_type', 'Document')}", "message": msg, "description": msg, "entity_type": "document", "entity_id": doc.get('id'), "document_type": doc.get("document_type"), "link_entity_id": doc.get("entity_id"), "link_entity_type": doc.get("entity_type"), "country": doc.get('country'), "id": doc.get('id')})
             elif days_until <= 30:
-                alerts.append({"type": "DOCUMENT_EXPIRY", "severity": "WARNING", "title": f"Expiring Soon: {doc.get('document_type', 'Document')}", "description": f"Document expires in {days_until} days", "entity_type": "document", "entity_id": doc.get('id'), "country": doc.get('country'), "id": doc.get('id')})
+                msg = f"Document expires in {days_until} days"
+                alerts.append({"type": "DOCUMENT_EXPIRY", "severity": "WARNING", "title": f"Expiring Soon: {doc.get('document_type', 'Document')}", "message": msg, "description": msg, "entity_type": "document", "entity_id": doc.get('id'), "document_type": doc.get("document_type"), "link_entity_id": doc.get("entity_id"), "link_entity_type": doc.get("entity_type"), "country": doc.get('country'), "id": doc.get('id')})
 
     fuel_txns = await db.fuel_transactions.find({**country_filter, "anomaly_detected": True}, {"_id": 0}).to_list(100)
     for txn in fuel_txns:
@@ -269,7 +271,10 @@ async def get_compliance_status(country: Optional[str] = None):
     compliance_items = []
     vehicles = await db.vehicles.find(country_filter, {"_id": 0}).to_list(1000)
     for vehicle in vehicles:
-        vehicle_docs = await db.documents.find({"vehicle_id": vehicle['id']}, {"_id": 0}).to_list(100)
+        vehicle_docs = await db.documents.find(
+            {"entity_id": vehicle["id"], "entity_type": "VEHICLE"},
+            {"_id": 0},
+        ).to_list(100)
         required_docs = ['ROADWORTHY_CERT', 'INSURANCE', 'VEHICLE_REGISTRATION']
         for doc_type in required_docs:
             doc = next((d for d in vehicle_docs if d.get('document_type') == doc_type), None)
