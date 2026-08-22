@@ -432,10 +432,10 @@ const Maintenance = () => {
                       type="number"
                       value={formData.next_service_odometer}
                       onChange={(e) => setFormData({ ...formData, next_service_odometer: e.target.value })}
-                      placeholder={`Auto: odometer + ${NEXT_SERVICE_ODOMETER_INTERVAL_KM}`}
+                      placeholder={`Auto: odometer + ${intervalDefaults.interval_km ?? 7000}`}
                     />
                     <p className="text-xs text-slate-500 mt-1">
-                      Defaults to odometer + {NEXT_SERVICE_ODOMETER_INTERVAL_KM.toLocaleString()} km when left empty
+                      Defaults to odometer + {(intervalDefaults.interval_km ?? 7000).toLocaleString()} km when left empty
                     </p>
                   </div>
                 </div>
