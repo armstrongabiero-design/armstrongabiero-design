@@ -58,6 +58,7 @@ const MasterData = () => {
   const canDelete = canHardDelete(user?.role, 'master_workshop');
   const canExport = canExportMasterData(user?.role);
   const canDeleteVehicleMaster = canHardDelete(user?.role, 'vehicle_master');
+  const canManageSettings = ['GROUP_FLEET_MANAGER', 'FLEET_MANAGER'].includes(user?.role);
 
   const [workshops, setWorkshops] = useState([]);
   const [countries, setCountries] = useState([]);
@@ -72,6 +73,9 @@ const MasterData = () => {
   const [exportFmt, setExportFmt] = useState('xlsx');
   const [exportEntities, setExportEntities] = useState(['vehicles', 'workshops']);
   const [exporting, setExporting] = useState(false);
+  const [maintDefaults, setMaintDefaults] = useState({ interval_months: 3, interval_km: 7000 });
+  const [maintDefaultsLoading, setMaintDefaultsLoading] = useState(true);
+  const [maintDefaultsSaving, setMaintDefaultsSaving] = useState(false);
 
   const fetchWorkshops = useCallback(async () => {
     try {
@@ -98,6 +102,43 @@ const MasterData = () => {
     setLoading(true);
     fetchWorkshops();
   }, [fetchWorkshops]);
+
+  const fetchMaintDefaults = useCallback(async () => {
+    setMaintDefaultsLoading(true);
+    try {
+      const { data } = await axios.get(`${API}/settings/maintenance-defaults`);
+      setMaintDefaults({
+        interval_months: data.interval_months ?? 3,
+        interval_km: data.interval_km ?? 7000,
+      });
+    } catch {
+      toast.error('Failed to load maintenance interval settings');
+    } finally {
+      setMaintDefaultsLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    fetchMaintDefaults();
+  }, [fetchMaintDefaults]);
+
+  const saveMaintDefaults = async (e) => {
+    e.preventDefault();
+    if (!canManageSettings) return;
+    setMaintDefaultsSaving(true);
+    try {
+      const { data } = await axios.put(`${API}/settings/maintenance-defaults`, {
+        interval_months: Number(maintDefaults.interval_months),
+        interval_km: Number(maintDefaults.interval_km),
+      });
+      setMaintDefaults(data);
+      toast.success('Maintenance interval defaults saved');
+    } catch (error) {
+      toast.error(error.response?.data?.detail || 'Failed to save settings');
+    } finally {
+      setMaintDefaultsSaving(false);
+    }
+  };
 
   const openCreate = () => {
     setEditingId(null);
@@ -239,6 +280,7 @@ const MasterData = () => {
           <TabsTrigger value="document-types">Document Types</TabsTrigger>
           <TabsTrigger value="work-statuses">Work Statuses</TabsTrigger>
           <TabsTrigger value="maintenance-types">Maintenance Types</TabsTrigger>
+          <TabsTrigger value="maintenance-intervals">Maintenance Intervals</TabsTrigger>
           <TabsTrigger value="validation">Validation Process</TabsTrigger>
           <TabsTrigger value="safety-score">Safety Score</TabsTrigger>
         </TabsList>
@@ -360,6 +402,52 @@ const MasterData = () => {
                 </li>
               ))}
             </ul>
+          </div>
+        </TabsContent>
+
+        <TabsContent value="maintenance-intervals">
+          <div className="fleet-card p-5 max-w-lg">
+            <h2 className="text-lg font-semibold text-slate-800 mb-1">Auto Next Maintenance</h2>
+            <p className="text-sm text-slate-600 mb-4">
+              When creating a maintenance record, the system calculates next due date and next service odometer from these defaults if not entered manually.
+            </p>
+            {maintDefaultsLoading ? (
+              <p className="text-sm text-slate-500">Loading settings…</p>
+            ) : (
+              <form onSubmit={saveMaintDefaults} className="space-y-4">
+                <div>
+                  <Label htmlFor="interval_months">Interval (months)</Label>
+                  <Input
+                    id="interval_months"
+                    type="number"
+                    min={1}
+                    value={maintDefaults.interval_months}
+                    onChange={(e) => setMaintDefaults({ ...maintDefaults, interval_months: e.target.value })}
+                    disabled={!canManageSettings}
+                  />
+                  <p className="text-xs text-slate-500 mt-1">Added to current maintenance date (default: 3 months).</p>
+                </div>
+                <div>
+                  <Label htmlFor="interval_km">Interval (km)</Label>
+                  <Input
+                    id="interval_km"
+                    type="number"
+                    min={1}
+                    value={maintDefaults.interval_km}
+                    onChange={(e) => setMaintDefaults({ ...maintDefaults, interval_km: e.target.value })}
+                    disabled={!canManageSettings}
+                  />
+                  <p className="text-xs text-slate-500 mt-1">Added to odometer at maintenance (default: 7,000 km).</p>
+                </div>
+                {canManageSettings ? (
+                  <Button type="submit" disabled={maintDefaultsSaving}>
+                    {maintDefaultsSaving ? 'Saving…' : 'Save Defaults'}
+                  </Button>
+                ) : (
+                  <p className="text-xs text-slate-500">Only Group Fleet Manager or Fleet Manager can change these values.</p>
+                )}
+              </form>
+            )}
           </div>
         </TabsContent>
 

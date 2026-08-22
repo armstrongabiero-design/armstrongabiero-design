@@ -1,7 +1,7 @@
-import React, { useCallback, useEffect, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useState } from 'react';
 import axios from 'axios';
 import { Link } from 'react-router-dom';
-import { Plus, Pencil, Trash2, ExternalLink } from 'lucide-react';
+import { Plus, Pencil, Trash2, ExternalLink, Upload, Download } from 'lucide-react';
 import { toast } from 'sonner';
 import { Button } from '../components/ui/button';
 import { Input } from '../components/ui/input';
@@ -9,6 +9,7 @@ import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } f
 import { Label } from '../components/ui/label';
 import CountrySelect, { DEFAULT_COUNTRY_CODE, getCountryLabel } from '../components/CountrySelect';
 import ConfirmDeleteDialog from '../components/ConfirmDeleteDialog';
+import HorizontalScrollContainer from '../components/HorizontalScrollContainer';
 import { completeDialogSubmit } from '../utils/formUtils';
 
 const BACKEND_URL = process.env.REACT_APP_BACKEND_URL;
@@ -88,79 +89,6 @@ const toPayload = (form) => {
   return payload;
 };
 
-/** Dual-scroll: table scrolls; a fixed bottom bar mirrors horizontal scroll at all times. */
-function StickyHorizontalScroll({ children }) {
-  const topRef = useRef(null);
-  const bottomRef = useRef(null);
-  const spacerRef = useRef(null);
-  const syncing = useRef(false);
-
-  const syncWidths = useCallback(() => {
-    const top = topRef.current;
-    const spacer = spacerRef.current;
-    if (!top || !spacer) return;
-    spacer.style.width = `${top.scrollWidth}px`;
-  }, []);
-
-  useEffect(() => {
-    syncWidths();
-    const top = topRef.current;
-    if (!top) return undefined;
-    const ro = typeof ResizeObserver !== 'undefined' ? new ResizeObserver(syncWidths) : null;
-    if (ro) ro.observe(top);
-    window.addEventListener('resize', syncWidths);
-    return () => {
-      if (ro) ro.disconnect();
-      window.removeEventListener('resize', syncWidths);
-    };
-  }, [syncWidths, children]);
-
-  const onTopScroll = () => {
-    if (syncing.current) return;
-    syncing.current = true;
-    if (bottomRef.current && topRef.current) {
-      bottomRef.current.scrollLeft = topRef.current.scrollLeft;
-    }
-    syncing.current = false;
-  };
-
-  const onBottomScroll = () => {
-    if (syncing.current) return;
-    syncing.current = true;
-    if (topRef.current && bottomRef.current) {
-      topRef.current.scrollLeft = bottomRef.current.scrollLeft;
-    }
-    syncing.current = false;
-  };
-
-  return (
-    <div className="relative">
-      <div
-        ref={topRef}
-        onScroll={onTopScroll}
-        className="overflow-x-auto overflow-y-visible pb-2 vehicle-master-top-scroll"
-        style={{ scrollbarWidth: 'none', msOverflowStyle: 'none' }}
-      >
-        <style>{`.vehicle-master-top-scroll::-webkit-scrollbar{display:none;height:0}`}</style>
-        {children}
-      </div>
-      <div
-        className="sticky bottom-0 z-20 bg-white/95 border-t border-slate-200 shadow-[0_-2px_8px_rgba(15,23,42,0.06)]"
-        style={{ marginTop: 4 }}
-      >
-        <div
-          ref={bottomRef}
-          onScroll={onBottomScroll}
-          className="overflow-x-auto h-4"
-          aria-label="Horizontal scroll"
-        >
-          <div ref={spacerRef} style={{ height: 1 }} />
-        </div>
-      </div>
-    </div>
-  );
-}
-
 const VehicleMasterPanel = ({ canEdit, canDelete }) => {
   const [rows, setRows] = useState([]);
   const [vehicles, setVehicles] = useState([]);
@@ -171,6 +99,10 @@ const VehicleMasterPanel = ({ canEdit, canDelete }) => {
   const [formData, setFormData] = useState(emptyForm);
   const [deleteTarget, setDeleteTarget] = useState(null);
   const [deleting, setDeleting] = useState(false);
+  const [bulkFile, setBulkFile] = useState(null);
+  const [bulkUploading, setBulkUploading] = useState(false);
+  const [bulkResult, setBulkResult] = useState(null);
+  const [bulkDialogOpen, setBulkDialogOpen] = useState(false);
 
   const fetchRows = useCallback(async () => {
     try {
@@ -239,6 +171,67 @@ const VehicleMasterPanel = ({ canEdit, canDelete }) => {
     }
   };
 
+  const resetBulkDialog = () => {
+    setBulkFile(null);
+    setBulkResult(null);
+  };
+
+  const handleBulkDialogOpenChange = (open) => {
+    setBulkDialogOpen(open);
+    if (!open) resetBulkDialog();
+  };
+
+  const downloadBulkTemplate = async () => {
+    try {
+      const response = await axios.get(`${API}/master/vehicles/bulk-upload/template`, {
+        responseType: 'blob',
+      });
+      const url = window.URL.createObjectURL(new Blob([response.data]));
+      const link = document.createElement('a');
+      link.href = url;
+      link.setAttribute('download', 'vehicle-master-import-template.xlsx');
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+      window.URL.revokeObjectURL(url);
+    } catch {
+      toast.error('Could not download template');
+    }
+  };
+
+  const handleBulkUpload = async (e) => {
+    e.preventDefault();
+    if (!bulkFile) {
+      toast.error('Please select an Excel file to upload');
+      return;
+    }
+    const uploadData = new FormData();
+    uploadData.append('file', bulkFile);
+    setBulkUploading(true);
+    setBulkResult(null);
+    try {
+      const { data } = await axios.post(`${API}/master/vehicles/bulk-upload`, uploadData, {
+        headers: { 'Content-Type': 'multipart/form-data' },
+      });
+      setBulkResult(data);
+      const total = (data.created || 0) + (data.updated || 0);
+      if (total > 0) {
+        fetchRows();
+        toast.success(`${data.created || 0} created, ${data.updated || 0} updated`);
+      }
+      if (data.failed > 0 && total === 0) {
+        toast.error('No records were imported. Review the errors below.');
+      } else if (data.failed > 0) {
+        toast.warning(`${data.failed} row${data.failed === 1 ? '' : 's'} could not be imported`);
+      }
+    } catch (error) {
+      const detail = error.response?.data?.detail;
+      toast.error(typeof detail === 'string' ? detail : 'Bulk upload failed');
+    } finally {
+      setBulkUploading(false);
+    }
+  };
+
   if (loading) {
     return <div className="py-8 text-center text-slate-600">Loading vehicle master…</div>;
   }
@@ -259,15 +252,21 @@ const VehicleMasterPanel = ({ canEdit, canDelete }) => {
           </Link>
         </div>
         {canEdit && (
-          <Button onClick={openCreate}>
-            <Plus size={18} className="mr-2" />
-            Add Vehicle Master
-          </Button>
+          <div className="flex flex-wrap gap-2">
+            <Button variant="outline" onClick={() => setBulkDialogOpen(true)}>
+              <Upload size={18} className="mr-2" />
+              Bulk Upload
+            </Button>
+            <Button onClick={openCreate}>
+              <Plus size={18} className="mr-2" />
+              Add Vehicle Master
+            </Button>
+          </div>
         )}
       </div>
 
-      <div className="fleet-card p-0 overflow-hidden">
-        <StickyHorizontalScroll>
+      <div className="fleet-card p-0 overflow-hidden table-container">
+        <HorizontalScrollContainer>
           <table className="min-w-max text-sm">
             <thead>
               <tr>
@@ -358,8 +357,61 @@ const VehicleMasterPanel = ({ canEdit, canDelete }) => {
               )}
             </tbody>
           </table>
-        </StickyHorizontalScroll>
+        </HorizontalScrollContainer>
       </div>
+
+      <Dialog open={bulkDialogOpen} onOpenChange={handleBulkDialogOpenChange}>
+        <DialogContent className="max-w-lg">
+          <DialogHeader>
+            <DialogTitle>Bulk Upload Vehicle Master</DialogTitle>
+            <DialogDescription>
+              Import vehicle master records from Excel. Existing registrations are updated and linked vehicles are synced automatically.
+            </DialogDescription>
+          </DialogHeader>
+          <form onSubmit={handleBulkUpload} className="space-y-4">
+            <Button type="button" variant="outline" className="w-full" onClick={downloadBulkTemplate}>
+              <Download size={16} className="mr-2" />
+              Download template (.xlsx)
+            </Button>
+            <div>
+              <Label>Excel file</Label>
+              <Input
+                type="file"
+                accept=".xlsx,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+                onChange={(e) => setBulkFile(e.target.files?.[0] || null)}
+                required
+              />
+              <p className="text-xs text-slate-500 mt-1">
+                Template includes all extended master fields (registration, make, model, VIN, tyres, engine, etc.).
+              </p>
+            </div>
+            {bulkResult && (
+              <div className="rounded-lg border border-slate-200 bg-slate-50 p-3 text-sm space-y-2">
+                <p className="font-medium text-slate-800">
+                  Created {bulkResult.created || 0} · Updated {bulkResult.updated || 0} · Failed {bulkResult.failed || 0}
+                </p>
+                {bulkResult.errors?.length > 0 && (
+                  <ul className="max-h-32 overflow-y-auto text-red-700 space-y-1">
+                    {bulkResult.errors.map((err, idx) => (
+                      <li key={idx}>
+                        {err.row ? `Row ${err.row}` : 'Import'}: {err.message}
+                      </li>
+                    ))}
+                  </ul>
+                )}
+              </div>
+            )}
+            <div className="flex justify-end gap-2">
+              <Button type="button" variant="outline" onClick={() => handleBulkDialogOpenChange(false)}>
+                Close
+              </Button>
+              <Button type="submit" disabled={bulkUploading}>
+                {bulkUploading ? 'Uploading…' : 'Upload & Import'}
+              </Button>
+            </div>
+          </form>
+        </DialogContent>
+      </Dialog>
 
       <Dialog open={dialogOpen} onOpenChange={setDialogOpen}>
         <DialogContent className="max-w-3xl max-h-[90vh] overflow-y-auto">

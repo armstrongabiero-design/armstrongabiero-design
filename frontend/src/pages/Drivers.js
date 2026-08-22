@@ -16,6 +16,7 @@ import CountrySelect, {
 import ConfirmDeleteDialog from '../components/ConfirmDeleteDialog';
 import { completeDialogSubmit } from '../utils/formUtils';
 import { canEditFleetRecord, canHardDelete } from '../utils/permissions';
+import { useRecordHighlight } from '../utils/recordHighlight';
 import { safetyScoreTextClass, safetyScoreBadgeClass, safetyScoreLabel } from '../utils/safetyScore';
 
 const BACKEND_URL = process.env.REACT_APP_BACKEND_URL;
@@ -62,6 +63,7 @@ const Drivers = () => {
   const { user } = useAuth();
   const canEdit = canEditFleetRecord(user?.role);
   const canDelete = canHardDelete(user?.role, 'driver');
+  const { rowHighlightProps } = useRecordHighlight('driver');
 
   const [drivers, setDrivers] = useState([]);
   const [invites, setInvites] = useState([]);
@@ -480,7 +482,7 @@ const Drivers = () => {
                         ? 'Invite expired'
                         : 'No login';
                 return (
-                <tr key={driver.id}>
+                <tr key={driver.id} {...rowHighlightProps(driver.id)}>
                   <td className="font-semibold">
                     {driver.first_name} {driver.last_name}
                   </td>

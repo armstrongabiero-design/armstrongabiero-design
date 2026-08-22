@@ -1,4 +1,4 @@
-import React, { useEffect, useState, useCallback } from 'react';
+import React, { useEffect, useState, useCallback, useMemo } from 'react';
 import axios from 'axios';
 import { Plus, Sparkles, Pencil, Trash2, FileText, ExternalLink, ScanLine, Upload, Download } from 'lucide-react';
 import { toast } from 'sonner';
@@ -13,6 +13,7 @@ import CountrySelect, { DEFAULT_COUNTRY_CODE, getCountryBadgeClass, getCountryLa
 import ConfirmDeleteDialog from '../components/ConfirmDeleteDialog';
 import FilePreviewModal from '../components/FilePreviewModal';
 import { canEditFleetRecord, canHardDelete } from '../utils/permissions';
+import { useRecordHighlight } from '../utils/recordHighlight';
 
 const BACKEND_URL = process.env.REACT_APP_BACKEND_URL;
 const API = `${BACKEND_URL}/api`;
@@ -65,6 +66,7 @@ const createInitialFormData = () => ({
   document_number: '',
   issue_date: new Date().toISOString().split('T')[0],
   expiry_date: new Date(Date.now() + 365 * 24 * 60 * 60 * 1000).toISOString().split('T')[0],
+  renewal_date: '',
 });
 
 const documentToFormData = (doc) => ({
@@ -76,6 +78,9 @@ const documentToFormData = (doc) => ({
   issue_date: typeof doc.issue_date === 'string' ? doc.issue_date.split('T')[0] : new Date(doc.issue_date).toISOString().split('T')[0],
   expiry_date: doc.expiry_date
     ? (typeof doc.expiry_date === 'string' ? doc.expiry_date.split('T')[0] : new Date(doc.expiry_date).toISOString().split('T')[0])
+    : '',
+  renewal_date: doc.renewal_date
+    ? (typeof doc.renewal_date === 'string' ? doc.renewal_date.split('T')[0] : new Date(doc.renewal_date).toISOString().split('T')[0])
     : '',
 });
 
@@ -110,6 +115,12 @@ const Documents = () => {
   const [bulkUploading, setBulkUploading] = useState(false);
   const [bulkResult, setBulkResult] = useState(null);
   const [preview, setPreview] = useState(null);
+  const [sortField, setSortField] = useState('issue_date');
+  const [sortDir, setSortDir] = useState('desc');
+  const [filterSearch, setFilterSearch] = useState('');
+  const [filterEntityName, setFilterEntityName] = useState('');
+  const { rowHighlightProps } = useRecordHighlight('document');
+  const highlightParam = searchParams.get('highlight') || searchParams.get('entity_id') || '';
 
   const fetchData = useCallback(async (documentType = activeTab) => {
     try {
@@ -134,6 +145,45 @@ const Documents = () => {
       setLoading(false);
     }
   }, [activeTab, entityFilter]);
+
+  const getEntityLabel = useCallback((doc) => {
+    const entity = doc.entity_type === 'VEHICLE'
+      ? vehicles.find((v) => v.id === doc.entity_id)
+      : drivers.find((d) => d.id === doc.entity_id);
+    if (doc.entity_type === 'VEHICLE') return entity?.registration_number || '';
+    return entity ? `${entity.first_name} ${entity.last_name}` : '';
+  }, [vehicles, drivers]);
+
+  const displayedDocuments = useMemo(() => {
+    let rows = [...documents];
+    const q = filterSearch.trim().toLowerCase();
+    if (q) {
+      rows = rows.filter((d) =>
+        (d.document_number || '').toLowerCase().includes(q) ||
+        getEntityLabel(d).toLowerCase().includes(q)
+      );
+    }
+    if (filterEntityName.trim()) {
+      const n = filterEntityName.trim().toLowerCase();
+      rows = rows.filter((d) => getEntityLabel(d).toLowerCase().includes(n));
+    }
+    rows.sort((a, b) => {
+      let av = a[sortField];
+      let bv = b[sortField];
+      if (sortField === 'entity_name') {
+        av = getEntityLabel(a);
+        bv = getEntityLabel(b);
+      }
+      if (sortField.includes('date') && av) av = new Date(av).getTime();
+      if (sortField.includes('date') && bv) bv = new Date(bv).getTime();
+      if (av == null) av = '';
+      if (bv == null) bv = '';
+      if (av < bv) return sortDir === 'asc' ? -1 : 1;
+      if (av > bv) return sortDir === 'asc' ? 1 : -1;
+      return 0;
+    });
+    return rows;
+  }, [documents, filterSearch, filterEntityName, sortField, sortDir, getEntityLabel]);
 
   useEffect(() => {
     fetchData(activeTab);
@@ -197,6 +247,9 @@ const Documents = () => {
       issue_date: new Date(formData.issue_date).toISOString(),
       expiry_date: formData.expiry_date
         ? new Date(formData.expiry_date).toISOString()
+        : null,
+      renewal_date: formData.renewal_date
+        ? new Date(formData.renewal_date).toISOString()
         : null,
     };
 
@@ -481,6 +534,16 @@ const Documents = () => {
                   />
                 </div>
               </div>
+              {formData.document_type === 'DRIVER_LICENSE' && (
+                <div>
+                  <Label>Next Renewal Date</Label>
+                  <Input
+                    type="date"
+                    value={formData.renewal_date || ''}
+                    onChange={(e) => setFormData({ ...formData, renewal_date: e.target.value })}
+                  />
+                </div>
+              )}
               <div>
                 <Label>{editingId ? 'Replace File (optional)' : 'Document File'}</Label>
                 <Input
@@ -609,6 +672,40 @@ const Documents = () => {
         </TabsList>
       </Tabs>
 
+      <div className="fleet-card mb-4 p-4 grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-3">
+        <div>
+          <Label className="text-xs">Search (doc # / entity)</Label>
+          <Input value={filterSearch} onChange={(e) => setFilterSearch(e.target.value)} placeholder="Search…" />
+        </div>
+        <div>
+          <Label className="text-xs">Entity name</Label>
+          <Input value={filterEntityName} onChange={(e) => setFilterEntityName(e.target.value)} placeholder="Driver or registration…" />
+        </div>
+        <div>
+          <Label className="text-xs">Sort by</Label>
+          <Select value={sortField} onValueChange={setSortField}>
+            <SelectTrigger><SelectValue /></SelectTrigger>
+            <SelectContent>
+              <SelectItem value="issue_date">Issue Date</SelectItem>
+              <SelectItem value="expiry_date">Expiry Date</SelectItem>
+              <SelectItem value="renewal_date">Next Renewal Date</SelectItem>
+              <SelectItem value="document_number">Document Number</SelectItem>
+              <SelectItem value="entity_name">Entity Name</SelectItem>
+            </SelectContent>
+          </Select>
+        </div>
+        <div>
+          <Label className="text-xs">Order</Label>
+          <Select value={sortDir} onValueChange={setSortDir}>
+            <SelectTrigger><SelectValue /></SelectTrigger>
+            <SelectContent>
+              <SelectItem value="asc">Ascending</SelectItem>
+              <SelectItem value="desc">Descending</SelectItem>
+            </SelectContent>
+          </Select>
+        </div>
+      </div>
+
       <div className="fleet-card table-container">
         <table>
           <thead>
@@ -618,6 +715,7 @@ const Documents = () => {
               <th>Document #</th>
               <th>Country</th>
               <th>Issue Date</th>
+              {activeTab === 'DRIVER_LICENSE' || activeTab === 'ALL' ? <th>Next Renewal</th> : null}
               <th>Expiry Date</th>
               <th>File</th>
               <th>OCR Status</th>
@@ -626,19 +724,21 @@ const Documents = () => {
             </tr>
           </thead>
           <tbody>
-            {documents.length === 0 ? (
+            {displayedDocuments.length === 0 ? (
               <tr>
-                <td colSpan={canEdit ? 10 : 9} className="text-center py-8 text-slate-500">No documents found</td>
+                <td colSpan={canEdit ? 11 : 10} className="text-center py-8 text-slate-500">No documents found</td>
               </tr>
             ) : (
-              documents.map((doc) => {
+              displayedDocuments.map((doc) => {
                 const entity = doc.entity_type === 'VEHICLE'
                   ? vehicles.find((v) => v.id === doc.entity_id)
                   : drivers.find((d) => d.id === doc.entity_id);
                 const isExpired = doc.expiry_date && new Date(doc.expiry_date) < new Date();
                 const hasFile = !!(doc.s3_key || doc.file_url);
+                const hl = rowHighlightProps(doc.id);
+                const showRenewal = activeTab === 'DRIVER_LICENSE' || activeTab === 'ALL';
                 return (
-                  <tr key={doc.id}>
+                  <tr key={doc.id} {...hl} className={hl.className}>
                     <td><span className="status-badge">{getDocumentTypeLabel(doc.document_type)}</span></td>
                     <td className="font-semibold">
                       {doc.entity_type === 'VEHICLE'
@@ -648,6 +748,9 @@ const Documents = () => {
                     <td className="text-xs font-mono">{doc.document_number}</td>
                     <td><span className={getCountryBadgeClass(doc.country)}>{getCountryLabel(doc.country)}</span></td>
                     <td>{new Date(doc.issue_date).toLocaleDateString()}</td>
+                    {showRenewal && (
+                      <td>{doc.renewal_date ? new Date(doc.renewal_date).toLocaleDateString() : '—'}</td>
+                    )}
                     <td className={isExpired ? 'text-red-600 font-semibold' : ''}>
                       {doc.expiry_date ? new Date(doc.expiry_date).toLocaleDateString() : '—'}
                     </td>

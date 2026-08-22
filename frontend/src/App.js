@@ -31,6 +31,7 @@ import MasterData from './pages/MasterData';
 import ReminderSettings from './pages/ReminderSettings';
 import Sidebar from './components/Sidebar';
 import NotificationBell from './components/NotificationBell';
+import TableScrollEnhancer from './components/TableScrollEnhancer';
 import { Toaster } from './components/ui/sonner';
 import { Button } from './components/ui/button';
 
@@ -112,6 +113,7 @@ const AppLayout = () => {
         <div className="sticky top-0 z-20 flex justify-end px-4 py-2 bg-slate-50/90 backdrop-blur border-b border-slate-100">
           <NotificationBell />
         </div>
+        <TableScrollEnhancer />
         <Routes>
           <Route path="/" element={<Dashboard />} />
           <Route path="/vehicles" element={<Vehicles />} />

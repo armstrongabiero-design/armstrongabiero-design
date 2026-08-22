@@ -19,7 +19,7 @@ import ConfirmDeleteDialog from '../components/ConfirmDeleteDialog';
 import FilePreviewModal from '../components/FilePreviewModal';
 import { completeDialogSubmit } from '../utils/formUtils';
 import { downloadExport } from '../utils/downloadExport';
-import { canEditPreTripChecklist, canHardDelete } from '../utils/permissions';
+import { canEditFleetRecord, canEditPreTripChecklist, canHardDelete } from '../utils/permissions';
 
 const BACKEND_URL = process.env.REACT_APP_BACKEND_URL;
 const API = `${BACKEND_URL}/api`;
@@ -101,6 +101,8 @@ const PreTripChecklist = () => {
   const [filterStatus, setFilterStatus] = useState('ALL');
   const [filterDateFrom, setFilterDateFrom] = useState('');
   const [filterDateTo, setFilterDateTo] = useState('');
+  const [resolutionDialog, setResolutionDialog] = useState(null);
+  const [resolutionSaving, setResolutionSaving] = useState(false);
 
   const [formData, setFormData] = useState(createInitialFormData(user, isPersonalView));
 
@@ -280,6 +282,33 @@ const PreTripChecklist = () => {
     setFormData(checklistToFormData(checklist, user, isPersonalView));
     setDialogOpen(true);
   };
+
+  const openResolutionDialog = (checklist) => {
+    setResolutionDialog(checklist);
+  };
+
+  const updateIssueResolution = async (itemName, resolutionStatus) => {
+    if (!resolutionDialog) return;
+    setResolutionSaving(true);
+    try {
+      const { data } = await axios.put(`${API}/pre-trip-checklists/${resolutionDialog.id}/issue-resolution`, {
+        item_name: itemName,
+        resolution_status: resolutionStatus,
+      });
+      toast.success('Issue status updated');
+      setResolutionDialog((prev) => (prev ? { ...prev, checklist_items: data.checklist_items } : prev));
+      fetchData();
+    } catch (error) {
+      toast.error(error.response?.data?.detail || 'Failed to update issue status');
+    } finally {
+      setResolutionSaving(false);
+    }
+  };
+
+  const attentionItems = (checklist) =>
+    (checklist?.checklist_items || []).filter(
+      (i) => i.status === 'NEEDS_ATTENTION' || i.status === 'FAILED'
+    );
 
   const resolveDriverName = (driverId, checklist) => {
     if (checklist?.driver_name) return checklist.driver_name;
@@ -704,6 +733,11 @@ const PreTripChecklist = () => {
                       </td>
                       <td>
                         <div className="flex gap-1">
+                          {canEditFleetRecord(user?.role) && attentionItems(checklist).length > 0 && (
+                            <Button variant="outline" size="sm" className="h-8 text-xs" onClick={() => openResolutionDialog(checklist)}>
+                              Issues
+                            </Button>
+                          )}
                           {canEdit && (
                             <Button variant="ghost" size="icon" className="h-8 w-8" onClick={() => openEditDialog(checklist)}>
                               <Pencil size={16} />
@@ -729,6 +763,35 @@ const PreTripChecklist = () => {
           </table>
         </div>
       </div>
+
+      <Dialog open={!!resolutionDialog} onOpenChange={(open) => !open && setResolutionDialog(null)}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Issue Resolution</DialogTitle>
+            <DialogDescription>Update status for items requiring attention. Status is kept in pre-trip history.</DialogDescription>
+          </DialogHeader>
+          <div className="space-y-3">
+            {resolutionDialog && attentionItems(resolutionDialog).map((item) => (
+              <div key={item.item_name} className="border rounded-lg p-3">
+                <p className="font-medium text-sm">{item.item_name}</p>
+                {item.notes && <p className="text-xs text-slate-600 mt-1">{item.notes}</p>}
+                <Select
+                  value={item.resolution_status || 'OPEN'}
+                  onValueChange={(v) => updateIssueResolution(item.item_name, v)}
+                  disabled={resolutionSaving}
+                >
+                  <SelectTrigger className="mt-2"><SelectValue /></SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="OPEN">Open</SelectItem>
+                    <SelectItem value="IN_PROGRESS">In Progress</SelectItem>
+                    <SelectItem value="RESOLVED">Resolved</SelectItem>
+                  </SelectContent>
+                </Select>
+              </div>
+            ))}
+          </div>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 };

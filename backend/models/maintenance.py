@@ -238,6 +238,12 @@ class ChecklistItem(BaseModel):
     item_name: str
     status: ChecklistItemStatus
     notes: Optional[str] = None
+    resolution_status: Optional[str] = None  # OPEN | IN_PROGRESS | RESOLVED
+
+
+class PreTripIssueResolutionUpdate(BaseModel):
+    item_name: str
+    resolution_status: str  # OPEN | IN_PROGRESS | RESOLVED
 
 
 class PreTripChecklist(BaseModel):

@@ -17,6 +17,7 @@ class Document(BaseModel):
     document_number: str
     issue_date: datetime
     expiry_date: Optional[datetime] = None  # Optional for VRC; required for other types at API layer
+    renewal_date: Optional[datetime] = None  # Next renewal (e.g. driver licence)
     file_url: str = ""
     s3_key: Optional[str] = None
     original_filename: Optional[str] = None
@@ -36,6 +37,7 @@ class DocumentCreate(BaseModel):
     document_number: str
     issue_date: datetime
     expiry_date: Optional[datetime] = None
+    renewal_date: Optional[datetime] = None
     file_url: str = ""
 
 
@@ -47,7 +49,17 @@ class DocumentUpdate(BaseModel):
     document_number: Optional[str] = None
     issue_date: Optional[datetime] = None
     expiry_date: Optional[datetime] = None
+    renewal_date: Optional[datetime] = None
     file_url: Optional[str] = None
+
+
+class SafetyEvidenceFile(BaseModel):
+    id: str = Field(default_factory=lambda: str(uuid.uuid4()))
+    filename: str
+    content_type: str
+    s3_key: Optional[str] = None
+    file_url: str = ""
+    uploaded_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
 
 
 class SafetyIncident(BaseModel):
@@ -63,6 +75,7 @@ class SafetyIncident(BaseModel):
     cost: Optional[float] = None
     currency: Optional[CurrencyEnum] = None
     cost_usd: Optional[float] = None
+    evidence_files: list = Field(default_factory=list)
     created_at: datetime = Field(default_factory=datetime.utcnow)
 
 

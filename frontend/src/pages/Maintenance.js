@@ -13,10 +13,10 @@ import { Textarea } from '../components/ui/textarea';
 import { completeDialogSubmit } from '../utils/formUtils';
 import { canEditFleetRecord } from '../utils/permissions';
 import { WORK_STATUS_OPTIONS, workStatusLabel } from '../utils/workStatus';
+import { useRecordHighlight } from '../utils/recordHighlight';
 
 const BACKEND_URL = process.env.REACT_APP_BACKEND_URL;
 const API = `${BACKEND_URL}/api`;
-const NEXT_SERVICE_ODOMETER_INTERVAL_KM = 5000;
 
 const createInitialFormData = () => ({
   vehicle_id: '',
@@ -57,28 +57,46 @@ const Maintenance = () => {
   const [bulkFile, setBulkFile] = useState(null);
   const [bulkUploading, setBulkUploading] = useState(false);
   const [bulkResult, setBulkResult] = useState(null);
+  const [intervalDefaults, setIntervalDefaults] = useState({ interval_months: 3, interval_km: 7000 });
+  const [filterVehicle, setFilterVehicle] = useState('ALL');
+  const [filterType, setFilterType] = useState('ALL');
+  const [filterStatus, setFilterStatus] = useState('ALL');
+  const [filterDateFrom, setFilterDateFrom] = useState('');
+  const [filterDateTo, setFilterDateTo] = useState('');
+  const [filterSearch, setFilterSearch] = useState('');
+  const [filterRegistration, setFilterRegistration] = useState('');
+  const { rowHighlightProps } = useRecordHighlight('maintenance');
 
   const fetchData = useCallback(async () => {
     try {
       const params = {};
       if (workStatusFilter) params.work_status = workStatusFilter;
+      if (filterVehicle !== 'ALL') params.vehicle_id = filterVehicle;
+      if (filterType !== 'ALL') params.maintenance_type = filterType;
+      if (filterStatus !== 'ALL') params.work_status = filterStatus;
+      if (filterDateFrom) params.date_from = filterDateFrom;
+      if (filterDateTo) params.date_to = filterDateTo;
+      if (filterSearch.trim()) params.search = filterSearch.trim();
+      if (filterRegistration.trim()) params.registration = filterRegistration.trim();
       const requests = [
         axios.get(`${API}/maintenance`, { params }),
         axios.get(`${API}/vehicles`),
+        axios.get(`${API}/settings/maintenance-defaults`).catch(() => ({ data: { interval_months: 3, interval_km: 7000 } })),
       ];
       if (canBulkUpload) {
         requests.push(axios.get(`${API}/master/workshops`, { params: { active_only: true } }).catch(() => ({ data: [] })));
       }
-      const [recordsRes, vehiclesRes, workshopsRes] = await Promise.all(requests);
+      const [recordsRes, vehiclesRes, defaultsRes, workshopsRes] = await Promise.all(requests);
       setRecords(recordsRes.data);
       setVehicles(vehiclesRes.data);
+      setIntervalDefaults(defaultsRes.data || { interval_months: 3, interval_km: 7000 });
       if (workshopsRes) setMasterWorkshops(workshopsRes.data || []);
     } catch {
       toast.error('Failed to load data');
     } finally {
       setLoading(false);
     }
-  }, [workStatusFilter, canBulkUpload]);
+  }, [workStatusFilter, canBulkUpload, filterVehicle, filterType, filterStatus, filterDateFrom, filterDateTo, filterSearch, filterRegistration]);
 
   useEffect(() => {
     setLoading(true);
@@ -90,11 +108,25 @@ const Maintenance = () => {
     if (!open) setFormData(createInitialFormData());
   };
 
+  const addMonths = (dateStr, months) => {
+    if (!dateStr) return '';
+    const d = new Date(dateStr);
+    d.setMonth(d.getMonth() + months);
+    return d.toISOString().split('T')[0];
+  };
+
   const applyOdometerSuggestion = (odometerValue, nextServiceValue) => {
     const odo = parseFloat(odometerValue);
+    const km = intervalDefaults.interval_km || 7000;
     if (Number.isNaN(odo)) return nextServiceValue;
     if (nextServiceValue !== '' && nextServiceValue != null) return nextServiceValue;
-    return String(odo + NEXT_SERVICE_ODOMETER_INTERVAL_KM);
+    return String(odo + km);
+  };
+
+  const applyDateSuggestion = (scheduledDate, nextDueValue) => {
+    if (nextDueValue) return nextDueValue;
+    const months = intervalDefaults.interval_months || 3;
+    return addMonths(scheduledDate, months);
   };
 
   const handleOdometerChange = (value) => {
@@ -102,6 +134,14 @@ const Maintenance = () => {
       ...prev,
       odometer_at_maintenance: value,
       next_service_odometer: applyOdometerSuggestion(value, prev.next_service_odometer),
+    }));
+  };
+
+  const handleScheduledDateChange = (value) => {
+    setFormData((prev) => ({
+      ...prev,
+      scheduled_date: value,
+      next_due_date: applyDateSuggestion(value, prev.next_due_date),
     }));
   };
 
@@ -369,7 +409,7 @@ const Maintenance = () => {
                 <div className="grid grid-cols-2 gap-4">
                   <div>
                     <Label>Scheduled Date</Label>
-                    <Input type="date" value={formData.scheduled_date} onChange={(e) => setFormData({ ...formData, scheduled_date: e.target.value })} required />
+                    <Input type="date" value={formData.scheduled_date} onChange={(e) => handleScheduledDateChange(e.target.value)} required />
                   </div>
                   <div>
                     <Label>Next Service Date</Label>
@@ -509,6 +549,66 @@ const Maintenance = () => {
         </div>
       </div>
 
+      <div className="fleet-card mb-4 p-4">
+        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-3">
+          <div>
+            <Label className="text-xs">Registration</Label>
+            <Input placeholder="Search reg…" value={filterRegistration} onChange={(e) => setFilterRegistration(e.target.value)} />
+          </div>
+          <div>
+            <Label className="text-xs">Vehicle</Label>
+            <Select value={filterVehicle} onValueChange={setFilterVehicle}>
+              <SelectTrigger><SelectValue placeholder="All vehicles" /></SelectTrigger>
+              <SelectContent>
+                <SelectItem value="ALL">All vehicles</SelectItem>
+                {vehicles.map((v) => (
+                  <SelectItem key={v.id} value={v.id}>{v.registration_number}</SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          </div>
+          <div>
+            <Label className="text-xs">Maintenance Type</Label>
+            <Select value={filterType} onValueChange={setFilterType}>
+              <SelectTrigger><SelectValue /></SelectTrigger>
+              <SelectContent>
+                <SelectItem value="ALL">All types</SelectItem>
+                <SelectItem value="ROUTINE">Routine</SelectItem>
+                <SelectItem value="PREDICTIVE">Predictive</SelectItem>
+                <SelectItem value="CORRECTIVE">Corrective</SelectItem>
+              </SelectContent>
+            </Select>
+          </div>
+          <div>
+            <Label className="text-xs">Work Status</Label>
+            <Select value={filterStatus} onValueChange={setFilterStatus}>
+              <SelectTrigger><SelectValue /></SelectTrigger>
+              <SelectContent>
+                <SelectItem value="ALL">All statuses</SelectItem>
+                {WORK_STATUS_OPTIONS.map((o) => (
+                  <SelectItem key={o.value} value={o.value}>{o.label}</SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          </div>
+          <div>
+            <Label className="text-xs">From Date</Label>
+            <Input type="date" value={filterDateFrom} onChange={(e) => setFilterDateFrom(e.target.value)} />
+          </div>
+          <div>
+            <Label className="text-xs">To Date</Label>
+            <Input type="date" value={filterDateTo} onChange={(e) => setFilterDateTo(e.target.value)} />
+          </div>
+          <div className="lg:col-span-2">
+            <Label className="text-xs">Search description / work performed</Label>
+            <Input placeholder="Keywords…" value={filterSearch} onChange={(e) => setFilterSearch(e.target.value)} />
+          </div>
+        </div>
+        <p className="text-xs text-slate-500 mt-2">
+          Next service defaults: +{intervalDefaults.interval_months} months / +{intervalDefaults.interval_km?.toLocaleString()} km (configurable in Master Data)
+        </p>
+      </div>
+
       <div className="fleet-card table-container">
         <table>
           <thead>
@@ -537,7 +637,7 @@ const Maintenance = () => {
                 const overdue = nextDue && nextDue < new Date();
                 const incomplete = isWorkIncomplete(record);
                 return (
-                  <tr key={record.id}>
+                  <tr key={record.id} {...rowHighlightProps(record.id)}>
                     <td className="font-semibold">{vehicle?.registration_number || 'N/A'}</td>
                     <td><span className="status-badge">{typeLabel(record.maintenance_type)}</span></td>
                     <td className="text-sm">{record.description}</td>

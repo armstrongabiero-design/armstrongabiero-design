@@ -69,6 +69,7 @@ from models.vehicle_master import (
     VehicleMasterCreate,
     VehicleMasterUpdate,
 )
+from vehicle_master_service import sync_master_to_vehicles
 from audit_service import assert_can_hard_delete, write_audit_log
 from storage_service import upload_bytes, read_bytes, delete_object, presigned_download_url, storage_enabled
 from vehicle_bulk_import import build_template_workbook, parse_bulk_upload
@@ -138,8 +139,16 @@ def _pretrip_build_items_and_status(fields: dict) -> tuple:
             continue
         if not isinstance(status, ChecklistItemStatus):
             status = ChecklistItemStatus(status)
+        resolution = None
+        if status in (ChecklistItemStatus.NEEDS_ATTENTION, ChecklistItemStatus.FAILED):
+            resolution = "OPEN"
         items.append(
-            ChecklistItem(item_name=item_name, status=status, notes=fields.get(notes_key)).model_dump()
+            ChecklistItem(
+                item_name=item_name,
+                status=status,
+                notes=fields.get(notes_key),
+                resolution_status=resolution,
+            ).model_dump()
         )
     has_failed = any(i["status"] == ChecklistItemStatus.FAILED.value for i in items)
     has_attention = any(i["status"] == ChecklistItemStatus.NEEDS_ATTENTION.value for i in items)
@@ -1023,6 +1032,9 @@ def _validate_etc_or_raise(work_status, etc_datetime) -> None:
 async def create_maintenance(input: MaintenanceRecordCreate):
     cost_usd = currency_converter.convert(input.cost, input.currency, CurrencyEnum.USD)
     maintenance_data = input.model_dump()
+    from maintenance_defaults import apply_maintenance_defaults, get_maintenance_defaults
+    defaults = await get_maintenance_defaults(db)
+    maintenance_data = apply_maintenance_defaults(maintenance_data, defaults)
     maintenance_data["cost_usd"] = cost_usd
     _validate_etc_or_raise(maintenance_data.get("work_status"), maintenance_data.get("etc_datetime"))
     if _normalize_work_status(maintenance_data.get("work_status")) == WorkStatus.WORK_COMPLETED.value:
@@ -1044,10 +1056,36 @@ async def create_maintenance(input: MaintenanceRecordCreate):
 async def get_maintenance_records(
     vehicle_id: Optional[str] = None,
     work_status: Optional[str] = None,
+    maintenance_type: Optional[str] = None,
+    date_from: Optional[str] = None,
+    date_to: Optional[str] = None,
+    search: Optional[str] = None,
+    registration: Optional[str] = None,
 ):
     query: dict = {}
     if vehicle_id:
         query["vehicle_id"] = vehicle_id
+    if registration:
+        reg = registration.strip()
+        vehicle_ids = [
+            v["id"]
+            for v in await db.vehicles.find(
+                {"registration_number": {"$regex": reg, "$options": "i"}},
+                {"_id": 0, "id": 1},
+            ).to_list(200)
+        ]
+        query["vehicle_id"] = {"$in": vehicle_ids or ["__none__"]}
+    if maintenance_type:
+        query["maintenance_type"] = maintenance_type
+    if search:
+        query["description"] = {"$regex": search.strip(), "$options": "i"}
+    if date_from or date_to:
+        date_q: dict = {}
+        if date_from:
+            date_q["$gte"] = date_from if "T" in date_from else f"{date_from}T00:00:00"
+        if date_to:
+            date_q["$lte"] = date_to if "T" in date_to else f"{date_to}T23:59:59.999999"
+        query["scheduled_date"] = date_q
     if work_status == "incomplete":
         incomplete_clause = {
             "$or": [
@@ -1497,6 +1535,7 @@ async def create_vehicle_master(
     doc["created_at"] = doc["created_at"].isoformat()
     doc["updated_at"] = doc["updated_at"].isoformat()
     await db.vehicle_masters.insert_one(doc)
+    await sync_master_to_vehicles(db, doc)
     await write_audit_log(
         action="create",
         entity_type="vehicle_master",
@@ -1524,7 +1563,70 @@ async def update_vehicle_master(
     update_data["updated_at"] = datetime.now(timezone.utc).isoformat()
     await db.vehicle_masters.update_one({"id": record_id}, {"$set": update_data})
     updated = await db.vehicle_masters.find_one({"id": record_id}, {"_id": 0})
+    await sync_master_to_vehicles(db, updated)
     return VehicleMaster(**_parse_vehicle_master_dates(updated))
+
+
+@api_router.get("/master/vehicles/bulk-upload/template")
+async def download_vehicle_master_template(current_user: dict = Depends(_require_staff)):
+    from vehicle_master_bulk_import import build_vehicle_master_template_workbook
+    return Response(
+        content=build_vehicle_master_template_workbook(),
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={"Content-Disposition": 'attachment; filename="vehicle-master-import-template.xlsx"'},
+    )
+
+
+@api_router.post("/master/vehicles/bulk-upload")
+async def bulk_upload_vehicle_masters(
+    file: UploadFile = File(...),
+    current_user: dict = Depends(_require_staff),
+):
+    from vehicle_master_bulk_import import parse_vehicle_master_bulk_upload
+    from vehicle_master_service import sync_master_to_vehicles
+
+    filename = (file.filename or "").lower()
+    if not filename.endswith(".xlsx"):
+        raise HTTPException(status_code=400, detail="Please upload an Excel file (.xlsx)")
+    content = await file.read()
+    if len(content) > 5 * 1024 * 1024:
+        raise HTTPException(status_code=400, detail="File too large (max 5 MB)")
+    try:
+        rows, parse_errors = parse_vehicle_master_bulk_upload(content)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    created = 0
+    updated = 0
+    errors = list(parse_errors)
+    for row in rows:
+        try:
+            reg = (row.get("registration_number") or "").strip()
+            existing = None
+            if reg:
+                existing = await db.vehicle_masters.find_one(
+                    {"registration_number": {"$regex": f"^{reg}$", "$options": "i"}},
+                    {"_id": 0},
+                )
+            if existing:
+                upd = {k: v for k, v in row.items() if k != "row"}
+                upd["updated_at"] = datetime.now(timezone.utc).isoformat()
+                await db.vehicle_masters.update_one({"id": existing["id"]}, {"$set": upd})
+                merged = {**existing, **upd}
+                await sync_master_to_vehicles(db, merged)
+                updated += 1
+            else:
+                record = VehicleMaster(**{k: v for k, v in row.items() if k != "row"})
+                doc = record.model_dump()
+                doc["created_at"] = doc["created_at"].isoformat()
+                doc["updated_at"] = doc["updated_at"].isoformat()
+                await db.vehicle_masters.insert_one(doc)
+                await sync_master_to_vehicles(db, doc)
+                created += 1
+        except Exception as exc:
+            errors.append({"row": row.get("row"), "message": str(exc)})
+
+    return {"created": created, "updated": updated, "failed": len(errors), "errors": errors[:50]}
 
 
 @api_router.delete("/master/vehicles/{record_id}")
@@ -2290,6 +2392,10 @@ async def create_document(input: DocumentCreate):
         doc['expiry_date'] = doc['expiry_date'].isoformat()
     else:
         doc['expiry_date'] = None
+    if doc.get('renewal_date'):
+        doc['renewal_date'] = doc['renewal_date'].isoformat()
+    else:
+        doc['renewal_date'] = None
     doc['created_at'] = doc['created_at'].isoformat()
 
     await db.documents.insert_one(doc)
@@ -2313,6 +2419,11 @@ async def get_documents(entity_id: Optional[str] = None, document_type: Optional
             d['expiry_date'] = datetime.fromisoformat(expiry)
         elif not expiry:
             d['expiry_date'] = None
+        renewal = d.get('renewal_date')
+        if isinstance(renewal, str) and renewal:
+            d['renewal_date'] = datetime.fromisoformat(renewal)
+        elif not renewal:
+            d['renewal_date'] = None
         if isinstance(d.get('created_at'), str):
             d['created_at'] = datetime.fromisoformat(d['created_at'])
     return documents
@@ -2662,8 +2773,8 @@ async def update_document(
 
     await db.documents.update_one({"id": document_id}, {"$set": update_data})
     updated = await db.documents.find_one({"id": document_id}, {"_id": 0})
-    for field in ["issue_date", "expiry_date", "created_at"]:
-        if isinstance(updated.get(field), str):
+    for field in ["issue_date", "expiry_date", "renewal_date", "created_at"]:
+        if updated.get(field) and isinstance(updated[field], str):
             updated[field] = datetime.fromisoformat(updated[field])
     return Document(**updated)
 
@@ -3334,6 +3445,39 @@ async def get_dashboard_alerts(country: Optional[str] = None):
                 "title": f"Expiring Soon: {doc_type}",
                 "message": f"Document expires in {days_until} days",
             })
+
+        renewal = doc.get('renewal_date')
+        if renewal:
+            if isinstance(renewal, str):
+                renewal = datetime.fromisoformat(renewal.replace('Z', '+00:00'))
+            if renewal.tzinfo is None:
+                renewal = renewal.replace(tzinfo=timezone.utc)
+            days_until_renewal = (renewal - now).days
+            renewal_base = {
+                "entity_type": "document",
+                "entity_id": doc.get('id'),
+                "document_type": doc_type,
+                "link_entity_id": doc.get('entity_id'),
+                "link_entity_type": doc.get('entity_type'),
+                "country": doc.get('country'),
+                "days_until_renewal": days_until_renewal,
+            }
+            if days_until_renewal < 0:
+                alerts.append({
+                    **renewal_base,
+                    "type": "DOCUMENT_RENEWAL",
+                    "severity": "CRITICAL",
+                    "title": f"Renewal overdue: {doc_type.replace('_', ' ').title()}",
+                    "message": f"Next renewal was {abs(days_until_renewal)} day(s) ago",
+                })
+            elif days_until_renewal <= 30:
+                alerts.append({
+                    **renewal_base,
+                    "type": "DOCUMENT_RENEWAL",
+                    "severity": "WARNING",
+                    "title": f"Renewal due soon: {doc_type.replace('_', ' ').title()}",
+                    "message": f"Next renewal in {days_until_renewal} day(s)",
+                })
     
     # 2. Fuel Anomalies
     fuel_txns = await db.fuel_transactions.find({**country_filter, "anomaly_detected": True}, {"_id": 0}).to_list(100)
@@ -4185,6 +4329,109 @@ async def delete_pretrip_checklist(
         },
     )
     return {"message": "Checklist deleted successfully"}
+
+
+@api_router.put("/pre-trip-checklists/{checklist_id}/issue-resolution")
+async def update_pretrip_issue_resolution(
+    checklist_id: str,
+    input: dict = Body(...),
+    current_user: dict = Depends(_require_staff),
+):
+    """Update resolution status for a checklist item requiring attention."""
+    from models.maintenance import PreTripIssueResolutionUpdate
+
+    payload = PreTripIssueResolutionUpdate(**input)
+    allowed = {"OPEN", "IN_PROGRESS", "RESOLVED"}
+    if payload.resolution_status not in allowed:
+        raise HTTPException(status_code=400, detail="Invalid resolution status")
+
+    checklist = await db.pretrip_checklists.find_one({"id": checklist_id}, {"_id": 0})
+    if not checklist:
+        raise HTTPException(status_code=404, detail="Checklist not found")
+
+    items = checklist.get("checklist_items") or []
+    found = False
+    for item in items:
+        if item.get("item_name") == payload.item_name:
+            if item.get("status") not in ("NEEDS_ATTENTION", "FAILED"):
+                raise HTTPException(status_code=400, detail="Item does not require resolution tracking")
+            item["resolution_status"] = payload.resolution_status
+            item["resolution_updated_at"] = datetime.now(timezone.utc).isoformat()
+            item["resolution_updated_by"] = current_user.get("id")
+            found = True
+            break
+    if not found:
+        raise HTTPException(status_code=404, detail="Checklist item not found")
+
+    await db.pretrip_checklists.update_one({"id": checklist_id}, {"$set": {"checklist_items": items}})
+    return {"status": "success", "checklist_items": items}
+
+
+@api_router.get("/settings/maintenance-defaults")
+async def get_maintenance_default_settings(current_user: dict = Depends(_require_staff)):
+    from maintenance_defaults import get_maintenance_defaults
+    return await get_maintenance_defaults(db)
+
+
+@api_router.put("/settings/maintenance-defaults")
+async def update_maintenance_default_settings(
+    payload: dict = Body(...),
+    current_user: dict = Depends(require_manager()),
+):
+    from maintenance_defaults import save_maintenance_defaults
+    months = payload.get("interval_months", 3)
+    km = payload.get("interval_km", 7000)
+    return await save_maintenance_defaults(db, months, km, updated_by=current_user.get("id"))
+
+
+_ALLOWED_EVIDENCE_TYPES = frozenset({
+    "image/jpeg", "image/png", "image/webp", "image/gif",
+    "video/mp4", "video/webm", "video/quicktime",
+    "application/pdf",
+    "application/msword",
+    "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+})
+
+
+@api_router.post("/safety/incidents/{incident_id}/evidence")
+async def upload_safety_evidence(
+    incident_id: str,
+    file: UploadFile = File(...),
+    current_user: dict = Depends(_require_staff),
+):
+    incident = await db.safety_incidents.find_one({"id": incident_id}, {"_id": 0})
+    if not incident:
+        raise HTTPException(status_code=404, detail="Safety incident not found")
+
+    ct = (file.content_type or "").split(";")[0].strip().lower()
+    if ct not in _ALLOWED_EVIDENCE_TYPES:
+        raise HTTPException(status_code=400, detail="Unsupported file type for evidence upload")
+
+    content = await file.read()
+    if len(content) > _DOCUMENT_MAX_BYTES:
+        raise HTTPException(status_code=400, detail="File too large")
+
+    evidence_id = str(uuid.uuid4())
+    object_key, file_ref = upload_bytes(
+        document_id=evidence_id,
+        content=content,
+        content_type=ct,
+        filename=file.filename or "evidence",
+    )
+    entry = {
+        "id": evidence_id,
+        "filename": file.filename or "evidence",
+        "content_type": ct,
+        "s3_key": object_key,
+        "file_url": file_ref,
+        "uploaded_at": datetime.now(timezone.utc).isoformat(),
+        "uploaded_by": current_user.get("id"),
+    }
+    await db.safety_incidents.update_one(
+        {"id": incident_id},
+        {"$push": {"evidence_files": entry}},
+    )
+    return entry
 
 
 @api_router.get("/pre-trip-checklists/today/{driver_id}/{vehicle_id}")

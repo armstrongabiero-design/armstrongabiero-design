@@ -1,6 +1,6 @@
 import React, { useEffect, useState } from 'react';
 import axios from 'axios';
-import { Plus, AlertTriangle, Pencil, Trash2 } from 'lucide-react';
+import { Plus, AlertTriangle, Pencil, Trash2, Paperclip, ExternalLink } from 'lucide-react';
 import { toast } from 'sonner';
 import { useAuth } from '../contexts/AuthContext';
 import { Button } from '../components/ui/button';
@@ -10,7 +10,6 @@ import { Label } from '../components/ui/label';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '../components/ui/select';
 import { Textarea } from '../components/ui/textarea';
 import ConfirmDeleteDialog from '../components/ConfirmDeleteDialog';
-import { completeDialogSubmit } from '../utils/formUtils';
 import { canEditFleetRecord, canHardDelete } from '../utils/permissions';
 import { safetyScoreTextClass, safetyScoreBarClass, safetyScoreLabel } from '../utils/safetyScore';
 
@@ -56,6 +55,9 @@ const Safety = () => {
   const [deleting, setDeleting] = useState(false);
 
   const [formData, setFormData] = useState(createInitialFormData);
+  const [pendingEvidence, setPendingEvidence] = useState([]);
+  const [evidenceDialog, setEvidenceDialog] = useState(null);
+  const [evidenceUploading, setEvidenceUploading] = useState(false);
 
   useEffect(() => {
     fetchData();
@@ -83,6 +85,7 @@ const Safety = () => {
     if (!open) {
       setEditingId(null);
       setFormData(createInitialFormData());
+      setPendingEvidence([]);
     }
   };
 
@@ -104,20 +107,69 @@ const Safety = () => {
     cost: formData.cost ? parseFloat(formData.cost) : null,
   });
 
+  const uploadEvidenceFiles = async (incidentId, files) => {
+    for (const file of files) {
+      const uploadData = new FormData();
+      uploadData.append('file', file);
+      await axios.post(`${API}/safety/incidents/${incidentId}/evidence`, uploadData, {
+        headers: { 'Content-Type': 'multipart/form-data' },
+      });
+    }
+  };
+
   const handleSubmit = async (e) => {
     e.preventDefault();
-    await completeDialogSubmit({
-      submit: () =>
+    try {
+      let incidentId = editingId;
+      if (editingId) {
+        await axios.put(`${API}/safety/incidents/${editingId}`, buildPayload());
+      } else {
+        const { data } = await axios.post(`${API}/safety/incidents`, buildPayload());
+        incidentId = data.id;
+      }
+      if (pendingEvidence.length > 0 && incidentId) {
+        await uploadEvidenceFiles(incidentId, pendingEvidence);
+      }
+      toast.success(
         editingId
-          ? axios.put(`${API}/safety/incidents/${editingId}`, buildPayload())
-          : axios.post(`${API}/safety/incidents`, buildPayload()),
-      setDialogOpen: handleDialogOpenChange,
-      setFormData,
-      initialFormData: createInitialFormData,
-      onSuccess: fetchData,
-      successMessage: editingId ? 'Incident updated.' : 'Incident recorded. Driver safety score updated.',
-      errorMessage: editingId ? 'Failed to update incident' : 'Failed to record incident',
-    });
+          ? 'Incident updated.'
+          : `Incident recorded${pendingEvidence.length ? ' with evidence' : ''}. Driver safety score updated.`
+      );
+      handleDialogOpenChange(false);
+      fetchData();
+    } catch {
+      toast.error(editingId ? 'Failed to update incident' : 'Failed to record incident');
+    }
+  };
+
+  const handleEvidenceUpload = async (e) => {
+    const files = Array.from(e.target.files || []);
+    if (!files.length) return;
+    if (!evidenceDialog?.id) {
+      setPendingEvidence((prev) => [...prev, ...files]);
+      toast.success(`${files.length} file(s) queued for upload`);
+      e.target.value = '';
+      return;
+    }
+    setEvidenceUploading(true);
+    try {
+      await uploadEvidenceFiles(evidenceDialog.id, files);
+      toast.success('Evidence uploaded');
+      e.target.value = '';
+      fetchData();
+      const refreshed = (await axios.get(`${API}/safety/incidents`)).data.find((i) => i.id === evidenceDialog.id);
+      if (refreshed) setEvidenceDialog(refreshed);
+    } catch (error) {
+      toast.error(error.response?.data?.detail || 'Evidence upload failed');
+    } finally {
+      setEvidenceUploading(false);
+    }
+  };
+
+  const evidenceUrl = (file) => {
+    const ref = file.file_url || '';
+    if (ref.startsWith('http')) return ref;
+    return `${BACKEND_URL}${ref.startsWith('/') ? '' : '/'}${ref}`;
   };
 
   const handleDelete = async () => {
@@ -251,11 +303,78 @@ const Safety = () => {
                 </Select>
               </div>
             </div>
+            <div>
+              <Label>Evidence / Media (optional)</Label>
+              <Input
+                type="file"
+                multiple
+                accept="image/*,video/*,.pdf,.doc,.docx"
+                onChange={(e) => {
+                  const files = Array.from(e.target.files || []);
+                  if (files.length) setPendingEvidence((prev) => [...prev, ...files]);
+                  e.target.value = '';
+                }}
+              />
+              {pendingEvidence.length > 0 && (
+                <ul className="text-xs text-slate-600 mt-2 space-y-1">
+                  {pendingEvidence.map((f, i) => (
+                    <li key={`${f.name}-${i}`} className="flex items-center gap-1">
+                      <Paperclip size={12} /> {f.name}
+                    </li>
+                  ))}
+                </ul>
+              )}
+              <p className="text-xs text-slate-500 mt-1">Photos, videos, PDF, or Word documents.</p>
+            </div>
             <div className="flex justify-end gap-2 mt-6">
               <Button type="button" variant="outline" onClick={() => handleDialogOpenChange(false)}>Cancel</Button>
               <Button type="submit">{editingId ? 'Save Changes' : 'Report Incident'}</Button>
             </div>
           </form>
+        </DialogContent>
+      </Dialog>
+
+      <Dialog open={!!evidenceDialog} onOpenChange={(open) => !open && setEvidenceDialog(null)}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Incident Evidence</DialogTitle>
+            <DialogDescription>
+              Supporting photos, videos, and documents linked to this incident.
+            </DialogDescription>
+          </DialogHeader>
+          <div className="space-y-3">
+            {(evidenceDialog?.evidence_files || []).length === 0 ? (
+              <p className="text-sm text-slate-500">No evidence uploaded yet.</p>
+            ) : (
+              <ul className="space-y-2">
+                {evidenceDialog.evidence_files.map((file) => (
+                  <li key={file.id} className="flex items-center justify-between text-sm border rounded p-2">
+                    <span className="truncate mr-2">{file.filename}</span>
+                    <a
+                      href={evidenceUrl(file)}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="text-amber-700 inline-flex items-center gap-1 shrink-0"
+                    >
+                      View <ExternalLink size={14} />
+                    </a>
+                  </li>
+                ))}
+              </ul>
+            )}
+            {canEdit && (
+              <div>
+                <Label>Add evidence</Label>
+                <Input
+                  type="file"
+                  multiple
+                  accept="image/*,video/*,.pdf,.doc,.docx"
+                  disabled={evidenceUploading}
+                  onChange={handleEvidenceUpload}
+                />
+              </div>
+            )}
+          </div>
         </DialogContent>
       </Dialog>
 
@@ -302,13 +421,14 @@ const Safety = () => {
               <th>Severity</th>
               <th>Location</th>
               <th>Cost (USD)</th>
+              <th>Evidence</th>
               {(canEdit || canDelete) && <th>Actions</th>}
             </tr>
           </thead>
           <tbody>
             {incidents.length === 0 ? (
               <tr>
-                <td colSpan={(canEdit || canDelete) ? 8 : 7} className="text-center py-8 text-slate-500">No safety incidents recorded</td>
+                <td colSpan={(canEdit || canDelete) ? 9 : 8} className="text-center py-8 text-slate-500">No safety incidents recorded</td>
               </tr>
             ) : (
               incidents.map((incident) => {
@@ -328,6 +448,17 @@ const Safety = () => {
                     </td>
                     <td className="text-sm">{incident.location}</td>
                     <td>{incident.cost_usd ? `$${incident.cost_usd.toLocaleString()}` : '-'}</td>
+                    <td>
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        className="h-8 text-xs"
+                        onClick={() => setEvidenceDialog(incident)}
+                      >
+                        <Paperclip size={14} className="mr-1" />
+                        {(incident.evidence_files || []).length || 0}
+                      </Button>
+                    </td>
                     {(canEdit || canDelete) && (
                       <td>
                         <div className="flex gap-1">
