@@ -10,32 +10,40 @@ from openpyxl import Workbook, load_workbook
 from openpyxl.styles import Font, PatternFill
 from openpyxl.utils import get_column_letter
 
-from models.enums import CurrencyEnum, MaintenanceType
+from models.enums import CurrencyEnum, MaintenanceType, WorkStatus
 
 BULK_HEADERS = [
     "Vehicle Registration",
     "Maintenance Type",
     "Description",
     "Scheduled Date",
+    "Next Service Date",
     "Odometer",
+    "Next Service Odometer",
     "Cost",
     "Currency",
-    "Next Due Date",
+    "Work Status",
     "Notes",
 ]
 
 _HEADER_ALIASES = {
     "vehicle registration": "registration_number",
+    "vehicle": "registration_number",
     "registration number": "registration_number",
     "maintenance type": "maintenance_type",
     "type": "maintenance_type",
     "description": "description",
     "scheduled date": "scheduled_date",
+    "next service date": "next_due_date",
+    "next due date": "next_due_date",
     "odometer": "odometer_at_maintenance",
     "odometer at maintenance": "odometer_at_maintenance",
+    "odometer at service": "odometer_at_maintenance",
+    "next service odometer": "next_service_odometer",
+    "next service odo": "next_service_odometer",
     "cost": "cost",
     "currency": "currency",
-    "next due date": "next_due_date",
+    "work status": "work_status",
     "notes": "notes",
 }
 
@@ -47,15 +55,30 @@ _TYPE_ALIASES = {
     "unscheduled": MaintenanceType.CORRECTIVE.value,
 }
 
+_WORK_STATUS_ALIASES = {
+    "work in progress": WorkStatus.WORK_IN_PROGRESS.value,
+    "work_in_progress": WorkStatus.WORK_IN_PROGRESS.value,
+    "in progress": WorkStatus.WORK_IN_PROGRESS.value,
+    "work completed": WorkStatus.WORK_COMPLETED.value,
+    "work_completed": WorkStatus.WORK_COMPLETED.value,
+    "completed": WorkStatus.WORK_COMPLETED.value,
+    "etc": WorkStatus.ETC.value,
+    "estimated time of completion": WorkStatus.ETC.value,
+    "additional work required": WorkStatus.ADDITIONAL_WORK_REQUIRED.value,
+    "additional_work_required": WorkStatus.ADDITIONAL_WORK_REQUIRED.value,
+}
+
 SAMPLE_ROW = [
     "GR-1234-20",
     "ROUTINE",
     "Oil change and filter replacement",
     "2026-07-01",
+    "",
     45000,
+    "",
     350.0,
     "GHS",
-    "2026-10-01",
+    "WORK_IN_PROGRESS",
     "",
 ]
 
@@ -78,8 +101,9 @@ def build_maintenance_template_workbook() -> bytes:
     for col, value in enumerate(SAMPLE_ROW, start=1):
         ws.cell(row=2, column=col, value=value)
 
-    for col in range(1, len(BULK_HEADERS) + 1):
-        ws.column_dimensions[get_column_letter(col)].width = 22
+    widths = [20, 16, 32, 14, 16, 12, 18, 10, 10, 18, 24]
+    for col, width in enumerate(widths, start=1):
+        ws.column_dimensions[get_column_letter(col)].width = width
 
     guide = wb.create_sheet("Instructions")
     guide["A1"] = "Maintenance bulk upload — how to use"
@@ -88,9 +112,10 @@ def build_maintenance_template_workbook() -> bytes:
     guide["A4"] = "2. Vehicle Registration must match an existing vehicle."
     guide["A5"] = "3. Maintenance Type: PREDICTIVE, CORRECTIVE, or ROUTINE."
     guide["A6"] = "4. Dates: YYYY-MM-DD. Currency: GHS, LRD, USD, or STN."
-    guide["A7"] = "5. Next Due Date and Notes are optional."
-    guide["A8"] = "6. Delete the sample row before uploading."
-    guide.column_dimensions["A"].width = 80
+    guide["A7"] = "5. Next Service Date / Next Service Odometer are optional — auto-calculated from Master Data defaults when blank."
+    guide["A8"] = "6. Work Status (optional): WORK_IN_PROGRESS, WORK_COMPLETED, ETC, ADDITIONAL_WORK_REQUIRED."
+    guide["A9"] = "7. Delete the sample row before uploading."
+    guide.column_dimensions["A"].width = 88
 
     buf = io.BytesIO()
     wb.save(buf)
@@ -124,9 +149,11 @@ def _parse_date(value: Any, field: str, required: bool = True) -> Optional[datet
         raise ValueError(f"Invalid {field}: {value}") from exc
 
 
-def _parse_float(value: Any, field: str) -> float:
+def _parse_float(value: Any, field: str, required: bool = True) -> Optional[float]:
     if value is None or (isinstance(value, str) and not str(value).strip()):
-        raise ValueError(f"{field} is required")
+        if required:
+            raise ValueError(f"{field} is required")
+        return None
     try:
         return float(value)
     except (TypeError, ValueError) as exc:
@@ -145,6 +172,20 @@ def _normalize_type(value: Any) -> str:
     if aliased:
         return aliased
     raise ValueError(f"Unknown Maintenance Type: {value}")
+
+
+def _normalize_work_status(value: Any) -> str:
+    if value is None or (isinstance(value, str) and not str(value).strip()):
+        return WorkStatus.WORK_IN_PROGRESS.value
+    text = str(value).strip()
+    upper = text.upper().replace(" ", "_")
+    valid = {s.value for s in WorkStatus}
+    if upper in valid:
+        return upper
+    aliased = _WORK_STATUS_ALIASES.get(text.lower())
+    if aliased:
+        return aliased
+    raise ValueError(f"Unknown Work Status: {value}")
 
 
 def _normalize_currency(value: Any) -> str:
@@ -198,15 +239,17 @@ def parse_maintenance_bulk_upload(file_bytes: bytes) -> Tuple[List[Dict[str, Any
 
     present = set(column_map.values())
     required = {
-        "registration_number", "maintenance_type", "description",
-        "scheduled_date", "odometer_at_maintenance", "cost", "currency",
+        "registration_number",
+        "maintenance_type",
+        "description",
+        "scheduled_date",
+        "odometer_at_maintenance",
+        "cost",
+        "currency",
     }
-    missing = [
-        h for h in BULK_HEADERS
-        if _HEADER_ALIASES.get(h.lower()) in required and _HEADER_ALIASES.get(h.lower()) not in present
-    ]
+    missing = [field for field in required if field not in present]
     if missing:
-        raise ValueError(f"Missing required columns: {', '.join(missing)}")
+        raise ValueError(f"Missing required columns: {', '.join(sorted(missing))}")
 
     parsed: List[Dict[str, Any]] = []
     errors: List[Dict[str, Any]] = []
@@ -232,6 +275,7 @@ def parse_maintenance_bulk_upload(file_bytes: bytes) -> Tuple[List[Dict[str, Any
                 raise ValueError("Description is required")
 
             notes = str(data.get("notes") or "").strip() or None
+            next_odo = _parse_float(data.get("next_service_odometer"), "Next Service Odometer", required=False)
 
             parsed.append({
                 "row": row_idx,
@@ -242,7 +286,9 @@ def parse_maintenance_bulk_upload(file_bytes: bytes) -> Tuple[List[Dict[str, Any
                 "odometer_at_maintenance": _parse_float(data.get("odometer_at_maintenance"), "Odometer"),
                 "cost": _parse_float(data.get("cost"), "Cost"),
                 "currency": _normalize_currency(data.get("currency")),
-                "next_due_date": _parse_date(data.get("next_due_date"), "Next Due Date", required=False),
+                "next_due_date": _parse_date(data.get("next_due_date"), "Next Service Date", required=False),
+                "next_service_odometer": next_odo,
+                "work_status": _normalize_work_status(data.get("work_status")),
                 "notes": notes,
             })
         except ValueError as exc:

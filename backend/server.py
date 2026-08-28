@@ -1152,6 +1152,8 @@ async def bulk_upload_maintenance(
 
     created: List[dict] = []
     errors: List[dict] = list(parse_errors)
+    from maintenance_defaults import apply_maintenance_defaults, get_maintenance_defaults
+    defaults = await get_maintenance_defaults(db)
 
     for row in rows:
         vehicle = vehicles_by_reg.get(row["registration_number"].upper())
@@ -1165,24 +1167,33 @@ async def bulk_upload_maintenance(
 
         try:
             cost_usd = currency_converter.convert(row["cost"], row["currency"], CurrencyEnum.USD)
-            maintenance = MaintenanceRecord(
-                vehicle_id=vehicle["id"],
-                maintenance_type=row["maintenance_type"],
-                description=row["description"],
-                scheduled_date=row["scheduled_date"],
-                next_due_date=row.get("next_due_date"),
-                odometer_at_maintenance=row["odometer_at_maintenance"],
-                cost=row["cost"],
-                currency=row["currency"],
-                cost_usd=cost_usd,
-                notes=row.get("notes"),
-            )
+            maintenance_data = apply_maintenance_defaults({
+                "vehicle_id": vehicle["id"],
+                "maintenance_type": row["maintenance_type"],
+                "description": row["description"],
+                "scheduled_date": row["scheduled_date"],
+                "next_due_date": row.get("next_due_date"),
+                "next_service_odometer": row.get("next_service_odometer"),
+                "odometer_at_maintenance": row["odometer_at_maintenance"],
+                "cost": row["cost"],
+                "currency": row["currency"],
+                "notes": row.get("notes"),
+                "work_status": row.get("work_status") or WorkStatus.WORK_IN_PROGRESS.value,
+            }, defaults)
+            maintenance_data["cost_usd"] = cost_usd
+            if _normalize_work_status(maintenance_data.get("work_status")) == WorkStatus.WORK_COMPLETED.value:
+                maintenance_data["completed_date"] = datetime.now(timezone.utc)
+            maintenance = MaintenanceRecord(**maintenance_data)
             doc = maintenance.model_dump()
             doc["scheduled_date"] = doc["scheduled_date"].isoformat()
             if doc.get("completed_date"):
                 doc["completed_date"] = doc["completed_date"].isoformat()
             if doc.get("next_due_date"):
                 doc["next_due_date"] = doc["next_due_date"].isoformat()
+            if doc.get("next_service_odometer") is not None:
+                doc["next_service_odometer"] = doc["next_service_odometer"]
+            if hasattr(doc.get("work_status"), "value"):
+                doc["work_status"] = doc["work_status"].value
             doc["created_at"] = doc["created_at"].isoformat()
 
             await db.maintenance_records.insert_one(doc)
@@ -3166,9 +3177,9 @@ async def get_dashboard_stats(country: Optional[str] = None):
     pending_requests = await db.maintenance_requests.count_documents({**country_filter, "status": "PENDING"})
 
     from availability_service import get_availability_summary
+    from report_helpers import compute_total_fleet_value_usd
     availability = await get_availability_summary(db, country)
-    assets = await db.assets.find(country_filter, {"_id": 0, "current_value_usd": 1}).to_list(1000)
-    total_fleet_value = sum(a.get('current_value_usd', 0) for a in assets)
+    total_fleet_value = await compute_total_fleet_value_usd(db, country_filter)
     
     # Monthly fuel cost
     fuel_txns = await db.fuel_transactions.find(country_filter, {"_id": 0, "cost_usd": 1}).to_list(1000)
@@ -3348,8 +3359,8 @@ async def get_staff_dashboard(
     ).to_list(50)
     
     # Financial totals
-    assets = await db.assets.find(country_filter, {"_id": 0, "current_value_usd": 1}).to_list(1000)
-    total_fleet_value = sum(a.get('current_value_usd', 0) for a in assets)
+    from report_helpers import compute_total_fleet_value_usd
+    total_fleet_value = await compute_total_fleet_value_usd(db, country_filter)
     
     fuel_txns = await db.fuel_transactions.find(country_filter, {"_id": 0, "cost_usd": 1}).to_list(1000)
     total_fuel_cost = sum(f.get('cost_usd', 0) for f in fuel_txns)
@@ -5901,8 +5912,9 @@ async def get_vehicle_tco(vehicle_id: str, period_days: int = 365):
     total_fuel = sum(f.get('quantity_liters', 0) for f in fuel_txns)
     
     # Maintenance costs
+    from report_helpers import maintenance_on_or_after
     maintenance = await db.maintenance_records.find(
-        {"vehicle_id": vehicle_id, "date": {"$gte": start_date}},
+        {"vehicle_id": vehicle_id, **maintenance_on_or_after(start_date)},
         {"_id": 0, "cost_usd": 1}
     ).to_list(1000)
     maintenance_cost = sum(m.get('cost_usd', 0) for m in maintenance)
@@ -5988,8 +6000,11 @@ async def get_fleet_tco(country: Optional[str] = None, period_days: int = 365):
 @api_router.get("/reports/expense-breakdown")
 async def get_expense_breakdown(country: Optional[str] = None, period_days: int = 30):
     """Get expense breakdown by category"""
+    from report_helpers import maintenance_on_or_after, scoped_vehicle_query, vehicle_ids_for_country_filter
+
     start_date = (datetime.now(timezone.utc) - timedelta(days=period_days)).isoformat()
     country_filter = country_filter_query(country) if country else {}
+    vehicle_ids = await vehicle_ids_for_country_filter(db, country_filter)
     
     # Get all expenditures
     expenditures = await db.expenditures.find(
@@ -6006,9 +6021,10 @@ async def get_expense_breakdown(country: Optional[str] = None, period_days: int 
         breakdown[category]['count'] += 1
         breakdown[category]['total_usd'] += exp.get('amount_usd', 0)
     
-    # Add fuel
+    # Add fuel (scoped by vehicle when country filter applies)
+    fuel_query = scoped_vehicle_query({"date": {"$gte": start_date}}, vehicle_ids)
     fuel_txns = await db.fuel_transactions.find(
-        {**country_filter, "date": {"$gte": start_date}},
+        fuel_query,
         {"_id": 0, "cost_usd": 1}
     ).to_list(1000)
     breakdown['FUEL'] = {
@@ -6016,9 +6032,10 @@ async def get_expense_breakdown(country: Optional[str] = None, period_days: int 
         "total_usd": round(sum(f.get('cost_usd', 0) for f in fuel_txns), 2)
     }
     
-    # Add maintenance
+    # Add maintenance (by scheduled_date, scoped by vehicle when country filter applies)
+    maint_query = scoped_vehicle_query(maintenance_on_or_after(start_date), vehicle_ids)
     maintenance = await db.maintenance_records.find(
-        {**country_filter, "date": {"$gte": start_date}},
+        maint_query,
         {"_id": 0, "cost_usd": 1}
     ).to_list(1000)
     breakdown['MAINTENANCE'] = {
@@ -6140,6 +6157,7 @@ async def send_daily_report(current_user: dict = Depends(require_group_manager()
 async def send_weekly_report(current_user: dict = Depends(require_group_manager())):
     """Send weekly summary report to Group Fleet Manager"""
     from datetime import date, timedelta as td
+    from report_helpers import maintenance_on_or_after
     
     # Calculate week dates
     today = date.today()
@@ -6177,7 +6195,7 @@ async def send_weekly_report(current_user: dict = Depends(require_group_manager(
     ghs_rate = 12.0
     
     maintenance_records = await db.maintenance_records.find(
-        {"date": {"$gte": start_date}},
+        maintenance_on_or_after(start_date),
         {"_id": 0, "cost_usd": 1}
     ).to_list(1000)
     maintenance_cost_usd = sum(m.get('cost_usd', 0) for m in maintenance_records)

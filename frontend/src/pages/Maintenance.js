@@ -516,6 +516,9 @@ const Maintenance = () => {
                         required
                       />
                     </div>
+                    <p className="text-xs text-slate-500">
+                      Columns: Registration, Type, Description, Scheduled Date, Next Service Date, Odometer, Next Service Odometer, Cost, Currency, Work Status, Notes. Blank next-service fields use Master Data defaults.
+                    </p>
                     {bulkResult && (
                       <div className="rounded-lg border border-slate-200 bg-slate-50 p-3 text-sm space-y-2">
                         <p className="font-medium text-slate-800">

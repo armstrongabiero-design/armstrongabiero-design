@@ -486,7 +486,7 @@ const StaffDashboard = ({ user, token, isGroupManager }) => {
           to="/reports"
           label="Fleet Value"
           value={`$${(stats?.total_fleet_value_usd || 0).toLocaleString()}`}
-          sub="USD equivalent"
+          sub="Vehicle acquisition / asset values (USD)"
           icon={TrendingUp}
           iconTone="blue"
           testId="fleet-value-card"
