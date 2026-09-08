@@ -2,39 +2,14 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
-from typing import Any, Dict, Optional, Set
+from typing import Any, Dict, Optional
 import uuid
 
 from database import db
 
-# Hard delete: Fleet Manager + Group Fleet Manager for most entities.
-# Fleet Officer: limited deletes (e.g. logbook) — not vehicles/assets.
+# Hard delete: Group Fleet Manager + Fleet Manager only.
+# Fleet Officers may edit but cannot delete.
 MANAGER_DELETE_ROLES = frozenset({"GROUP_FLEET_MANAGER", "FLEET_MANAGER"})
-
-# entity_type -> roles allowed to hard-delete (subset for officers)
-OFFICER_DELETE_ENTITIES = frozenset(
-    {
-        "driver_logbook",
-        "logbook_entry",
-        "maintenance_request",
-        "pretrip_checklist",
-    }
-)
-
-VEHICLE_PROTECTED_ENTITIES = frozenset(
-    {
-        "vehicle",
-        "vehicles",
-        "asset",
-        "assets",
-        "driver",
-        "drivers",
-        "vendor",
-        "vendors",
-        "tire",
-        "tires",
-    }
-)
 
 
 async def write_audit_log(
@@ -63,17 +38,7 @@ async def write_audit_log(
 
 def can_hard_delete(user: Dict[str, Any], entity_type: str) -> bool:
     role = user.get("role") or ""
-    normalized = entity_type.lower().replace("-", "_")
-
-    if role in MANAGER_DELETE_ROLES:
-        return True
-
-    if role == "FLEET_OFFICER":
-        if normalized in VEHICLE_PROTECTED_ENTITIES:
-            return False
-        return normalized in OFFICER_DELETE_ENTITIES
-
-    return False
+    return role in MANAGER_DELETE_ROLES
 
 
 def assert_can_hard_delete(user: Dict[str, Any], entity_type: str) -> None:

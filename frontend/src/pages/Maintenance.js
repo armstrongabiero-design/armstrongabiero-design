@@ -1,6 +1,6 @@
 import React, { useCallback, useEffect, useState, useMemo } from 'react';
 import axios from 'axios';
-import { Plus, Sparkles, Upload, Download, CheckCircle2 } from 'lucide-react';
+import { Plus, Sparkles, Upload, Download, CheckCircle2, Pencil, Trash2 } from 'lucide-react';
 import { toast } from 'sonner';
 import { useAuth } from '../contexts/AuthContext';
 import { useSearchParams } from 'react-router-dom';
@@ -10,8 +10,9 @@ import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle, Di
 import { Label } from '../components/ui/label';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '../components/ui/select';
 import { Textarea } from '../components/ui/textarea';
+import ConfirmDeleteDialog from '../components/ConfirmDeleteDialog';
 import { completeDialogSubmit } from '../utils/formUtils';
-import { canEditFleetRecord } from '../utils/permissions';
+import { canEditFleetRecord, canHardDelete } from '../utils/permissions';
 import { WORK_STATUS_OPTIONS, workStatusLabel } from '../utils/workStatus';
 import { useRecordHighlight } from '../utils/recordHighlight';
 
@@ -34,6 +35,42 @@ const createInitialFormData = () => ({
   workshop_id: '',
 });
 
+const toDateInput = (value) => {
+  if (!value) return '';
+  if (typeof value === 'string') return value.split('T')[0];
+  try {
+    return new Date(value).toISOString().split('T')[0];
+  } catch {
+    return '';
+  }
+};
+
+const toDatetimeLocal = (value) => {
+  if (!value) return '';
+  const d = new Date(value);
+  if (Number.isNaN(d.getTime())) return '';
+  const pad = (n) => String(n).padStart(2, '0');
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
+};
+
+const recordToFormData = (record) => ({
+  vehicle_id: record.vehicle_id || '',
+  maintenance_type: record.maintenance_type === 'SCHEDULED' ? 'ROUTINE'
+    : record.maintenance_type === 'UNSCHEDULED' ? 'CORRECTIVE'
+    : (record.maintenance_type || 'ROUTINE'),
+  description: record.description || '',
+  scheduled_date: toDateInput(record.scheduled_date) || createInitialFormData().scheduled_date,
+  next_due_date: toDateInput(record.next_due_date),
+  next_service_odometer: record.next_service_odometer != null ? String(record.next_service_odometer) : '',
+  odometer_at_maintenance: record.odometer_at_maintenance ?? 0,
+  cost: record.cost ?? 0,
+  currency: record.currency || 'GHS',
+  notes: record.notes || '',
+  work_status: record.work_status || (record.completed_date ? 'WORK_COMPLETED' : 'WORK_IN_PROGRESS'),
+  etc_datetime: toDatetimeLocal(record.etc_datetime),
+  workshop_id: record.workshop_id || '',
+});
+
 const isWorkIncomplete = (record) => {
   if (record?.work_status === 'WORK_COMPLETED' || record?.completed_date) return false;
   return true;
@@ -41,7 +78,9 @@ const isWorkIncomplete = (record) => {
 
 const Maintenance = () => {
   const { user } = useAuth();
-  const canBulkUpload = canEditFleetRecord(user?.role);
+  const canEdit = canEditFleetRecord(user?.role);
+  const canDelete = canHardDelete(user?.role, 'maintenance_record');
+  const canBulkUpload = canEdit;
   const [searchParams] = useSearchParams();
   const workStatusFilter = searchParams.get('work_status') || '';
 
@@ -50,6 +89,9 @@ const Maintenance = () => {
   const [masterWorkshops, setMasterWorkshops] = useState([]);
   const [loading, setLoading] = useState(true);
   const [dialogOpen, setDialogOpen] = useState(false);
+  const [editingId, setEditingId] = useState(null);
+  const [deleteTarget, setDeleteTarget] = useState(null);
+  const [deleting, setDeleting] = useState(false);
   const [predicting, setPredicting] = useState(false);
   const [selectedVehicle, setSelectedVehicle] = useState('');
   const [formData, setFormData] = useState(createInitialFormData);
@@ -83,7 +125,7 @@ const Maintenance = () => {
         axios.get(`${API}/vehicles`),
         axios.get(`${API}/settings/maintenance-defaults`).catch(() => ({ data: { interval_months: 3, interval_km: 7000 } })),
       ];
-      if (canBulkUpload) {
+      if (canEdit) {
         requests.push(axios.get(`${API}/master/workshops`, { params: { active_only: true } }).catch(() => ({ data: [] })));
       }
       const [recordsRes, vehiclesRes, defaultsRes, workshopsRes] = await Promise.all(requests);
@@ -96,7 +138,7 @@ const Maintenance = () => {
     } finally {
       setLoading(false);
     }
-  }, [workStatusFilter, canBulkUpload, filterVehicle, filterType, filterStatus, filterDateFrom, filterDateTo, filterSearch, filterRegistration]);
+  }, [workStatusFilter, canEdit, filterVehicle, filterType, filterStatus, filterDateFrom, filterDateTo, filterSearch, filterRegistration]);
 
   useEffect(() => {
     setLoading(true);
@@ -105,7 +147,22 @@ const Maintenance = () => {
 
   const handleDialogOpenChange = (open) => {
     setDialogOpen(open);
-    if (!open) setFormData(createInitialFormData());
+    if (!open) {
+      setEditingId(null);
+      setFormData(createInitialFormData());
+    }
+  };
+
+  const openCreateDialog = () => {
+    setEditingId(null);
+    setFormData(createInitialFormData());
+    setDialogOpen(true);
+  };
+
+  const openEditDialog = (record) => {
+    setEditingId(record.id);
+    setFormData(recordToFormData(record));
+    setDialogOpen(true);
   };
 
   const addMonths = (dateStr, months) => {
@@ -146,7 +203,7 @@ const Maintenance = () => {
   };
 
   const markWorkCompleted = async (record) => {
-    if (!canBulkUpload || !isWorkIncomplete(record)) return;
+    if (!canEdit || !isWorkIncomplete(record)) return;
     try {
       await axios.put(`${API}/maintenance/${record.id}`, {
         work_status: 'WORK_COMPLETED',
@@ -158,17 +215,12 @@ const Maintenance = () => {
     }
   };
 
-  const handleSubmit = async (e) => {
-    e.preventDefault();
-    if (formData.work_status === 'ETC' && !formData.etc_datetime) {
-      toast.error('ETC datetime is required for this work status');
-      return;
-    }
+  const buildPayload = () => {
     const nextOdo =
       formData.next_service_odometer !== '' && formData.next_service_odometer != null
         ? parseFloat(formData.next_service_odometer)
         : applyOdometerSuggestion(formData.odometer_at_maintenance, '');
-    const payload = {
+    return {
       ...formData,
       scheduled_date: new Date(formData.scheduled_date).toISOString(),
       next_due_date: formData.next_due_date ? new Date(formData.next_due_date).toISOString() : null,
@@ -178,15 +230,45 @@ const Maintenance = () => {
       etc_datetime: formData.etc_datetime ? new Date(formData.etc_datetime).toISOString() : null,
       workshop_id: formData.workshop_id || null,
     };
+  };
+
+  const handleSubmit = async (e) => {
+    e.preventDefault();
+    if (formData.work_status === 'ETC' && !formData.etc_datetime) {
+      toast.error('ETC datetime is required for this work status');
+      return;
+    }
+    const payload = buildPayload();
     await completeDialogSubmit({
-      submit: () => axios.post(`${API}/maintenance`, payload),
+      submit: () =>
+        editingId
+          ? axios.put(`${API}/maintenance/${editingId}`, payload)
+          : axios.post(`${API}/maintenance`, payload),
       setDialogOpen: handleDialogOpenChange,
       setFormData,
       initialFormData: createInitialFormData,
-      onSuccess: fetchData,
-      successMessage: 'Maintenance record added!',
-      errorMessage: 'Failed to add maintenance record',
+      onSuccess: () => {
+        setEditingId(null);
+        fetchData();
+      },
+      successMessage: editingId ? 'Maintenance record updated' : 'Maintenance record added!',
+      errorMessage: editingId ? 'Failed to update maintenance record' : 'Failed to add maintenance record',
     });
+  };
+
+  const handleDelete = async () => {
+    if (!deleteTarget) return;
+    setDeleting(true);
+    try {
+      await axios.delete(`${API}/maintenance/${deleteTarget.id}`);
+      toast.success('Maintenance record deleted');
+      setDeleteTarget(null);
+      fetchData();
+    } catch (error) {
+      toast.error(error.response?.data?.detail || 'Failed to delete');
+    } finally {
+      setDeleting(false);
+    }
   };
 
   const predictMaintenance = async () => {
@@ -286,6 +368,8 @@ const Maintenance = () => {
     return null;
   }, [workStatusFilter]);
 
+  const showActions = canEdit || canDelete;
+
   if (loading) {
     return <div className="p-8 text-center">Loading maintenance records...</div>;
   }
@@ -334,168 +418,175 @@ const Maintenance = () => {
             </DialogContent>
           </Dialog>
 
-          <Dialog open={dialogOpen} onOpenChange={handleDialogOpenChange}>
-            <DialogTrigger asChild>
-              <Button data-testid="add-maintenance-btn">
-                <Plus size={18} className="mr-2" />
-                Add Record
-              </Button>
-            </DialogTrigger>
-            <DialogContent className="max-w-lg max-h-[90vh] overflow-y-auto">
-              <DialogHeader>
-                <DialogTitle>Add Maintenance Record</DialogTitle>
-                <DialogDescription>Record a new maintenance entry for a vehicle.</DialogDescription>
-              </DialogHeader>
-              <form onSubmit={handleSubmit} className="space-y-4">
-                <div>
-                  <Label>Vehicle</Label>
-                  <Select value={formData.vehicle_id} onValueChange={(value) => setFormData({ ...formData, vehicle_id: value })}>
-                    <SelectTrigger>
-                      <SelectValue placeholder="Select vehicle" />
-                    </SelectTrigger>
-                    <SelectContent>
-                      {vehicles.map((v) => (
-                        <SelectItem key={v.id} value={v.id}>
-                          {v.registration_number} - {v.make} {v.model}
-                        </SelectItem>
-                      ))}
-                    </SelectContent>
-                  </Select>
-                </div>
-                <div>
-                  <Label>Type</Label>
-                  <Select value={formData.maintenance_type} onValueChange={(value) => setFormData({ ...formData, maintenance_type: value })}>
-                    <SelectTrigger>
-                      <SelectValue />
-                    </SelectTrigger>
-                    <SelectContent>
-                      <SelectItem value="PREDICTIVE">Predictive</SelectItem>
-                      <SelectItem value="CORRECTIVE">Corrective</SelectItem>
-                      <SelectItem value="ROUTINE">Routine</SelectItem>
-                    </SelectContent>
-                  </Select>
-                </div>
-                <div>
-                  <Label>Work Status</Label>
-                  <Select
-                    value={formData.work_status}
-                    onValueChange={(value) => setFormData({ ...formData, work_status: value, etc_datetime: value === 'ETC' ? formData.etc_datetime : '' })}
-                  >
-                    <SelectTrigger>
-                      <SelectValue />
-                    </SelectTrigger>
-                    <SelectContent>
-                      {WORK_STATUS_OPTIONS.map((o) => (
-                        <SelectItem key={o.value} value={o.value}>{o.label}</SelectItem>
-                      ))}
-                    </SelectContent>
-                  </Select>
-                </div>
-                {formData.work_status === 'ETC' && (
-                  <div>
-                    <Label>Estimated Time of Completion *</Label>
-                    <Input
-                      type="datetime-local"
-                      value={formData.etc_datetime}
-                      onChange={(e) => setFormData({ ...formData, etc_datetime: e.target.value })}
-                      required
-                    />
-                  </div>
-                )}
-                <div>
-                  <Label>Description</Label>
-                  <Textarea value={formData.description} onChange={(e) => setFormData({ ...formData, description: e.target.value })} required />
-                </div>
-                <div className="grid grid-cols-2 gap-4">
-                  <div>
-                    <Label>Scheduled Date</Label>
-                    <Input type="date" value={formData.scheduled_date} onChange={(e) => handleScheduledDateChange(e.target.value)} required />
-                  </div>
-                  <div>
-                    <Label>Next Service Date</Label>
-                    <Input type="date" value={formData.next_due_date} onChange={(e) => setFormData({ ...formData, next_due_date: e.target.value })} />
-                  </div>
-                </div>
-                <div className="grid grid-cols-2 gap-4">
-                  <div>
-                    <Label>Odometer at Service (km)</Label>
-                    <Input
-                      type="number"
-                      value={formData.odometer_at_maintenance}
-                      onChange={(e) => handleOdometerChange(e.target.value)}
-                      required
-                    />
-                  </div>
-                  <div>
-                    <Label>Next Service Odometer (km)</Label>
-                    <Input
-                      type="number"
-                      value={formData.next_service_odometer}
-                      onChange={(e) => setFormData({ ...formData, next_service_odometer: e.target.value })}
-                      placeholder={`Auto: odometer + ${intervalDefaults.interval_km ?? 7000}`}
-                    />
-                    <p className="text-xs text-slate-500 mt-1">
-                      Defaults to odometer + {(intervalDefaults.interval_km ?? 7000).toLocaleString()} km when left empty
-                    </p>
-                  </div>
-                </div>
-                {masterWorkshops.length > 0 && (
-                  <div>
-                    <Label>Workshop / Garage</Label>
-                    <Select
-                      value={formData.workshop_id || 'NONE'}
-                      onValueChange={(value) => setFormData({ ...formData, workshop_id: value === 'NONE' ? '' : value })}
-                    >
-                      <SelectTrigger>
-                        <SelectValue placeholder="Optional" />
-                      </SelectTrigger>
-                      <SelectContent>
-                        <SelectItem value="NONE">None</SelectItem>
-                        {masterWorkshops.map((w) => (
-                          <SelectItem key={w.id} value={w.id}>{w.name}</SelectItem>
-                        ))}
-                      </SelectContent>
-                    </Select>
-                  </div>
-                )}
-                <div className="grid grid-cols-2 gap-4">
-                  <div>
-                    <Label>Cost</Label>
-                    <Input type="number" step="0.01" value={formData.cost} onChange={(e) => setFormData({ ...formData, cost: e.target.value })} required />
-                  </div>
-                  <div>
-                    <Label>Currency</Label>
-                    <Select value={formData.currency} onValueChange={(value) => setFormData({ ...formData, currency: value })}>
-                      <SelectTrigger>
-                        <SelectValue />
-                      </SelectTrigger>
-                      <SelectContent>
-                        <SelectItem value="GHS">GHS</SelectItem>
-                        <SelectItem value="LRD">LRD</SelectItem>
-                        <SelectItem value="USD">USD</SelectItem>
-                        <SelectItem value="STN">STN</SelectItem>
-                      </SelectContent>
-                    </Select>
-                  </div>
-                </div>
-                <div className="flex justify-end gap-2 mt-6">
-                  <Button type="button" variant="outline" onClick={() => handleDialogOpenChange(false)}>Cancel</Button>
-                  <Button type="submit">Add Record</Button>
-                </div>
-              </form>
-            </DialogContent>
-          </Dialog>
-
-          {canBulkUpload && (
+          {canEdit && (
             <>
+              <Dialog open={dialogOpen} onOpenChange={handleDialogOpenChange}>
+                <DialogTrigger asChild>
+                  <Button data-testid="add-maintenance-btn" onClick={openCreateDialog}>
+                    <Plus size={18} className="mr-2" />
+                    Add Record
+                  </Button>
+                </DialogTrigger>
+                <DialogContent className="max-w-lg max-h-[90vh] overflow-y-auto">
+                  <DialogHeader>
+                    <DialogTitle>{editingId ? 'Edit Maintenance Record' : 'Add Maintenance Record'}</DialogTitle>
+                    <DialogDescription>
+                      {editingId ? 'Update this maintenance entry.' : 'Record a new maintenance entry for a vehicle.'}
+                    </DialogDescription>
+                  </DialogHeader>
+                  <form onSubmit={handleSubmit} className="space-y-4">
+                    <div>
+                      <Label>Vehicle</Label>
+                      <Select value={formData.vehicle_id} onValueChange={(value) => setFormData({ ...formData, vehicle_id: value })}>
+                        <SelectTrigger>
+                          <SelectValue placeholder="Select vehicle" />
+                        </SelectTrigger>
+                        <SelectContent>
+                          {vehicles.map((v) => (
+                            <SelectItem key={v.id} value={v.id}>
+                              {v.registration_number} - {v.make} {v.model}
+                            </SelectItem>
+                          ))}
+                        </SelectContent>
+                      </Select>
+                    </div>
+                    <div>
+                      <Label>Type</Label>
+                      <Select value={formData.maintenance_type} onValueChange={(value) => setFormData({ ...formData, maintenance_type: value })}>
+                        <SelectTrigger>
+                          <SelectValue />
+                        </SelectTrigger>
+                        <SelectContent>
+                          <SelectItem value="PREDICTIVE">Predictive</SelectItem>
+                          <SelectItem value="CORRECTIVE">Corrective</SelectItem>
+                          <SelectItem value="ROUTINE">Routine</SelectItem>
+                        </SelectContent>
+                      </Select>
+                    </div>
+                    <div>
+                      <Label>Work Status</Label>
+                      <Select
+                        value={formData.work_status}
+                        onValueChange={(value) => setFormData({ ...formData, work_status: value, etc_datetime: value === 'ETC' ? formData.etc_datetime : '' })}
+                      >
+                        <SelectTrigger>
+                          <SelectValue />
+                        </SelectTrigger>
+                        <SelectContent>
+                          {WORK_STATUS_OPTIONS.map((o) => (
+                            <SelectItem key={o.value} value={o.value}>{o.label}</SelectItem>
+                          ))}
+                        </SelectContent>
+                      </Select>
+                    </div>
+                    {formData.work_status === 'ETC' && (
+                      <div>
+                        <Label>Estimated Time of Completion *</Label>
+                        <Input
+                          type="datetime-local"
+                          value={formData.etc_datetime}
+                          onChange={(e) => setFormData({ ...formData, etc_datetime: e.target.value })}
+                          required
+                        />
+                      </div>
+                    )}
+                    <div>
+                      <Label>Description</Label>
+                      <Textarea value={formData.description} onChange={(e) => setFormData({ ...formData, description: e.target.value })} required />
+                    </div>
+                    <div className="grid grid-cols-2 gap-4">
+                      <div>
+                        <Label>Scheduled Date</Label>
+                        <Input type="date" value={formData.scheduled_date} onChange={(e) => handleScheduledDateChange(e.target.value)} required />
+                      </div>
+                      <div>
+                        <Label>Next Service Date</Label>
+                        <Input type="date" value={formData.next_due_date} onChange={(e) => setFormData({ ...formData, next_due_date: e.target.value })} />
+                      </div>
+                    </div>
+                    <div className="grid grid-cols-2 gap-4">
+                      <div>
+                        <Label>Odometer at Service (km)</Label>
+                        <Input
+                          type="number"
+                          value={formData.odometer_at_maintenance}
+                          onChange={(e) => handleOdometerChange(e.target.value)}
+                          required
+                        />
+                      </div>
+                      <div>
+                        <Label>Next Service Odometer (km)</Label>
+                        <Input
+                          type="number"
+                          value={formData.next_service_odometer}
+                          onChange={(e) => setFormData({ ...formData, next_service_odometer: e.target.value })}
+                          placeholder={`Auto: odometer + ${intervalDefaults.interval_km ?? 7000}`}
+                        />
+                        <p className="text-xs text-slate-500 mt-1">
+                          Defaults to odometer + {(intervalDefaults.interval_km ?? 7000).toLocaleString()} km when left empty
+                        </p>
+                      </div>
+                    </div>
+                    {masterWorkshops.length > 0 && (
+                      <div>
+                        <Label>Workshop / Garage</Label>
+                        <Select
+                          value={formData.workshop_id || 'NONE'}
+                          onValueChange={(value) => setFormData({ ...formData, workshop_id: value === 'NONE' ? '' : value })}
+                        >
+                          <SelectTrigger>
+                            <SelectValue placeholder="Optional" />
+                          </SelectTrigger>
+                          <SelectContent>
+                            <SelectItem value="NONE">None</SelectItem>
+                            {masterWorkshops.map((w) => (
+                              <SelectItem key={w.id} value={w.id}>{w.name}</SelectItem>
+                            ))}
+                          </SelectContent>
+                        </Select>
+                      </div>
+                    )}
+                    <div className="grid grid-cols-2 gap-4">
+                      <div>
+                        <Label>Cost</Label>
+                        <Input type="number" step="0.01" value={formData.cost} onChange={(e) => setFormData({ ...formData, cost: e.target.value })} required />
+                      </div>
+                      <div>
+                        <Label>Currency</Label>
+                        <Select value={formData.currency} onValueChange={(value) => setFormData({ ...formData, currency: value })}>
+                          <SelectTrigger>
+                            <SelectValue />
+                          </SelectTrigger>
+                          <SelectContent>
+                            <SelectItem value="GHS">GHS</SelectItem>
+                            <SelectItem value="LRD">LRD</SelectItem>
+                            <SelectItem value="USD">USD</SelectItem>
+                            <SelectItem value="STN">STN</SelectItem>
+                          </SelectContent>
+                        </Select>
+                      </div>
+                    </div>
+                    <div>
+                      <Label>Notes</Label>
+                      <Textarea value={formData.notes} onChange={(e) => setFormData({ ...formData, notes: e.target.value })} />
+                    </div>
+                    <div className="flex justify-end gap-2 mt-6">
+                      <Button type="button" variant="outline" onClick={() => handleDialogOpenChange(false)}>Cancel</Button>
+                      <Button type="submit">{editingId ? 'Save Changes' : 'Add Record'}</Button>
+                    </div>
+                  </form>
+                </DialogContent>
+              </Dialog>
+
               <Button variant="outline" data-testid="bulk-upload-maintenance-btn" onClick={() => setBulkDialogOpen(true)}>
                 <Upload size={18} className="mr-2" />
                 Bulk Upload
               </Button>
+
               <Dialog open={bulkDialogOpen} onOpenChange={handleBulkDialogOpenChange}>
                 <DialogContent className="max-w-lg">
                   <DialogHeader>
-                    <DialogTitle>Bulk Upload Maintenance Records</DialogTitle>
+                    <DialogTitle>Bulk Upload Maintenance</DialogTitle>
                     <DialogDescription>
                       Import multiple maintenance records from Excel. Match vehicles by registration number.
                     </DialogDescription>
@@ -551,6 +642,15 @@ const Maintenance = () => {
           )}
         </div>
       </div>
+
+      <ConfirmDeleteDialog
+        open={!!deleteTarget}
+        onOpenChange={(open) => !open && setDeleteTarget(null)}
+        title="Delete maintenance record?"
+        description={deleteTarget ? `Permanently delete "${deleteTarget.description}"? This cannot be undone.` : ''}
+        onConfirm={handleDelete}
+        loading={deleting}
+      />
 
       <div className="fleet-card mb-4 p-4">
         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-3">
@@ -625,13 +725,13 @@ const Maintenance = () => {
               <th>Next Service Odo</th>
               <th>Cost (USD)</th>
               <th>Work Status</th>
-              {canBulkUpload && <th className="w-36">Actions</th>}
+              {showActions && <th className="w-40">Actions</th>}
             </tr>
           </thead>
           <tbody>
             {records.length === 0 ? (
               <tr>
-                <td colSpan={canBulkUpload ? 10 : 9} className="text-center py-8 text-slate-500">No maintenance records</td>
+                <td colSpan={showActions ? 10 : 9} className="text-center py-8 text-slate-500">No maintenance records</td>
               </tr>
             ) : (
               records.map((record) => {
@@ -664,20 +764,44 @@ const Maintenance = () => {
                         {workStatusLabel(record.work_status) || (record.completed_date ? 'Work Completed' : 'Work in Progress')}
                       </span>
                     </td>
-                    {canBulkUpload && (
+                    {showActions && (
                       <td>
-                        {incomplete && (
-                          <Button
-                            variant="outline"
-                            size="sm"
-                            className="h-8"
-                            onClick={() => markWorkCompleted(record)}
-                            data-testid={`mark-complete-${record.id}`}
-                          >
-                            <CheckCircle2 size={14} className="mr-1" />
-                            Complete
-                          </Button>
-                        )}
+                        <div className="flex gap-1 items-center flex-wrap">
+                          {canEdit && (
+                            <Button
+                              variant="ghost"
+                              size="icon"
+                              className="h-8 w-8"
+                              onClick={() => openEditDialog(record)}
+                              aria-label="Edit maintenance record"
+                            >
+                              <Pencil size={16} />
+                            </Button>
+                          )}
+                          {canEdit && incomplete && (
+                            <Button
+                              variant="outline"
+                              size="sm"
+                              className="h-8"
+                              onClick={() => markWorkCompleted(record)}
+                              data-testid={`mark-complete-${record.id}`}
+                            >
+                              <CheckCircle2 size={14} className="mr-1" />
+                              Complete
+                            </Button>
+                          )}
+                          {canDelete && (
+                            <Button
+                              variant="ghost"
+                              size="icon"
+                              className="h-8 w-8 text-red-600"
+                              onClick={() => setDeleteTarget(record)}
+                              aria-label="Delete maintenance record"
+                            >
+                              <Trash2 size={16} />
+                            </Button>
+                          )}
+                        </div>
                       </td>
                     )}
                   </tr>

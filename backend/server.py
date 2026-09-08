@@ -1269,6 +1269,34 @@ async def update_maintenance(
     return MaintenanceRecord(**updated)
 
 
+@api_router.delete("/maintenance/{record_id}")
+async def delete_maintenance(
+    record_id: str,
+    current_user: dict = Depends(get_current_user),
+):
+    assert_can_hard_delete(current_user, "maintenance_record")
+    existing = await db.maintenance_records.find_one({"id": record_id}, {"_id": 0})
+    if not existing:
+        raise HTTPException(status_code=404, detail="Maintenance record not found")
+
+    await db.maintenance_records.delete_one({"id": record_id})
+    await write_audit_log(
+        action="hard_delete",
+        entity_type="maintenance_record",
+        entity_id=record_id,
+        actor_id=current_user["id"],
+        actor_role=current_user.get("role", ""),
+        actor_email=current_user.get("email"),
+        details={
+            "vehicle_id": existing.get("vehicle_id"),
+            "maintenance_type": existing.get("maintenance_type"),
+            "description": existing.get("description"),
+            "scheduled_date": existing.get("scheduled_date"),
+        },
+    )
+    return {"message": "Maintenance record deleted successfully"}
+
+
 @api_router.post("/maintenance/predict/{vehicle_id}")
 async def predict_maintenance(vehicle_id: str):
     vehicle = await db.vehicles.find_one({"id": vehicle_id}, {"_id": 0})

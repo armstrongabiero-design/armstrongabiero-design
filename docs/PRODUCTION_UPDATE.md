@@ -301,3 +301,147 @@ For database migrations (if you add them later), plan rollback separately — `g
 - [ ] Browser check on https://fleet.gtiholding.com
 
 **MongoDB nodes (`.22` / `.23`)** — only when DB config or mongod changes; normal app deploys **do not** require pulls on DB servers.
+
+---
+
+## Manual MongoDB backup and data deletion
+
+Use this when you must **remove or reset data** in production (for example, purge all maintenance records before a clean bulk re-import). This is **not** part of a normal code deploy.
+
+**Related:** scheduled backups in [`PRODUCTION_DEPLOYMENT_RUNBOOK.md`](PRODUCTION_DEPLOYMENT_RUNBOOK.md) (section F1).
+
+### When to use
+
+- Clear bad or test data from a collection (e.g. `maintenance_records`)
+- Reset a module before re-importing from an updated Excel template
+- One-off cleanup **after** stakeholder approval
+
+**Do not** use this for routine deploys. `git pull` does **not** change MongoDB data.
+
+### What is affected (example: `maintenance_records`)
+
+| Item | Effect |
+|------|--------|
+| **Maintenance** tab (history) | Emptied |
+| **Maintenance Requests** (`maintenance_requests`) | **Not** deleted unless you delete that collection separately |
+| Dashboard maintenance cost / due alerts | Drop to zero / disappear |
+| Reports (TCO, expense breakdown) | Maintenance totals for past periods become zero |
+| Vehicles, drivers, documents, fuel, logbook | Unchanged |
+
+The portal has **no bulk-delete UI** for maintenance history; deletion is done in MongoDB.
+
+### Prerequisites
+
+1. **Confirm environment** — production replica set (`rs0`), database `fleet_management`.
+2. **Get approval** — Group Fleet Manager / ops sign-off; note reason in your change log.
+3. **Tools** — `mongodump` and `mongosh` on the host you run from (app or DB node). Install on CentOS if missing: `sudo dnf install -y mongodb-database-tools`.
+4. **Credentials** — use the `fleetapp` user (or admin) from `backend/.env` on fleet-app-01. **Never** commit passwords to git or paste them into tickets.
+
+### Step 1 — Back up the collection
+
+**Option A — Quick backup as `fleet` on fleet-app-01** (no write access to `/var/backups`):
+
+```bash
+ssh fleet@192.168.135.21
+mkdir -p ~/backups
+
+mongodump \
+  --uri="mongodb://fleetapp:YOUR_MONGO_PASSWORD@192.168.135.22:27017/fleet_management?authSource=fleet_management&replicaSet=rs0" \
+  --collection=maintenance_records \
+  --out="$HOME/backups/fleet-$(date +%Y%m%d)-maintenance_records"
+```
+
+Verify the dump:
+
+```bash
+ls -la ~/backups/fleet-$(date +%Y%m%d)-maintenance_records/fleet_management/
+# Expect: maintenance_records.bson and metadata.json
+```
+
+**Option B — On a DB node (preferred for large dumps)** — run on secondary **192.168.135.23** per runbook; use `sudo` for `/var/backups`:
+
+```bash
+ssh fleet@192.168.135.23
+sudo mkdir -p /var/backups/mongodb
+
+sudo mongodump \
+  --uri="mongodb://fleetapp:YOUR_MONGO_PASSWORD@192.168.135.23:27017/fleet_management?authSource=fleet_management&replicaSet=rs0" \
+  --collection=maintenance_records \
+  --out="/var/backups/mongodb/fleet-$(date +%Y%m%d)-maintenance_records" \
+  --gzip
+```
+
+Replace `maintenance_records` with another collection name if needed.
+
+### Step 2 — Confirm replica set primary (before delete)
+
+Writes must run against the **PRIMARY**. One successful delete replicates to all data nodes; **do not** run delete on `.22` and `.23` separately.
+
+```bash
+mongosh "mongodb://fleetapp:YOUR_MONGO_PASSWORD@192.168.135.22:27017/?authSource=fleet_management&replicaSet=rs0" --eval \
+  'rs.status().members.map(m => ({ host: m.name, state: m.stateStr }))'
+```
+
+Note which host is `PRIMARY`. If `.22` is secondary, use the primary host or a multi-host URI:
+
+```text
+mongodb://fleetapp:PASSWORD@192.168.135.22:27017,192.168.135.23:27017/fleet_management?authSource=fleet_management&replicaSet=rs0
+```
+
+### Step 3 — Delete (only after backup verified)
+
+**Example: delete all maintenance records**
+
+```bash
+mongosh "mongodb://fleetapp:YOUR_MONGO_PASSWORD@192.168.135.22:27017/fleet_management?authSource=fleet_management&replicaSet=rs0" --eval '
+  const n = db.maintenance_records.countDocuments({});
+  print("Before: " + n);
+  const r = db.maintenance_records.deleteMany({});
+  print("Deleted: " + r.deletedCount);
+  print("After: " + db.maintenance_records.countDocuments({}));
+'
+```
+
+Use `deleteMany({})` rather than `drop()` unless you intentionally want to remove collection indexes too.
+
+**Delete with a filter** (e.g. one country only) — only if you understand the data model; example pattern:
+
+```javascript
+// Illustrative — adjust filter after inspecting documents
+db.maintenance_records.deleteMany({ /* your filter */ })
+```
+
+### Step 4 — Verify in the portal
+
+1. Open **https://fleet.gtiholding.com** → **Maintenance** — table should be empty.
+2. **Dashboard** — maintenance cost and related alerts should reflect the purge.
+3. **Reports & Analytics** — maintenance lines in TCO / expense breakdown should be zero for historical periods.
+
+No API restart is required; the app reads MongoDB live.
+
+### Restore from backup (if needed)
+
+From a `mongodump` directory (adjust paths):
+
+```bash
+mongorestore \
+  --uri="mongodb://fleetapp:YOUR_MONGO_PASSWORD@192.168.135.22:27017/fleet_management?authSource=fleet_management&replicaSet=rs0" \
+  --collection=maintenance_records \
+  --drop \
+  ~/backups/fleet-YYYYMMDD-maintenance_records/fleet_management/maintenance_records.bson
+```
+
+Add `--gzip` if the backup was created with `--gzip`. Test restore on **UAT** first when possible.
+
+### Pitfalls
+
+| Symptom | Likely cause | Fix |
+|---------|----------------|-----|
+| `mkdir /var/backups: permission denied` | `fleet` user on app server | Use `~/backups` (Option A) or `sudo` on DB node (Option B) |
+| `not primary` / write failed | Connected to a secondary | Run against PRIMARY or use replica-set URI |
+| Deleted on app but UI unchanged | Browser cache or wrong DB | Hard refresh; confirm `DB_NAME` in production `.env` |
+| Backup empty / missing `.bson` | Wrong database or collection name | Re-run `mongodump`; check `ls` before delete |
+
+---
+
+## Rollback
