@@ -1,4 +1,4 @@
-import React, { useEffect, useState, useCallback } from 'react';
+import React, { useEffect, useState, useCallback, useMemo, useRef } from 'react';
 import axios from 'axios';
 import { Truck, Users, Wrench, DollarSign, TrendingUp, AlertCircle, AlertTriangle, 
   CheckCircle, XCircle, Clock, Bell, ClipboardCheck, Book, FileCheck, Gauge, Activity, Shield, UserPlus } from 'lucide-react';
@@ -262,6 +262,10 @@ const StaffDashboard = ({ user, token, isGroupManager }) => {
   const [selectedCountry, setSelectedCountry] = useState('ALL');
   const [showAllPendingUsers, setShowAllPendingUsers] = useState(false);
   const [showAllPendingRequests, setShowAllPendingRequests] = useState(false);
+  const [alertSeverityFilter, setAlertSeverityFilter] = useState(null);
+  const [complianceCategory, setComplianceCategory] = useState(null);
+  const alertsPanelRef = useRef(null);
+  const compliancePanelRef = useRef(null);
 
   const fetchDashboardData = useCallback(async () => {
     try {
@@ -361,6 +365,44 @@ const StaffDashboard = ({ user, token, isGroupManager }) => {
     return 'bg-blue-50 border-blue-200';
   };
 
+  const displayedPendingUsers = showAllPendingUsers 
+    ? stats?.pending_users 
+    : stats?.pending_users?.slice(0, 4);
+  
+  const displayedPendingRequests = showAllPendingRequests 
+    ? stats?.pending_requests 
+    : stats?.pending_requests?.slice(0, 4);
+
+  const filteredAlerts = useMemo(() => {
+    const list = alerts?.alerts || [];
+    if (!alertSeverityFilter) return list;
+    return list.filter((a) => a.severity === alertSeverityFilter);
+  }, [alerts, alertSeverityFilter]);
+
+  const complianceListItems = useMemo(() => {
+    const items = compliance?.items || [];
+    if (!complianceCategory) {
+      return compliance?.issues || items.filter((i) => i.status !== 'COMPLIANT');
+    }
+    if (complianceCategory === 'PENDING_USERS') return [];
+    return items.filter((i) => i.status === complianceCategory);
+  }, [compliance, complianceCategory]);
+
+  const selectAlertSeverity = (severity) => {
+    setAlertSeverityFilter((prev) => (prev === severity ? null : severity));
+    requestAnimationFrame(() => {
+      alertsPanelRef.current?.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+    });
+  };
+
+  const selectComplianceCategory = (category) => {
+    setComplianceCategory((prev) => (prev === category ? null : category));
+    requestAnimationFrame(() => {
+      compliancePanelRef.current?.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+    });
+  };
+
+
   if (loading) {
     return (
       <div className="flex items-center justify-center h-screen">
@@ -380,14 +422,6 @@ const StaffDashboard = ({ user, token, isGroupManager }) => {
     return roles[role] || role;
   };
 
-  const displayedPendingUsers = showAllPendingUsers 
-    ? stats?.pending_users 
-    : stats?.pending_users?.slice(0, 4);
-  
-  const displayedPendingRequests = showAllPendingRequests 
-    ? stats?.pending_requests 
-    : stats?.pending_requests?.slice(0, 4);
-
   return (
     <div className="dashboard-page dashboard-page--fill" data-testid="staff-dashboard">
       <header className="dashboard-header">
@@ -404,22 +438,34 @@ const StaffDashboard = ({ user, token, isGroupManager }) => {
         </div>
         <div className="flex flex-wrap items-center gap-3">
           {alerts && (
-            <div className="dashboard-alert-chips">
-              {(alerts.critical_count || 0) > 0 && (
-                <span className="dashboard-chip dashboard-chip--critical">
-                  <XCircle size={12} /> {alerts.critical_count} Critical
-                </span>
-              )}
-              {(alerts.warning_count || 0) > 0 && (
-                <span className="dashboard-chip dashboard-chip--warning">
-                  <AlertTriangle size={12} /> {alerts.warning_count} Warning
-                </span>
-              )}
-              {(alerts.info_count || 0) > 0 && (
-                <span className="dashboard-chip dashboard-chip--info">
-                  <AlertCircle size={12} /> {alerts.info_count} Info
-                </span>
-              )}
+            <div className="dashboard-alert-chips" role="group" aria-label="Alert severity filters">
+              <button
+                type="button"
+                className={`dashboard-chip dashboard-chip--critical${alertSeverityFilter === 'CRITICAL' ? ' is-active' : ''}`}
+                onClick={() => selectAlertSeverity('CRITICAL')}
+                aria-pressed={alertSeverityFilter === 'CRITICAL'}
+                data-testid="alert-chip-critical"
+              >
+                <XCircle size={12} /> {alerts.critical_count || 0} Critical
+              </button>
+              <button
+                type="button"
+                className={`dashboard-chip dashboard-chip--warning${alertSeverityFilter === 'WARNING' ? ' is-active' : ''}`}
+                onClick={() => selectAlertSeverity('WARNING')}
+                aria-pressed={alertSeverityFilter === 'WARNING'}
+                data-testid="alert-chip-warning"
+              >
+                <AlertTriangle size={12} /> {alerts.warning_count || 0} Warning
+              </button>
+              <button
+                type="button"
+                className={`dashboard-chip dashboard-chip--info${alertSeverityFilter === 'INFO' ? ' is-active' : ''}`}
+                onClick={() => selectAlertSeverity('INFO')}
+                aria-pressed={alertSeverityFilter === 'INFO'}
+                data-testid="alert-chip-active"
+              >
+                <AlertCircle size={12} /> {alerts.info_count || 0} Active
+              </button>
             </div>
           )}
           {isGroupManager && isGroupManager() && (
@@ -513,16 +559,25 @@ const StaffDashboard = ({ user, token, isGroupManager }) => {
 
       {/* Alerts & Compliance bento */}
       <section className="dashboard-bento">
-        <div className="fleet-card dashboard-panel dashboard-bento-panel !mb-0">
-          <DashboardPanelHead icon={Bell} title="Active Alerts" count={alerts?.total_count || 0} />
+        <div ref={alertsPanelRef} className="fleet-card dashboard-panel dashboard-bento-panel !mb-0" data-testid="active-alerts-panel">
+          <DashboardPanelHead
+            icon={Bell}
+            title={alertSeverityFilter ? `Active Alerts · ${alertSeverityFilter.charAt(0) + alertSeverityFilter.slice(1).toLowerCase()}` : 'Active Alerts'}
+            count={alertSeverityFilter ? filteredAlerts.length : (alerts?.total_count || 0)}
+          />
           <div className="dashboard-scroll-panel dashboard-bento-scroll space-y-1.5">
-            {alerts?.alerts?.length === 0 ? (
+            {filteredAlerts.length === 0 ? (
               <div className="text-center py-10 text-slate-500">
                 <CheckCircle size={28} className="mx-auto mb-2 text-green-500" />
-                <p className="text-sm">No active alerts</p>
+                <p className="text-sm">{alertSeverityFilter ? `No ${alertSeverityFilter.toLowerCase()} alerts` : 'No active alerts'}</p>
+                {alertSeverityFilter && (
+                  <button type="button" className="mt-2 text-xs text-amber-700 underline" onClick={() => setAlertSeverityFilter(null)}>
+                    Clear filter
+                  </button>
+                )}
               </div>
             ) : (
-              alerts?.alerts?.slice(0, 12).map((alert) => {
+              filteredAlerts.map((alert) => {
                 const href = alertHref(alert);
                 const body = (
                   <div className={`dashboard-alert-item ${getSeverityBg(alert.severity)} ${href ? 'cursor-pointer' : ''}`}>
@@ -547,7 +602,7 @@ const StaffDashboard = ({ user, token, isGroupManager }) => {
           </div>
         </div>
 
-        <div className="fleet-card dashboard-panel dashboard-bento-panel !mb-0">
+        <div ref={compliancePanelRef} className="fleet-card dashboard-panel dashboard-bento-panel !mb-0" data-testid="compliance-panel">
           <DashboardPanelHead icon={CheckCircle} title="Compliance Review" count={`${compliance?.summary?.compliance_rate || 0}%`} />
           <div className="flex flex-col flex-1 min-h-0 overflow-hidden">
             <div className="mb-2 shrink-0">
@@ -566,38 +621,96 @@ const StaffDashboard = ({ user, token, isGroupManager }) => {
               </div>
             </div>
 
-            <div className="dashboard-stat-row">
-              <div className="dashboard-stat-pill dashboard-stat-pill--green">
+            <div className="dashboard-stat-row" role="tablist" aria-label="Compliance categories">
+              <button
+                type="button"
+                role="tab"
+                aria-selected={complianceCategory === 'COMPLIANT'}
+                className={`dashboard-stat-pill dashboard-stat-pill--green dashboard-stat-pill--interactive${complianceCategory === 'COMPLIANT' ? ' is-active' : ''}`}
+                onClick={() => selectComplianceCategory('COMPLIANT')}
+                data-testid="compliance-tab-compliant"
+              >
                 <p className="dashboard-stat-pill__value">{compliance?.summary?.compliant || 0}</p>
                 <p className="dashboard-stat-pill__label">Compliant</p>
-              </div>
-              <div className="dashboard-stat-pill dashboard-stat-pill--red">
+              </button>
+              <button
+                type="button"
+                role="tab"
+                aria-selected={complianceCategory === 'NON_COMPLIANT'}
+                className={`dashboard-stat-pill dashboard-stat-pill--red dashboard-stat-pill--interactive${complianceCategory === 'NON_COMPLIANT' ? ' is-active' : ''}`}
+                onClick={() => selectComplianceCategory('NON_COMPLIANT')}
+                data-testid="compliance-tab-non-compliant"
+              >
                 <p className="dashboard-stat-pill__value">{compliance?.summary?.non_compliant || 0}</p>
                 <p className="dashboard-stat-pill__label">Non-Compliant</p>
-              </div>
-              <div className="dashboard-stat-pill dashboard-stat-pill--amber">
+              </button>
+              <button
+                type="button"
+                role="tab"
+                aria-selected={complianceCategory === 'WARNING'}
+                className={`dashboard-stat-pill dashboard-stat-pill--amber dashboard-stat-pill--interactive${complianceCategory === 'WARNING' ? ' is-active' : ''}`}
+                onClick={() => selectComplianceCategory('WARNING')}
+                data-testid="compliance-tab-expiring"
+              >
                 <p className="dashboard-stat-pill__value">{compliance?.summary?.warning || 0}</p>
                 <p className="dashboard-stat-pill__label">Expiring</p>
-              </div>
-              <div className="dashboard-stat-pill dashboard-stat-pill--gold">
+              </button>
+              <button
+                type="button"
+                role="tab"
+                aria-selected={complianceCategory === 'PENDING_USERS'}
+                className={`dashboard-stat-pill dashboard-stat-pill--gold dashboard-stat-pill--interactive${complianceCategory === 'PENDING_USERS' ? ' is-active' : ''}`}
+                onClick={() => selectComplianceCategory('PENDING_USERS')}
+                data-testid="compliance-tab-pending-users"
+              >
                 <p className="dashboard-stat-pill__value">{stats?.pending_users_count || 0}</p>
                 <p className="dashboard-stat-pill__label">Pending Users</p>
-              </div>
+              </button>
             </div>
 
             <div className="dashboard-scroll-panel dashboard-bento-scroll space-y-1.5 border-t border-slate-100 pt-2 mt-1">
-              {(compliance?.issues || compliance?.items?.filter((i) => i.status !== 'COMPLIANT') || []).slice(0, 15).map((item) => (
-                <Link
-                  key={`${item.entity_id}-${item.check_type}-${item.status}`}
-                  to={complianceHref(item)}
-                  className="block p-2 rounded-md bg-slate-50 hover:bg-slate-100 border border-slate-100"
-                >
-                  <p className="text-sm font-medium text-slate-800 truncate">{item.entity_name}</p>
-                  <p className="text-xs text-slate-600 truncate">{item.message}</p>
-                </Link>
-              ))}
-              {(compliance?.issues || []).length === 0 && (compliance?.items || []).every((i) => i.status === 'COMPLIANT') && (
-                <p className="text-sm text-slate-500 text-center py-4">No open compliance issues</p>
+              {complianceCategory === 'PENDING_USERS' ? (
+                (stats?.pending_users || []).length === 0 ? (
+                  <p className="text-sm text-slate-500 text-center py-4">No pending user accounts</p>
+                ) : (
+                  (stats?.pending_users || []).map((pendingUser) => (
+                    <div key={pendingUser.id} className="flex items-center justify-between gap-2 p-2 rounded-md bg-slate-50 border border-slate-100">
+                      <div className="min-w-0">
+                        <p className="text-sm font-medium text-slate-800 truncate">{pendingUser.full_name}</p>
+                        <p className="text-xs text-slate-600 truncate">{pendingUser.email} · {getRoleDisplay(pendingUser.role)}</p>
+                      </div>
+                      <Button size="sm" className="shrink-0 h-8" onClick={() => handleApproveUser(pendingUser.id)}>
+                        Approve
+                      </Button>
+                    </div>
+                  ))
+                )
+              ) : complianceListItems.length === 0 ? (
+                <p className="text-sm text-slate-500 text-center py-4">
+                  {complianceCategory ? 'No records in this category' : 'No open compliance issues'}
+                </p>
+              ) : (
+                complianceListItems.map((item) => (
+                  <Link
+                    key={`${item.entity_id}-${item.check_type}-${item.status}`}
+                    to={complianceHref(item)}
+                    className="block p-2 rounded-md bg-slate-50 hover:bg-slate-100 border border-slate-100"
+                  >
+                    <div className="flex items-start justify-between gap-2">
+                      <div className="min-w-0">
+                        <p className="text-sm font-medium text-slate-800 truncate">{item.entity_name}</p>
+                        <p className="text-xs text-slate-600 truncate">{item.message}</p>
+                      </div>
+                      <span className={`shrink-0 text-[10px] font-semibold uppercase tracking-wide px-1.5 py-0.5 rounded ${
+                        item.status === 'COMPLIANT' ? 'bg-green-100 text-green-700' :
+                        item.status === 'WARNING' ? 'bg-amber-100 text-amber-700' :
+                        'bg-red-100 text-red-700'
+                      }`}>
+                        {item.status === 'WARNING' ? 'Expiring' : item.status.replace('_', ' ')}
+                      </span>
+                    </div>
+                  </Link>
+                ))
               )}
             </div>
           </div>

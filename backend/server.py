@@ -69,7 +69,7 @@ from models.vehicle_master import (
     VehicleMasterCreate,
     VehicleMasterUpdate,
 )
-from vehicle_master_service import sync_master_to_vehicles
+from vehicle_master_service import sync_master_to_vehicles, upsert_master_from_vehicle
 from audit_service import assert_can_hard_delete, write_audit_log
 from storage_service import upload_bytes, read_bytes, delete_object, presigned_download_url, storage_enabled
 from vehicle_bulk_import import build_template_workbook, parse_bulk_upload
@@ -423,6 +423,7 @@ async def create_vehicle(input: VehicleCreate):
     doc['updated_at'] = doc['updated_at'].isoformat()
     
     await db.vehicles.insert_one(doc)
+    await upsert_master_from_vehicle(db, doc)
     return vehicle
 
 
@@ -506,6 +507,7 @@ async def bulk_upload_vehicles(
             doc["updated_at"] = doc["updated_at"].isoformat()
 
             await db.vehicles.insert_one(doc)
+            await upsert_master_from_vehicle(db, doc)
             existing_regs.add(reg_key)
             created.append({
                 "id": vehicle.id,
@@ -678,6 +680,7 @@ async def update_vehicle(
 
     await db.vehicles.update_one({"id": vehicle_id}, {"$set": update_data})
     updated_vehicle = await db.vehicles.find_one({"id": vehicle_id}, {"_id": 0})
+    await upsert_master_from_vehicle(db, updated_vehicle)
 
     for date_field in ["acquisition_date", "created_at", "updated_at", "availability_changed_at"]:
         if isinstance(updated_vehicle.get(date_field), str):

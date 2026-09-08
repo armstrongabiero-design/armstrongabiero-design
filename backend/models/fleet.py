@@ -42,6 +42,8 @@ class Vehicle(BaseModel):
     acquisition_currency: CurrencyEnum
     acquisition_cost_usd: float
     country_specific_fields: Dict[str, Any] = Field(default_factory=dict)
+    # Extended Fleet Master Data fields (aligned with Vehicle Master template)
+    master_fields: Dict[str, Any] = Field(default_factory=dict)
     availability_reason: Optional[str] = None
     availability_notes: Optional[str] = None
     availability_changed_at: Optional[datetime] = None
@@ -63,6 +65,7 @@ class VehicleCreate(BaseModel):
     acquisition_cost: float
     acquisition_currency: CurrencyEnum
     country_specific_fields: Dict[str, Any] = Field(default_factory=dict)
+    master_fields: Dict[str, Any] = Field(default_factory=dict)
 
 
 class VehicleUpdate(BaseModel):
@@ -78,6 +81,7 @@ class VehicleUpdate(BaseModel):
     acquisition_cost: Optional[float] = None
     acquisition_currency: Optional[CurrencyEnum] = None
     country_specific_fields: Optional[Dict[str, Any]] = None
+    master_fields: Optional[Dict[str, Any]] = None
 
 
 class Driver(BaseModel):

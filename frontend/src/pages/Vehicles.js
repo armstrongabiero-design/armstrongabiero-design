@@ -34,22 +34,60 @@ import ConfirmDeleteDialog from '../components/ConfirmDeleteDialog';
 import VehicleAvailabilityPanel from '../components/VehicleAvailabilityPanel';
 import { completeDialogSubmit } from '../utils/formUtils';
 import { canEditFleetRecord, canHardDelete } from '../utils/permissions';
+import { VEHICLE_MASTER_FIELDS } from '../components/VehicleMasterPanel';
+import HorizontalScrollContainer from '../components/HorizontalScrollContainer';
 
 const BACKEND_URL = process.env.REACT_APP_BACKEND_URL;
 const API = `${BACKEND_URL}/api`;
 
-const createInitialFormData = () => ({
-  country: DEFAULT_COUNTRY_CODE,
-  registration_number: '',
-  make: '',
-  model: '',
-  year: new Date().getFullYear(),
-  vin: '',
-  acquisition_date: new Date().toISOString().split('T')[0],
-  acquisition_cost: 0,
-  acquisition_currency: 'GHS',
-  odometer_reading: 0,
-});
+const MASTER_CORE_KEYS = new Set([
+  'registration_number',
+  'make',
+  'model',
+  'year_of_manufacture',
+  'chassis_vin',
+  'acquisition_date',
+]);
+
+const MASTER_EXTRA_FIELDS = VEHICLE_MASTER_FIELDS.filter((f) => !MASTER_CORE_KEYS.has(f.key));
+
+const FIELD_GROUPS = [
+  {
+    title: 'Identity',
+    keys: ['serial_no', 'registration_number', 'make', 'model', 'chassis_vin', 'year_of_manufacture', 'manufacturer', 'vehicle_category', 'description'],
+  },
+  {
+    title: 'Acquisition & status',
+    keys: ['acquisition_date', 'country_of_origin', 'quantity', 'use_type', 'transmission', 'active_flag'],
+  },
+  {
+    title: 'Dimensions & capacity',
+    keys: ['tyre_size_front', 'tyre_size_rear', 'tyre_size_spare', 'weight_unit', 'seating_capacity', 'max_speed', 'speed_unit', 'number_of_wheels', 'axle_config'],
+  },
+  {
+    title: 'Engine & fuel',
+    keys: ['engine_capacity_cc', 'power_value', 'power_unit', 'cylinders', 'engine_type', 'fuel_type', 'fuel_consumption', 'book_value'],
+  },
+];
+
+const createInitialFormData = () => {
+  const base = {
+    country: DEFAULT_COUNTRY_CODE,
+    registration_number: '',
+    make: '',
+    model: '',
+    year_of_manufacture: new Date().getFullYear(),
+    chassis_vin: '',
+    acquisition_date: new Date().toISOString().split('T')[0],
+    acquisition_cost: 0,
+    acquisition_currency: 'GHS',
+    odometer_reading: 0,
+  };
+  MASTER_EXTRA_FIELDS.forEach((f) => {
+    base[f.key] = '';
+  });
+  return base;
+};
 
 const vehicleToFormData = (vehicle) => {
   const acq = vehicle.acquisition_date;
@@ -60,17 +98,51 @@ const vehicleToFormData = (vehicle) => {
         ? new Date(acq).toISOString().split('T')[0]
         : createInitialFormData().acquisition_date;
 
-  return {
+  const mf = vehicle.master_fields || {};
+  const form = {
     country: normalizeCountryCode(vehicle.country),
-    registration_number: vehicle.registration_number,
-    make: vehicle.make,
-    model: vehicle.model,
-    year: vehicle.year,
-    vin: vehicle.vin,
+    registration_number: vehicle.registration_number || '',
+    make: vehicle.make || '',
+    model: vehicle.model || '',
+    year_of_manufacture: vehicle.year ?? mf.year_of_manufacture ?? new Date().getFullYear(),
+    chassis_vin: vehicle.vin || mf.chassis_vin || '',
     acquisition_date: acquisitionDate,
-    acquisition_cost: vehicle.acquisition_cost,
-    acquisition_currency: vehicle.acquisition_currency,
-    odometer_reading: vehicle.odometer_reading,
+    acquisition_cost: vehicle.acquisition_cost ?? 0,
+    acquisition_currency: vehicle.acquisition_currency || 'GHS',
+    odometer_reading: vehicle.odometer_reading ?? 0,
+  };
+  MASTER_EXTRA_FIELDS.forEach((f) => {
+    const val = mf[f.key];
+    form[f.key] = val == null ? '' : String(val);
+  });
+  return form;
+};
+
+const buildVehiclePayload = (formData) => {
+  const master_fields = {};
+  MASTER_EXTRA_FIELDS.forEach((f) => {
+    const raw = formData[f.key];
+    if (raw === '' || raw == null) return;
+    if (f.type === 'number') {
+      const n = Number(raw);
+      if (!Number.isNaN(n)) master_fields[f.key] = n;
+    } else {
+      master_fields[f.key] = raw;
+    }
+  });
+
+  return {
+    country: formData.country,
+    registration_number: formData.registration_number,
+    make: formData.make,
+    model: formData.model,
+    year: parseInt(formData.year_of_manufacture, 10),
+    vin: formData.chassis_vin,
+    acquisition_date: new Date(formData.acquisition_date).toISOString(),
+    acquisition_cost: parseFloat(formData.acquisition_cost),
+    acquisition_currency: formData.acquisition_currency,
+    odometer_reading: parseFloat(formData.odometer_reading) || 0,
+    master_fields,
   };
 };
 
@@ -177,13 +249,7 @@ const Vehicles = () => {
 
   const handleSubmit = async (e) => {
     e.preventDefault();
-    const payload = {
-      ...formData,
-      acquisition_date: new Date(formData.acquisition_date).toISOString(),
-      year: parseInt(formData.year, 10),
-      acquisition_cost: parseFloat(formData.acquisition_cost),
-      odometer_reading: parseFloat(formData.odometer_reading),
-    };
+    const payload = buildVehiclePayload(formData);
 
     await completeDialogSubmit({
       submit: () =>
@@ -300,8 +366,8 @@ const Vehicles = () => {
           <h1 className="text-3xl font-bold text-slate-800">Vehicles</h1>
           <p className="text-slate-600 mt-1">Manage your fleet across all countries</p>
           <p className="text-sm text-slate-500 mt-1">
-            Full template fields live in{' '}
-            <Link to="/master-data" className="text-amber-700 underline">Master Data → Vehicle Master</Link>
+            Vehicles use the full Master Data field set. Linked records also sync to{' '}
+            <Link to="/master-data" className="text-amber-700 underline">Master Data → Vehicle Master</Link>.
           </p>
         </div>
         {canEdit && activeTab === 'fleet' && (
@@ -313,85 +379,22 @@ const Vehicles = () => {
                 Add Vehicle
               </Button>
             </DialogTrigger>
-            <DialogContent className="max-w-2xl max-h-[90vh] overflow-y-auto">
+            <DialogContent className="max-w-4xl max-h-[90vh] overflow-y-auto">
               <DialogHeader>
                 <DialogTitle>{editingId ? 'Edit Vehicle' : 'Add New Vehicle'}</DialogTitle>
                 <DialogDescription>
                   {editingId
-                    ? 'Update the vehicle details below.'
-                    : 'Fill in the details below to add a new vehicle to your fleet.'}
+                    ? 'Update operational and Master Data fields below.'
+                    : 'Enter the full Master Data fields plus odometer and acquisition cost.'}
                 </DialogDescription>
               </DialogHeader>
-              <form onSubmit={handleSubmit} className="space-y-4">
-                <div className="grid grid-cols-2 gap-4">
+              <form onSubmit={handleSubmit} className="space-y-5">
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
                   <div>
                     <Label>Country</Label>
                     <CountrySelect
                       value={formData.country}
                       onValueChange={(value) => setFormData({ ...formData, country: value })}
-                    />
-                  </div>
-                  <div>
-                    <Label>Registration Number</Label>
-                    <Input
-                      data-testid="registration-input"
-                      value={formData.registration_number}
-                      onChange={(e) => setFormData({ ...formData, registration_number: e.target.value })}
-                      required
-                    />
-                  </div>
-                </div>
-
-                <div className="grid grid-cols-3 gap-4">
-                  <div>
-                    <Label>Make</Label>
-                    <Input
-                      data-testid="make-input"
-                      value={formData.make}
-                      onChange={(e) => setFormData({ ...formData, make: e.target.value })}
-                      required
-                    />
-                  </div>
-                  <div>
-                    <Label>Model</Label>
-                    <Input
-                      data-testid="model-input"
-                      value={formData.model}
-                      onChange={(e) => setFormData({ ...formData, model: e.target.value })}
-                      required
-                    />
-                  </div>
-                  <div>
-                    <Label>Year</Label>
-                    <Input
-                      data-testid="year-input"
-                      type="number"
-                      value={formData.year}
-                      onChange={(e) => setFormData({ ...formData, year: e.target.value })}
-                      required
-                    />
-                  </div>
-                </div>
-
-                <div>
-                  <Label>VIN</Label>
-                  <Input
-                    data-testid="vin-input"
-                    value={formData.vin}
-                    onChange={(e) => setFormData({ ...formData, vin: e.target.value })}
-                    required
-                  />
-                </div>
-
-                <div className="grid grid-cols-2 gap-4">
-                  <div>
-                    <Label>Acquisition Date</Label>
-                    <Input
-                      data-testid="acquisition-date-input"
-                      type="date"
-                      value={formData.acquisition_date}
-                      onChange={(e) => setFormData({ ...formData, acquisition_date: e.target.value })}
-                      required
                     />
                   </div>
                   <div>
@@ -405,34 +408,73 @@ const Vehicles = () => {
                   </div>
                 </div>
 
-                <div className="grid grid-cols-2 gap-4">
-                  <div>
-                    <Label>Acquisition Cost</Label>
-                    <Input
-                      data-testid="acquisition-cost-input"
-                      type="number"
-                      step="0.01"
-                      value={formData.acquisition_cost}
-                      onChange={(e) => setFormData({ ...formData, acquisition_cost: e.target.value })}
-                      required
-                    />
+                {FIELD_GROUPS.map((group) => (
+                  <div key={group.title} className="space-y-3">
+                    <h4 className="text-sm font-semibold text-slate-700 border-b border-slate-200 pb-1">{group.title}</h4>
+                    <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
+                      {group.keys.map((key) => {
+                        const meta = VEHICLE_MASTER_FIELDS.find((f) => f.key === key) || {
+                          key,
+                          label: key,
+                          type: key === 'year_of_manufacture' ? 'number' : 'text',
+                        };
+                        const required = ['registration_number', 'make', 'model', 'chassis_vin', 'year_of_manufacture', 'acquisition_date'].includes(key);
+                        const testId =
+                          key === 'registration_number' ? 'registration-input' :
+                          key === 'make' ? 'make-input' :
+                          key === 'model' ? 'model-input' :
+                          key === 'year_of_manufacture' ? 'year-input' :
+                          key === 'chassis_vin' ? 'vin-input' :
+                          key === 'acquisition_date' ? 'acquisition-date-input' :
+                          undefined;
+                        return (
+                          <div key={key}>
+                            <Label>{meta.label}{required ? ' *' : ''}</Label>
+                            <Input
+                              data-testid={testId}
+                              type={key === 'acquisition_date' ? 'date' : (meta.type === 'number' ? 'number' : 'text')}
+                              value={formData[key] ?? ''}
+                              onChange={(e) => setFormData({ ...formData, [key]: e.target.value })}
+                              required={required}
+                            />
+                          </div>
+                        );
+                      })}
+                    </div>
                   </div>
-                  <div>
-                    <Label>Currency</Label>
-                    <Select
-                      value={formData.acquisition_currency}
-                      onValueChange={(value) => setFormData({ ...formData, acquisition_currency: value })}
-                    >
-                      <SelectTrigger data-testid="currency-select">
-                        <SelectValue />
-                      </SelectTrigger>
-                      <SelectContent>
-                        <SelectItem value="GHS">GHS</SelectItem>
-                        <SelectItem value="LRD">LRD</SelectItem>
-                        <SelectItem value="USD">USD</SelectItem>
-                        <SelectItem value="STN">STN</SelectItem>
-                      </SelectContent>
-                    </Select>
+                ))}
+
+                <div className="space-y-3">
+                  <h4 className="text-sm font-semibold text-slate-700 border-b border-slate-200 pb-1">Financial</h4>
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                    <div>
+                      <Label>Acquisition Cost *</Label>
+                      <Input
+                        data-testid="acquisition-cost-input"
+                        type="number"
+                        step="0.01"
+                        value={formData.acquisition_cost}
+                        onChange={(e) => setFormData({ ...formData, acquisition_cost: e.target.value })}
+                        required
+                      />
+                    </div>
+                    <div>
+                      <Label>Currency *</Label>
+                      <Select
+                        value={formData.acquisition_currency}
+                        onValueChange={(value) => setFormData({ ...formData, acquisition_currency: value })}
+                      >
+                        <SelectTrigger data-testid="currency-select">
+                          <SelectValue />
+                        </SelectTrigger>
+                        <SelectContent>
+                          <SelectItem value="GHS">GHS</SelectItem>
+                          <SelectItem value="LRD">LRD</SelectItem>
+                          <SelectItem value="USD">USD</SelectItem>
+                          <SelectItem value="STN">STN</SelectItem>
+                        </SelectContent>
+                      </Select>
+                    </div>
                   </div>
                 </div>
 
@@ -448,7 +490,7 @@ const Vehicles = () => {
             </DialogContent>
           </Dialog>
 
-          <Button variant="outline" data-testid="bulk-upload-vehicles-btn" onClick={() => setBulkDialogOpen(true)}>
+                    <Button variant="outline" data-testid="bulk-upload-vehicles-btn" onClick={() => setBulkDialogOpen(true)}>
             <Upload size={18} className="mr-2" />
             Bulk Upload
           </Button>
@@ -484,7 +526,7 @@ const Vehicles = () => {
                     required
                   />
                   <p className="text-xs text-slate-500 mt-1">
-                    Use the template columns: Registration Number, Make, Model, Year, VIN, Acquisition Date, Odometer Reading (km), Acquisition Cost, Currency.
+                    Template columns match Vehicle Master Data (Serial No through Active Flag), plus Odometer Reading (km), Acquisition Cost, and Currency.
                   </p>
                 </div>
                 {bulkResult && (
@@ -547,12 +589,15 @@ const Vehicles = () => {
       </div>
 
       <div className="fleet-card table-container">
-        <table data-testid="vehicles-table">
+        <HorizontalScrollContainer>
+        <table data-testid="vehicles-table" className="min-w-full">
           <thead>
             <tr>
               <th>Registration</th>
               <th>Vehicle</th>
+              <th>Category</th>
               <th>VIN</th>
+              <th>Fuel</th>
               <th>Country</th>
               <th>Status</th>
               <th>Odometer</th>
@@ -563,7 +608,7 @@ const Vehicles = () => {
           <tbody>
             {filteredVehicles.length === 0 ? (
               <tr>
-                <td colSpan={canEdit ? 8 : 7} className="text-center py-8 text-slate-500">
+                <td colSpan={canEdit ? 10 : 9} className="text-center py-8 text-slate-500">
                   No vehicles found. Add your first vehicle to get started.
                 </td>
               </tr>
@@ -574,7 +619,9 @@ const Vehicles = () => {
                   <td>
                     {vehicle.make} {vehicle.model} ({vehicle.year})
                   </td>
+                  <td className="text-xs text-slate-600">{vehicle.master_fields?.vehicle_category || '—'}</td>
                   <td className="text-xs">{vehicle.vin}</td>
+                  <td className="text-xs text-slate-600">{vehicle.master_fields?.fuel_type || '—'}</td>
                   <td>
                     <span className={getCountryBadgeClass(vehicle.country)}>
                       {getCountryLabel(vehicle.country)}
@@ -583,8 +630,8 @@ const Vehicles = () => {
                   <td>
                     <span className={getStatusBadge(vehicle.status)}>{vehicle.status}</span>
                   </td>
-                  <td>{vehicle.odometer_reading.toLocaleString()} km</td>
-                  <td>${vehicle.acquisition_cost_usd.toLocaleString()}</td>
+                  <td>{(vehicle.odometer_reading || 0).toLocaleString()} km</td>
+                  <td>${(vehicle.acquisition_cost_usd || 0).toLocaleString()}</td>
                   {canEdit && (
                     <td>
                       <div className="flex gap-1">
@@ -616,6 +663,7 @@ const Vehicles = () => {
             )}
           </tbody>
         </table>
+      </HorizontalScrollContainer>
       </div>
         </TabsContent>
 
