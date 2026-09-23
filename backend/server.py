@@ -70,6 +70,13 @@ from models.vehicle_master import (
     VehicleMasterUpdate,
 )
 from vehicle_master_service import sync_master_to_vehicles, upsert_master_from_vehicle
+from alert_thresholds import (
+    SCHEDULED_ALERT_LEAD_DAYS,
+    MAINTENANCE_ODO_LEAD_KM,
+    apply_alert_categories,
+    latest_maintenance_by_vehicle,
+    build_maintenance_alerts_for_vehicle,
+)
 from audit_service import assert_can_hard_delete, write_audit_log
 from storage_service import upload_bytes, read_bytes, delete_object, presigned_download_url, storage_enabled
 from vehicle_bulk_import import build_template_workbook, parse_bulk_upload
@@ -3447,8 +3454,8 @@ async def get_dashboard_alerts(country: Optional[str] = None):
     country_filter = country_filter_query(country) if country else {}
     alerts = []
     now = datetime.now(timezone.utc)
-    warning_threshold = now + timedelta(days=30)
-    
+    lead_days = SCHEDULED_ALERT_LEAD_DAYS
+
     # 1. Document Expiry Alerts (only when expiry_date is set — VRC without date is skipped)
     documents = await db.documents.find(country_filter, {"_id": 0}).to_list(1000)
     for doc in documents:
@@ -3463,6 +3470,7 @@ async def get_dashboard_alerts(country: Optional[str] = None):
         days_until = (expiry - now).days
         doc_type = doc.get('document_type', 'Document')
         base = {
+            "category": "DOCUMENT",
             "entity_type": "document",
             "entity_id": doc.get('id'),
             "document_type": doc_type,
@@ -3479,7 +3487,7 @@ async def get_dashboard_alerts(country: Optional[str] = None):
                 "title": f"Expired: {doc_type}",
                 "message": f"Document expired {abs(days_until)} days ago",
             })
-        elif days_until <= 30:
+        elif days_until <= lead_days:
             alerts.append({
                 **base,
                 "type": "DOCUMENT_EXPIRY",
@@ -3496,6 +3504,7 @@ async def get_dashboard_alerts(country: Optional[str] = None):
                 renewal = renewal.replace(tzinfo=timezone.utc)
             days_until_renewal = (renewal - now).days
             renewal_base = {
+                "category": "DOCUMENT",
                 "entity_type": "document",
                 "entity_id": doc.get('id'),
                 "document_type": doc_type,
@@ -3512,7 +3521,7 @@ async def get_dashboard_alerts(country: Optional[str] = None):
                     "title": f"Renewal overdue: {doc_type.replace('_', ' ').title()}",
                     "message": f"Next renewal was {abs(days_until_renewal)} day(s) ago",
                 })
-            elif days_until_renewal <= 30:
+            elif days_until_renewal <= lead_days:
                 alerts.append({
                     **renewal_base,
                     "type": "DOCUMENT_RENEWAL",
@@ -3520,31 +3529,33 @@ async def get_dashboard_alerts(country: Optional[str] = None):
                     "title": f"Renewal due soon: {doc_type.replace('_', ' ').title()}",
                     "message": f"Next renewal in {days_until_renewal} day(s)",
                 })
-    
+
     # 2. Fuel Anomalies
     fuel_txns = await db.fuel_transactions.find({**country_filter, "anomaly_detected": True}, {"_id": 0}).to_list(100)
     for txn in fuel_txns:
         vehicle = await db.vehicles.find_one({"id": txn.get('vehicle_id')}, {"_id": 0, "registration_number": 1})
         alerts.append({
+            "category": "OPERATIONS",
             "type": "FUEL_ANOMALY",
             "severity": "WARNING",
             "title": "Fuel Anomaly Detected",
-            "message": f"Unusual fuel consumption for {vehicle.get('registration_number', 'Unknown')}",
+            "message": f"Unusual fuel consumption for {vehicle.get('registration_number', 'Unknown') if vehicle else 'Unknown'}",
             "entity_type": "fuel_transaction",
             "entity_id": txn.get('id'),
             "country": txn.get('country')
         })
-    
+
     # 3. Speeding Alerts (from logbook)
     speeding_entries = await db.driver_logbook.find(
         {**country_filter, "speed_limit_violations": {"$gt": 0}},
         {"_id": 0}
     ).sort("date", -1).limit(20).to_list(20)
-    
+
     for entry in speeding_entries:
         driver = await db.drivers.find_one({"id": entry.get('driver_id')}, {"_id": 0, "first_name": 1, "last_name": 1})
         driver_name = f"{driver.get('first_name', '')} {driver.get('last_name', '')}" if driver else "Unknown"
         alerts.append({
+            "category": "OPERATIONS",
             "type": "SPEEDING",
             "severity": "WARNING",
             "title": f"Speeding: {driver_name}",
@@ -3553,12 +3564,13 @@ async def get_dashboard_alerts(country: Optional[str] = None):
             "entity_id": entry.get('id'),
             "country": entry.get('country')
         })
-    
+
     # 4. Low Stock Alerts
     inventory = await db.inventory_items.find(country_filter, {"_id": 0}).to_list(1000)
     for item in inventory:
         if item.get('quantity', 0) <= item.get('reorder_level', 0):
             alerts.append({
+                "category": "OPERATIONS",
                 "type": "LOW_STOCK",
                 "severity": "WARNING",
                 "title": f"Low Stock: {item.get('name')}",
@@ -3567,13 +3579,13 @@ async def get_dashboard_alerts(country: Optional[str] = None):
                 "entity_id": item.get('id'),
                 "country": item.get('country')
             })
-    
-    # 5. Tire Alerts
+
+    # 5. Tire Alerts (inspection) — rotation uses 30-day lead when scheduled
     tires = await db.tires.find({**country_filter, "status": "IN_USE"}, {"_id": 0}).to_list(1000)
     for tire in tires:
-        # Check tread depth
         if tire.get('tread_depth_mm') and tire.get('tread_depth_mm') <= tire.get('min_tread_depth', 1.6):
             alerts.append({
+                "category": "INSPECTION",
                 "type": "TIRE_REPLACEMENT_DUE",
                 "severity": "CRITICAL",
                 "title": f"Tire Replacement Due: {tire.get('serial_number')}",
@@ -3582,27 +3594,44 @@ async def get_dashboard_alerts(country: Optional[str] = None):
                 "entity_id": tire.get('id'),
                 "country": tire.get('country')
             })
-        
-        # Check rotation
+
         next_rotation = tire.get('next_rotation_due')
         if next_rotation:
             if isinstance(next_rotation, str):
                 next_rotation = datetime.fromisoformat(next_rotation.replace('Z', '+00:00'))
-            if next_rotation < now:
+            if next_rotation.tzinfo is None:
+                next_rotation = next_rotation.replace(tzinfo=timezone.utc)
+            days_until_rotation = (next_rotation - now).days
+            if days_until_rotation < 0:
                 alerts.append({
+                    "category": "INSPECTION",
                     "type": "TIRE_ROTATION_DUE",
                     "severity": "WARNING",
                     "title": f"Tire Rotation Due: {tire.get('serial_number')}",
-                    "message": "Rotation overdue",
+                    "message": f"Rotation overdue by {abs(days_until_rotation)} day(s)",
                     "entity_type": "tire",
                     "entity_id": tire.get('id'),
-                    "country": tire.get('country')
+                    "country": tire.get('country'),
+                    "days_until_due": days_until_rotation,
                 })
-    
+            elif days_until_rotation <= lead_days:
+                alerts.append({
+                    "category": "INSPECTION",
+                    "type": "TIRE_ROTATION_DUE",
+                    "severity": "WARNING",
+                    "title": f"Tire Rotation Due Soon: {tire.get('serial_number')}",
+                    "message": f"Rotation due in {days_until_rotation} day(s)",
+                    "entity_type": "tire",
+                    "entity_id": tire.get('id'),
+                    "country": tire.get('country'),
+                    "days_until_due": days_until_rotation,
+                })
+
     # 6. Pending Maintenance Requests
     pending_count = await db.maintenance_requests.count_documents({**country_filter, "status": "PENDING"})
     if pending_count > 0:
         alerts.append({
+            "category": "OPERATIONS",
             "type": "MAINTENANCE_DUE",
             "severity": "INFO",
             "title": f"{pending_count} Pending Maintenance Requests",
@@ -3612,81 +3641,33 @@ async def get_dashboard_alerts(country: Optional[str] = None):
             "country": country
         })
 
-    # 7. Maintenance next-due alerts (14-day window + overdue)
-    maintenance_records = await db.maintenance_records.find(
-        {**country_filter, "next_due_date": {"$ne": None}},
-        {"_id": 0},
-    ).to_list(1000)
-    for record in maintenance_records:
-        next_due = record.get("next_due_date")
-        if not next_due:
-            continue
-        if isinstance(next_due, str):
-            next_due = datetime.fromisoformat(next_due.replace("Z", "+00:00"))
-        if next_due.tzinfo is None:
-            next_due = next_due.replace(tzinfo=timezone.utc)
-        days_until = (next_due - now).days
-        if days_until > 14:
-            continue
-        vehicle = await db.vehicles.find_one(
-            {"id": record.get("vehicle_id")},
-            {"_id": 0, "registration_number": 1},
-        )
-        reg = vehicle.get("registration_number", "Unknown") if vehicle else "Unknown"
-        if days_until < 0:
-            alerts.append({
-                "type": "MAINTENANCE_OVERDUE",
-                "severity": "CRITICAL",
-                "title": f"Maintenance Overdue: {reg}",
-                "message": f"Next due was {abs(days_until)} day(s) ago — {record.get('description', 'Maintenance')}",
-                "entity_type": "maintenance_record",
-                "entity_id": record.get("id"),
-                "country": record.get("country") or (vehicle or {}).get("country"),
-                "days_until_due": days_until,
-            })
-        else:
-            alerts.append({
-                "type": "MAINTENANCE_DUE_SOON",
-                "severity": "WARNING",
-                "title": f"Maintenance Due Soon: {reg}",
-                "message": f"Next due in {days_until} day(s) — {record.get('description', 'Maintenance')}",
-                "entity_type": "maintenance_record",
-                "entity_id": record.get("id"),
-                "country": record.get("country") or (vehicle or {}).get("country"),
-                "days_until_due": days_until,
-            })
-
-    # 8. Next service odometer alerts
-    odo_records = await db.maintenance_records.find(
-        {**country_filter, "next_service_odometer": {"$ne": None}},
-        {"_id": 0},
-    ).to_list(1000)
-    for record in odo_records:
-        target_odo = record.get("next_service_odometer")
-        if target_odo is None:
-            continue
-        vehicle = await db.vehicles.find_one(
-            {"id": record.get("vehicle_id")},
-            {"_id": 0, "registration_number": 1, "odometer_reading": 1, "country": 1},
-        )
+    # 7–8. Maintenance due alerts from latest record per vehicle (30 days / 1,000 km, independent)
+    vehicles_for_maint = await db.vehicles.find(country_filter, {"_id": 0}).to_list(1000)
+    vehicle_by_id = {v["id"]: v for v in vehicles_for_maint if v.get("id")}
+    if vehicle_by_id:
+        maint_query: dict = {"vehicle_id": {"$in": list(vehicle_by_id.keys())}}
+    else:
+        maint_query = dict(country_filter) if country_filter else {}
+    all_maint = await db.maintenance_records.find(maint_query, {"_id": 0}).to_list(5000)
+    latest_by_vehicle = latest_maintenance_by_vehicle(all_maint)
+    for vehicle_id, record in latest_by_vehicle.items():
+        vehicle = vehicle_by_id.get(vehicle_id)
+        if not vehicle:
+            vehicle = await db.vehicles.find_one({"id": vehicle_id}, {"_id": 0})
         if not vehicle:
             continue
-        current_odo = vehicle.get("odometer_reading") or 0
-        if current_odo < float(target_odo):
-            continue
-        reg = vehicle.get("registration_number", "Unknown")
-        alerts.append({
-            "type": "MAINTENANCE_ODOMETER_DUE",
-            "severity": "WARNING",
-            "title": f"Service Odometer Reached: {reg}",
-            "message": f"Current {current_odo:,.0f} km ≥ next service {float(target_odo):,.0f} km — {record.get('description', 'Maintenance')}",
-            "entity_type": "maintenance_record",
-            "entity_id": record.get("id"),
-            "country": record.get("country") or vehicle.get("country"),
-        })
+        alerts.extend(
+            build_maintenance_alerts_for_vehicle(
+                vehicle=vehicle,
+                record=record,
+                now=now,
+                lead_days=lead_days,
+                odo_lead_km=MAINTENANCE_ODO_LEAD_KM,
+            )
+        )
 
     # 9. Missing required vehicle documents
-    vehicles_for_docs = await db.vehicles.find(country_filter, {"_id": 0}).to_list(1000)
+    vehicles_for_docs = vehicles_for_maint
     required_vehicle_docs = ["ROADWORTHY_CERT", "INSURANCE", "VEHICLE_REGISTRATION"]
     for vehicle in vehicles_for_docs:
         vehicle_docs = await db.documents.find(
@@ -3699,6 +3680,7 @@ async def get_dashboard_alerts(country: Optional[str] = None):
                 continue
             label = doc_type.replace("_", " ").title()
             alerts.append({
+                "category": "DOCUMENT",
                 "type": "DOCUMENT_MISSING",
                 "severity": "CRITICAL",
                 "title": f"Missing: {label}",
@@ -3711,16 +3693,22 @@ async def get_dashboard_alerts(country: Optional[str] = None):
                 "country": vehicle.get("country"),
             })
 
-    # Sort by severity
+    # Sort by severity; ensure categories
     severity_order = {"CRITICAL": 0, "WARNING": 1, "INFO": 2}
     alerts.sort(key=lambda x: severity_order.get(x['severity'], 3))
-    
+    categories = apply_alert_categories(alerts)
+
     return {
         "alerts": alerts,
         "total_count": len(alerts),
         "critical_count": len([a for a in alerts if a['severity'] == 'CRITICAL']),
         "warning_count": len([a for a in alerts if a['severity'] == 'WARNING']),
-        "info_count": len([a for a in alerts if a['severity'] == 'INFO'])
+        "info_count": len([a for a in alerts if a['severity'] == 'INFO']),
+        "categories": categories,
+        "thresholds": {
+            "scheduled_lead_days": lead_days,
+            "maintenance_odo_lead_km": MAINTENANCE_ODO_LEAD_KM,
+        },
     }
 
 

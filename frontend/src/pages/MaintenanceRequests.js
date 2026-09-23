@@ -1,6 +1,6 @@
 import React, { useEffect, useState, useCallback } from 'react';
 import axios from 'axios';
-import { Plus, Check, X, Clock, AlertTriangle, Pencil, Trash2 } from 'lucide-react';
+import { Plus, Check, X, Clock, Pencil, Trash2, Search } from 'lucide-react';
 import { toast } from 'sonner';
 import { useAuth } from '../contexts/AuthContext';
 import { useSearchParams } from 'react-router-dom';
@@ -63,6 +63,8 @@ const MaintenanceRequests = () => {
   const [managerDialogOpen, setManagerDialogOpen] = useState(false);
   const [selectedRequest, setSelectedRequest] = useState(null);
   const [activeTab, setActiveTab] = useState(statusFromUrl || 'PENDING');
+  const [vehicleFilter, setVehicleFilter] = useState('ALL');
+  const [searchTerm, setSearchTerm] = useState('');
 
   const [formData, setFormData] = useState(() => createInitialRequestForm(user, isPersonalView));
 
@@ -246,7 +248,27 @@ const MaintenanceRequests = () => {
     return `status-badge ${badges[status] || ''}`;
   };
 
-  const filteredRequests = requests.filter(r => r.status === activeTab);
+  const filteredRequests = requests.filter((r) => {
+    if (r.status !== activeTab) return false;
+    if (vehicleFilter !== 'ALL' && r.vehicle_id !== vehicleFilter) return false;
+    if (searchTerm.trim()) {
+      const q = searchTerm.trim().toLowerCase();
+      const vehicle = vehicles.find((v) => v.id === r.vehicle_id);
+      const hay = [
+        r.request_type,
+        r.description,
+        r.priority,
+        vehicle?.registration_number,
+        vehicle?.make,
+        vehicle?.model,
+      ]
+        .filter(Boolean)
+        .join(' ')
+        .toLowerCase();
+      if (!hay.includes(q)) return false;
+    }
+    return true;
+  });
 
   return (
     <div className="p-6 lg:p-8" data-testid="maintenance-requests-page">
@@ -536,7 +558,7 @@ const MaintenanceRequests = () => {
 
       {/* Tabs */}
       <Tabs value={activeTab} onValueChange={setActiveTab} className="w-full">
-        <TabsList>
+<TabsList className="mb-3">
           <TabsTrigger value="PENDING" data-testid="pending-tab">
             Pending ({requests.filter(r => r.status === 'PENDING').length})
           </TabsTrigger>
@@ -548,115 +570,138 @@ const MaintenanceRequests = () => {
           </TabsTrigger>
         </TabsList>
 
-        <TabsContent value={activeTab}>
-          <div className="fleet-card table-container mt-4">
-            <table>
-              <thead>
-                <tr>
-                  <th>Date</th>
-                  <th>Vehicle</th>
-                  {!isPersonalView && <th>Requestor</th>}
-                  {!isPersonalView && <th>Submitted By</th>}
-                  <th>Type</th>
-                  <th>Priority</th>
-                  <th>Description</th>
-                  <th>Status</th>
-                  {activeTab === 'PENDING' && <th className="w-32">Actions</th>}
-                  {activeTab === 'REJECTED' && <th>Reason</th>}
-                </tr>
-              </thead>
-              <tbody>
-                {filteredRequests.length === 0 ? (
-                  <tr>
-                    <td colSpan={isPersonalView ? 7 : 10} className="text-center py-8 text-slate-500">
-                      No {activeTab.toLowerCase()} requests
-                    </td>
-                  </tr>
-                ) : (
-                  filteredRequests.map((request) => {
-                    const vehicle = vehicles.find(v => v.id === request.vehicle_id);
-                    const driver = drivers.find(d => d.id === request.driver_id);
-                    const wasSubmittedByOther = request.submitted_by_id && request.submitted_by_id !== request.driver_id;
-                    return (
-                      <tr key={request.id} data-testid={`request-row-${request.id}`}>
-                        <td>{new Date(request.created_at).toLocaleDateString()}</td>
-                        <td className="font-semibold">{vehicle?.registration_number || 'N/A'}</td>
-                        {!isPersonalView && <td>{driver?.first_name} {driver?.last_name}</td>}
-                        {!isPersonalView && (
-                          <td>
-                            {wasSubmittedByOther ? (
-                              <div className="flex flex-col">
-                                <span className="text-sm font-medium text-slate-700">{request.submitted_by_name}</span>
-                                <span className="text-xs text-amber-600 bg-amber-50 px-1.5 py-0.5 rounded-full w-fit">
-                                  {request.submitted_by_role?.replace('_', ' ')}
-                                </span>
-                              </div>
-                            ) : (
-                              <span className="text-slate-400 text-sm">Self</span>
-                            )}
-                          </td>
-                        )}
-                        <td>{request.request_type}</td>
-                        <td><span className={getPriorityBadge(request.priority)}>{request.priority}</span></td>
-                        <td className="text-sm max-w-xs truncate">{request.description}</td>
-                        <td><span className={getStatusBadge(request.status)}>{request.status}</span></td>
-                        {activeTab === 'PENDING' && (
-                          <td>
-                            <div className="flex gap-1 items-center flex-wrap">
-                              {activeTab === 'PENDING' && !isPersonalView && (
-                                <Button size="sm" onClick={() => openApprovalDialog(request)}>
-                                  Review
-                                </Button>
-                              )}
-                              {canEditMaintenanceRequest(user?.role, isPersonalView, request) && (
-                                <Button variant="ghost" size="icon" className="h-8 w-8" onClick={() => openEditRequest(request)}>
-                                  <Pencil size={16} />
-                                </Button>
-                              )}
-                              {canHardDelete(user?.role, 'maintenance_request') && (
-                                <Button
-                                  variant="ghost"
-                                  size="icon"
-                                  className="h-8 w-8 text-red-600 hover:text-red-700 hover:bg-red-50"
-                                  onClick={() => setDeleteTarget(request)}
-                                >
-                                  <Trash2 size={16} />
-                                </Button>
-                              )}
-                            </div>
-                          </td>
-                        )}
-                        {activeTab === 'REJECTED' && (
-                          <td className="text-sm text-red-600 max-w-xs truncate">{request.rejection_reason}</td>
-                        )}
-                      </tr>
-                    );
-                  })
-                )}
-              </tbody>
-            </table>
+        <div className="flex flex-col sm:flex-row gap-3 mb-4">
+          <div className="relative flex-1">
+            <Search className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" size={16} />
+            <Input
+              className="pl-9"
+              placeholder="Search type, description, registration…"
+              value={searchTerm}
+              onChange={(e) => setSearchTerm(e.target.value)}
+              data-testid="request-search"
+            />
           </div>
-        </TabsContent>
-      </Tabs>
+          <Select value={vehicleFilter} onValueChange={setVehicleFilter}>
+            <SelectTrigger className="w-full sm:w-64" data-testid="request-vehicle-filter">
+              <SelectValue placeholder="All vehicles" />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="ALL">All vehicles</SelectItem>
+              {vehicles.map((v) => (
+                <SelectItem key={v.id} value={v.id}>
+                  {v.registration_number} — {v.make} {v.model}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+        </div>
 
-      {/* Fleet Managers List - Only for staff */}
-      {!isPersonalView && (
-        <div className="mt-8">
-          <h2 className="text-xl font-semibold text-slate-800 mb-4">Fleet Managers</h2>
-          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-            {managers.map(manager => (
-              <div key={manager.id} className="fleet-card">
-                <h3 className="font-semibold text-slate-800">{manager.name}</h3>
-                <p className="text-sm text-slate-600">{manager.email}</p>
-                <p className="text-sm text-slate-600">{manager.phone}</p>
-                <span className={`${getCountryBadgeClass(manager.country)} mt-2 inline-block`}>{getCountryLabel(manager.country)}</span>
+        <TabsContent value={activeTab} className="mt-0">
+          <div className="maint-request-list" data-testid="maintenance-request-list">
+            {filteredRequests.length === 0 ? (
+              <div className="fleet-card text-center py-10 text-slate-500">
+                No {activeTab.toLowerCase()} requests
+                {vehicleFilter !== 'ALL' ? ' for this vehicle' : ''}
               </div>
-            ))}
-            {managers.length === 0 && (
-              <p className="text-slate-500 col-span-full">No fleet managers registered. Add one to enable approvals.</p>
+            ) : (
+              filteredRequests.map((request) => {
+                const vehicle = vehicles.find((v) => v.id === request.vehicle_id);
+                const driver = drivers.find((d) => d.id === request.driver_id);
+                const wasSubmittedByOther =
+                  request.submitted_by_id && request.submitted_by_id !== request.driver_id;
+                return (
+                  <article
+                    key={request.id}
+                    className="maint-request-card"
+                    data-testid={`request-row-${request.id}`}
+                  >
+                    <div className="min-w-0">
+                      <div className="flex flex-wrap items-center gap-2">
+                        <h3 className="font-semibold text-slate-800 truncate">
+                          {request.request_type}
+                        </h3>
+                        <span className={getPriorityBadge(request.priority)}>{request.priority}</span>
+                        <span className={getStatusBadge(request.status)}>{request.status}</span>
+                      </div>
+                      <p className="text-sm text-slate-600 mt-1 line-clamp-2">{request.description}</p>
+                      <div className="maint-request-card__meta">
+                        <span className="font-medium text-slate-700">
+                          {vehicle?.registration_number || 'Unknown vehicle'}
+                        </span>
+                        <span>
+                          {vehicle?.make} {vehicle?.model}
+                        </span>
+                        <span>{new Date(request.created_at).toLocaleString()}</span>
+                        {!isPersonalView && driver && (
+                          <span>
+                            {driver.first_name} {driver.last_name}
+                          </span>
+                        )}
+                        {!isPersonalView && wasSubmittedByOther && (
+                          <span className="text-amber-700">
+                            via {request.submitted_by_name}
+                          </span>
+                        )}
+                        {activeTab === 'REJECTED' && request.rejection_reason && (
+                          <span className="text-red-600">Reason: {request.rejection_reason}</span>
+                        )}
+                      </div>
+                    </div>
+                    <div className="maint-request-card__actions">
+                      {activeTab === 'PENDING' && !isPersonalView && (
+                        <Button size="sm" onClick={() => openApprovalDialog(request)}>
+                          Review
+                        </Button>
+                      )}
+                      {canEditMaintenanceRequest(user?.role, isPersonalView, request) && (
+                        <Button
+                          variant="ghost"
+                          size="icon"
+                          className="h-8 w-8"
+                          onClick={() => openEditRequest(request)}
+                          title="Edit"
+                        >
+                          <Pencil size={16} />
+                        </Button>
+                      )}
+                      {canHardDelete(user?.role, 'maintenance_request') && (
+                        <Button
+                          variant="ghost"
+                          size="icon"
+                          className="h-8 w-8 text-red-600 hover:text-red-700 hover:bg-red-50"
+                          onClick={() => setDeleteTarget(request)}
+                          title="Delete"
+                        >
+                          <Trash2 size={16} />
+                        </Button>
+                      )}
+                    </div>
+                  </article>
+                );
+              })
             )}
           </div>
-        </div>
+        </TabsContent>
+            </Tabs>
+
+      {/* Fleet Managers List - Only for staff */}
+      {!isPersonalView && managers.length > 0 && (
+        <details className="mt-8 fleet-card">
+          <summary className="cursor-pointer font-semibold text-slate-800 select-none">
+            Approving managers ({managers.length})
+          </summary>
+          <ul className="mt-3 divide-y divide-slate-100">
+            {managers.map((manager) => (
+              <li key={manager.id} className="py-2.5 flex flex-wrap items-center justify-between gap-2">
+                <div>
+                  <p className="font-medium text-slate-800">{manager.name}</p>
+                  <p className="text-sm text-slate-500">{manager.email} · {manager.phone}</p>
+                </div>
+                <span className={getCountryBadgeClass(manager.country)}>{getCountryLabel(manager.country)}</span>
+              </li>
+            ))}
+          </ul>
+        </details>
       )}
 
       <ConfirmDeleteDialog

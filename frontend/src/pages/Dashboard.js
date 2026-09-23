@@ -8,6 +8,7 @@ import { Link } from 'react-router-dom';
 import { Button } from '../components/ui/button';
 import CountrySelect from '../components/CountrySelect';
 import { buildHighlightUrl } from '../utils/recordHighlight';
+import { chainWheelToPage } from '../utils/scrollChain';
 
 import {
   safetyScoreTextClass,
@@ -263,6 +264,7 @@ const StaffDashboard = ({ user, token, isGroupManager }) => {
   const [showAllPendingUsers, setShowAllPendingUsers] = useState(false);
   const [showAllPendingRequests, setShowAllPendingRequests] = useState(false);
   const [alertSeverityFilter, setAlertSeverityFilter] = useState(null);
+  const [alertCategoryFilter, setAlertCategoryFilter] = useState(null);
   const [complianceCategory, setComplianceCategory] = useState(null);
   const alertsPanelRef = useRef(null);
   const compliancePanelRef = useRef(null);
@@ -317,8 +319,13 @@ const StaffDashboard = ({ user, token, isGroupManager }) => {
         entity_id: alert.link_entity_id,
       });
     }
+    if (alert.type === 'MAINTENANCE_DUE') {
+      return '/maintenance-requests?status=PENDING';
+    }
     if (alert.type?.startsWith('MAINTENANCE')) {
-      return buildHighlightUrl('/maintenance', alert.entity_id);
+      return buildHighlightUrl('/maintenance', alert.entity_id, {
+        vehicle_id: alert.link_entity_id,
+      });
     }
     if (alert.type === 'FUEL_ANOMALY') return buildHighlightUrl('/fuel', alert.entity_id);
     if (alert.type === 'SPEEDING') return buildHighlightUrl('/logbook', alert.entity_id);
@@ -374,10 +381,41 @@ const StaffDashboard = ({ user, token, isGroupManager }) => {
     : stats?.pending_requests?.slice(0, 4);
 
   const filteredAlerts = useMemo(() => {
-    const list = alerts?.alerts || [];
-    if (!alertSeverityFilter) return list;
-    return list.filter((a) => a.severity === alertSeverityFilter);
-  }, [alerts, alertSeverityFilter]);
+    let list = alerts?.alerts || [];
+    if (alertSeverityFilter) {
+      list = list.filter((a) => a.severity === alertSeverityFilter);
+    }
+    if (alertCategoryFilter) {
+      list = list.filter((a) => a.category === alertCategoryFilter);
+    }
+    return list;
+  }, [alerts, alertSeverityFilter, alertCategoryFilter]);
+
+  const alertCategoryCounts = alerts?.categories || {};
+  const ALERT_CATEGORY_OPTIONS = [
+    { id: 'MAINTENANCE', label: 'Maintenance' },
+    { id: 'DOCUMENT', label: 'Documents' },
+    { id: 'INSPECTION', label: 'Inspection' },
+    { id: 'OPERATIONS', label: 'Operations' },
+  ];
+
+  const selectAlertCategory = (category) => {
+    setAlertCategoryFilter((prev) => (prev === category ? null : category));
+    requestAnimationFrame(() => {
+      alertsPanelRef.current?.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+    });
+  };
+
+  const isMaintenanceAlert = (alert) =>
+    alert?.category === 'MAINTENANCE' ||
+    (alert?.type?.startsWith('MAINTENANCE') && alert?.type !== 'MAINTENANCE_DUE');
+
+  const renderAlertIcon = (alert) => {
+    if (isMaintenanceAlert(alert)) {
+      return <Wrench className="text-slate-500" size={16} />;
+    }
+    return getSeverityIcon(alert.severity);
+  };
 
   const complianceListItems = useMemo(() => {
     const items = compliance?.items || [];
@@ -401,6 +439,15 @@ const StaffDashboard = ({ user, token, isGroupManager }) => {
       compliancePanelRef.current?.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
     });
   };
+
+  useEffect(() => {
+    const panels = [alertsPanelRef.current, compliancePanelRef.current]
+      .map((panel) => panel?.querySelector('.dashboard-bento-scroll'))
+      .filter(Boolean);
+    const onWheel = (e) => chainWheelToPage(e);
+    panels.forEach((el) => el.addEventListener('wheel', onWheel, { passive: false }));
+    return () => panels.forEach((el) => el.removeEventListener('wheel', onWheel));
+  }, [loading, alerts, compliance, alertSeverityFilter, alertCategoryFilter, complianceCategory]);
 
 
   if (loading) {
@@ -562,40 +609,87 @@ const StaffDashboard = ({ user, token, isGroupManager }) => {
         <div ref={alertsPanelRef} className="fleet-card dashboard-panel dashboard-bento-panel !mb-0" data-testid="active-alerts-panel">
           <DashboardPanelHead
             icon={Bell}
-            title={alertSeverityFilter ? `Active Alerts · ${alertSeverityFilter.charAt(0) + alertSeverityFilter.slice(1).toLowerCase()}` : 'Active Alerts'}
-            count={alertSeverityFilter ? filteredAlerts.length : (alerts?.total_count || 0)}
+            title={
+              alertSeverityFilter || alertCategoryFilter
+                ? `Active Alerts${alertCategoryFilter ? ` · ${alertCategoryFilter.charAt(0) + alertCategoryFilter.slice(1).toLowerCase()}` : ''}${alertSeverityFilter ? ` · ${alertSeverityFilter.charAt(0) + alertSeverityFilter.slice(1).toLowerCase()}` : ''}`
+                : 'Active Alerts'
+            }
+            count={alertSeverityFilter || alertCategoryFilter ? filteredAlerts.length : (alerts?.total_count || 0)}
           />
+          <div className="dashboard-alert-category-row" role="group" aria-label="Alert categories">
+            {ALERT_CATEGORY_OPTIONS.map((opt) => {
+              const count = alertCategoryCounts[opt.id] || 0;
+              return (
+                <button
+                  key={opt.id}
+                  type="button"
+                  className={`dashboard-alert-cat${alertCategoryFilter === opt.id ? ' is-active' : ''}`}
+                  onClick={() => selectAlertCategory(opt.id)}
+                  aria-pressed={alertCategoryFilter === opt.id}
+                  data-testid={`alert-category-${opt.id.toLowerCase()}`}
+                >
+                  {opt.label}
+                  <span className="dashboard-alert-cat__count">{count}</span>
+                </button>
+              );
+            })}
+          </div>
           <div className="dashboard-scroll-panel dashboard-bento-scroll space-y-1.5">
             {filteredAlerts.length === 0 ? (
               <div className="text-center py-10 text-slate-500">
                 <CheckCircle size={28} className="mx-auto mb-2 text-green-500" />
-                <p className="text-sm">{alertSeverityFilter ? `No ${alertSeverityFilter.toLowerCase()} alerts` : 'No active alerts'}</p>
-                {alertSeverityFilter && (
-                  <button type="button" className="mt-2 text-xs text-amber-700 underline" onClick={() => setAlertSeverityFilter(null)}>
-                    Clear filter
+                <p className="text-sm">
+                  {alertSeverityFilter || alertCategoryFilter ? 'No alerts match the current filters' : 'No active alerts'}
+                </p>
+                {(alertSeverityFilter || alertCategoryFilter) && (
+                  <button
+                    type="button"
+                    className="mt-2 text-xs text-amber-700 underline"
+                    onClick={() => {
+                      setAlertSeverityFilter(null);
+                      setAlertCategoryFilter(null);
+                    }}
+                  >
+                    Clear filters
                   </button>
                 )}
               </div>
             ) : (
               filteredAlerts.map((alert) => {
                 const href = alertHref(alert);
+                const maint = isMaintenanceAlert(alert);
                 const body = (
-                  <div className={`dashboard-alert-item ${getSeverityBg(alert.severity)} ${href ? 'cursor-pointer' : ''}`}>
+                  <div
+                    className={`dashboard-alert-item ${
+                      maint ? 'dashboard-alert-item--maintenance' : getSeverityBg(alert.severity)
+                    } ${href ? 'cursor-pointer' : ''}`}
+                  >
                     <div className="flex items-start gap-2">
-                      <span className="shrink-0 mt-0.5">{getSeverityIcon(alert.severity)}</span>
+                      <span className="shrink-0 mt-0.5">{renderAlertIcon(alert)}</span>
                       <div className="flex-1 min-w-0">
-                        <p className="font-medium text-sm text-slate-800 leading-snug">{alert.title}</p>
-                        <p className="text-xs text-slate-600 break-words mt-0.5">{alert.message || alert.description}</p>
+                        <div className="flex items-start justify-between gap-2">
+                          <p className="font-medium text-sm text-slate-800 leading-snug">{alert.title}</p>
+                          {alert.category && (
+                            <span className="dashboard-alert-category-badge shrink-0">{alert.category}</span>
+                          )}
+                        </div>
+                        <p className="text-xs text-slate-600 break-words mt-0.5">
+                          {alert.message || alert.description}
+                        </p>
                       </div>
                     </div>
                   </div>
                 );
                 return href ? (
-                  <Link key={`${alert.type}-${alert.entity_id}-${alert.title}`} to={href} className="block">
+                  <Link
+                    key={`${alert.type}-${alert.entity_id}-${alert.title}-${alert.message}`}
+                    to={href}
+                    className="block"
+                  >
                     {body}
                   </Link>
                 ) : (
-                  <div key={`${alert.type}-${alert.entity_id}-${alert.title}`}>{body}</div>
+                  <div key={`${alert.type}-${alert.entity_id}-${alert.title}-${alert.message}`}>{body}</div>
                 );
               })
             )}
