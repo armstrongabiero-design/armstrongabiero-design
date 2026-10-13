@@ -85,10 +85,10 @@ class UserSelfRegister(BaseModel):
 
     @model_validator(mode="after")
     def staff_roles_require_country(self):
-        if self.role in (UserRole.FLEET_MANAGER, UserRole.FLEET_OFFICER):
+        if self.role in (UserRole.FLEET_MANAGER, UserRole.FLEET_OFFICER, UserRole.DRIVER):
             if not self.country or not str(self.country).strip():
                 raise ValueError(
-                    "Country is required for Fleet Manager and Fleet Officer registration"
+                    "Country is required for Fleet Manager, Fleet Officer, and Driver registration"
                 )
         return self
 

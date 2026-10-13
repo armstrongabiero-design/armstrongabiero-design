@@ -42,15 +42,47 @@ import { useRecordHighlight } from '../utils/recordHighlight';
 const BACKEND_URL = process.env.REACT_APP_BACKEND_URL;
 const API = `${BACKEND_URL}/api`;
 
+/** Calendar YYYY-MM-DD from a date-only string or Date (local calendar, no TZ shift). */
 const toDateInput = (value) => {
   if (!value) return '';
-  if (typeof value === 'string') return value.split('T')[0];
+  if (typeof value === 'string') {
+    const m = value.trim().match(/^(\d{4}-\d{2}-\d{2})/);
+    if (m) return m[1];
+  }
   try {
-    return new Date(value).toISOString().split('T')[0];
+    const d = value instanceof Date ? value : new Date(value);
+    if (Number.isNaN(d.getTime())) return '';
+    const pad = (n) => String(n).padStart(2, '0');
+    return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
   } catch {
     return '';
   }
 };
+
+/** Local calendar date for today (not UTC). */
+const localTodayYmd = () => {
+  const d = new Date();
+  const pad = (n) => String(n).padStart(2, '0');
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
+};
+
+/** Parse YYYY-MM-DD as a local calendar date (avoids UTC midnight shifts). */
+const parseLocalYmd = (ymd) => {
+  const parts = String(ymd || '').split('-').map(Number);
+  if (parts.length < 3 || parts.some((n) => Number.isNaN(n))) return null;
+  return new Date(parts[0], parts[1] - 1, parts[2]);
+};
+
+/** Send date-only values at noon UTC so the calendar day is stable across timezones. */
+const toApiDate = (ymd) => {
+  const day = toDateInput(ymd);
+  if (!day) return null;
+  return `${day}T12:00:00.000Z`;
+};
+
+/** Prefer the user-entered service date over completed_date (legacy rows used "now"). */
+const serviceDateOf = (record) =>
+  record?.scheduled_date || record?.completed_date || record?.created_at || null;
 
 const formatDate = (value) => {
   const d = toDateInput(value);
@@ -78,7 +110,7 @@ const deviceLabel = (vehicle) => {
 };
 
 const recordSortKey = (record) => {
-  const raw = record.completed_date || record.scheduled_date || record.created_at || 0;
+  const raw = serviceDateOf(record) || 0;
   const t = new Date(raw).getTime();
   return Number.isNaN(t) ? 0 : t;
 };
@@ -106,13 +138,14 @@ const isDueAttention = (vehicle, latest) => {
 
 const createFormForVehicle = (vehicle, intervalDefaults) => {
   const odo = vehicle?.odometer_reading ?? 0;
-  const today = new Date().toISOString().split('T')[0];
+  const today = localTodayYmd();
   const km = intervalDefaults?.interval_km ?? 7000;
   const months = intervalDefaults?.interval_months ?? 3;
   const nextDate = (() => {
-    const d = new Date(today);
+    const d = parseLocalYmd(today);
+    if (!d) return today;
     d.setMonth(d.getMonth() + months);
-    return d.toISOString().split('T')[0];
+    return toDateInput(d);
   })();
   return {
     vehicle_id: vehicle?.id || '',
@@ -315,17 +348,23 @@ const Maintenance = () => {
     setFormData((prev) => {
       let nextDue = prev.next_due_date;
       if (prev.scheduled_date && prev.next_due_date) {
-        const expected = new Date(prev.scheduled_date);
-        expected.setMonth(expected.getMonth() + months);
-        if (toDateInput(prev.next_due_date) === toDateInput(expected)) {
-          const d = new Date(value);
-          d.setMonth(d.getMonth() + months);
-          nextDue = d.toISOString().split('T')[0];
+        const expected = parseLocalYmd(prev.scheduled_date);
+        if (expected) {
+          expected.setMonth(expected.getMonth() + months);
+          if (toDateInput(prev.next_due_date) === toDateInput(expected)) {
+            const d = parseLocalYmd(value);
+            if (d) {
+              d.setMonth(d.getMonth() + months);
+              nextDue = toDateInput(d);
+            }
+          }
         }
       } else if (!prev.next_due_date) {
-        const d = new Date(value);
-        d.setMonth(d.getMonth() + months);
-        nextDue = d.toISOString().split('T')[0];
+        const d = parseLocalYmd(value);
+        if (d) {
+          d.setMonth(d.getMonth() + months);
+          nextDue = toDateInput(d);
+        }
       }
       return { ...prev, scheduled_date: value, next_due_date: nextDue };
     });
@@ -337,10 +376,8 @@ const Maintenance = () => {
       vehicle_id: formData.vehicle_id,
       maintenance_type: formData.maintenance_type || 'ROUTINE',
       description: formData.description || 'DUE FOR SERVICING',
-      scheduled_date: new Date(formData.scheduled_date).toISOString(),
-      next_due_date: formData.next_due_date
-        ? new Date(formData.next_due_date).toISOString()
-        : null,
+      scheduled_date: toApiDate(formData.scheduled_date),
+      next_due_date: formData.next_due_date ? toApiDate(formData.next_due_date) : null,
       next_service_odometer:
         formData.next_service_odometer !== '' && formData.next_service_odometer != null
           ? parseFloat(formData.next_service_odometer)
@@ -639,7 +676,7 @@ const Maintenance = () => {
                         <div className="leading-snug">
                           <div>{formatKm(latest.odometer_at_maintenance)}</div>
                           <div className="text-slate-500 text-xs">
-                            {formatDate(latest.completed_date || latest.scheduled_date)}
+                            {formatDate(serviceDateOf(latest))}
                           </div>
                         </div>
                       ) : (
@@ -925,7 +962,7 @@ const Maintenance = () => {
                             {formatKm(rec.odometer_at_maintenance)}
                           </td>
                           <td className="px-3 py-2.5 whitespace-nowrap">
-                            {formatDate(rec.completed_date || rec.scheduled_date)}
+                            {formatDate(serviceDateOf(rec))}
                           </td>
                           <td className="px-3 py-2.5">
                             <div>{formatKm(rec.next_service_odometer)}</div>

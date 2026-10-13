@@ -111,6 +111,38 @@ def _mongo_update_payload(update_data: dict) -> dict:
     return payload
 
 
+def _countries_match(a: Optional[str], b: Optional[str]) -> bool:
+    """Compare countries after normalizing legacy names (GHANA) to ISO (GH)."""
+    if a is None and b is None:
+        return True
+    if not a or not b:
+        return False
+    try:
+        return normalize_country_code(a) == normalize_country_code(b)
+    except ValueError:
+        return str(a).strip().upper() == str(b).strip().upper()
+
+
+def _normalize_email(email: str) -> str:
+    return (email or "").strip().lower()
+
+
+async def _find_user_by_email(email: str) -> Optional[dict]:
+    """Case-insensitive user lookup by email."""
+    import re
+
+    normalized = _normalize_email(email)
+    if not normalized:
+        return None
+    user = await db.users.find_one({"email": normalized}, {"_id": 0})
+    if user:
+        return user
+    return await db.users.find_one(
+        {"email": {"$regex": f"^{re.escape(normalized)}$", "$options": "i"}},
+        {"_id": 0},
+    )
+
+
 _PRETRIP_ITEM_DEFS = [
     ("Engine Oil Level", "engine_oil", "engine_oil_notes"),
     ("Tire Condition & Pressure", "tires", "tires_notes"),
@@ -1047,8 +1079,10 @@ async def create_maintenance(input: MaintenanceRecordCreate):
     maintenance_data = apply_maintenance_defaults(maintenance_data, defaults)
     maintenance_data["cost_usd"] = cost_usd
     _validate_etc_or_raise(maintenance_data.get("work_status"), maintenance_data.get("etc_datetime"))
+    # Preserve the entered service date — do not overwrite with "now"
     if _normalize_work_status(maintenance_data.get("work_status")) == WorkStatus.WORK_COMPLETED.value:
-        maintenance_data["completed_date"] = datetime.now(timezone.utc)
+        if not maintenance_data.get("completed_date"):
+            maintenance_data["completed_date"] = maintenance_data.get("scheduled_date")
     maintenance = MaintenanceRecord(**maintenance_data)
 
     doc = maintenance.model_dump()
@@ -1192,7 +1226,8 @@ async def bulk_upload_maintenance(
             }, defaults)
             maintenance_data["cost_usd"] = cost_usd
             if _normalize_work_status(maintenance_data.get("work_status")) == WorkStatus.WORK_COMPLETED.value:
-                maintenance_data["completed_date"] = datetime.now(timezone.utc)
+                if not maintenance_data.get("completed_date"):
+                    maintenance_data["completed_date"] = maintenance_data.get("scheduled_date")
             maintenance = MaintenanceRecord(**maintenance_data)
             doc = maintenance.model_dump()
             doc["scheduled_date"] = doc["scheduled_date"].isoformat()
@@ -1261,7 +1296,12 @@ async def update_maintenance(
 
     if _normalize_work_status(merged_status) == WorkStatus.WORK_COMPLETED.value:
         if not update_data.get("completed_date") and not existing.get("completed_date"):
-            update_data["completed_date"] = datetime.now(timezone.utc)
+            # Prefer entered scheduled_date over wall-clock "now"
+            update_data["completed_date"] = (
+                update_data.get("scheduled_date")
+                or existing.get("scheduled_date")
+                or datetime.now(timezone.utc)
+            )
 
     if hasattr(update_data.get("work_status"), "value"):
         update_data["work_status"] = update_data["work_status"].value
@@ -3395,6 +3435,12 @@ async def get_staff_dashboard(
         pending_users_query, 
         {"_id": 0, "hashed_password": 0}
     ).to_list(50)
+    # Normalize country matching (GH ↔ GHANA) in case Mongo $in missed a legacy value
+    if user_role in ('FLEET_MANAGER', 'FLEET_OFFICER') and normalized_country:
+        pending_users = [
+            u for u in pending_users
+            if _countries_match(u.get("country"), normalized_country)
+        ]
     
     # Financial totals
     from report_helpers import compute_total_fleet_value_usd
@@ -4561,12 +4607,13 @@ def _send_account_status_email(user: dict, status: str) -> bool:
 @limiter.limit("10/minute")
 async def register_user(request: Request, input: UserSelfRegister):
     """Public self-registration (USER, DRIVER, FLEET_MANAGER, FLEET_OFFICER). No JWT until a manager approves."""
-    existing = await db.users.find_one({"email": input.email})
+    email = _normalize_email(input.email)
+    existing = await _find_user_by_email(email)
     if existing:
         raise HTTPException(status_code=400, detail="Email already registered")
 
     user = User(
-        email=input.email,
+        email=email,
         hashed_password=get_password_hash(input.password),
         full_name=input.full_name,
         role=input.role,
@@ -4576,6 +4623,13 @@ async def register_user(request: Request, input: UserSelfRegister):
     )
 
     doc = user.model_dump()
+    if hasattr(doc.get("role"), "value"):
+        doc["role"] = doc["role"].value
+    if doc.get("country"):
+        try:
+            doc["country"] = normalize_country_code(doc["country"])
+        except ValueError:
+            pass
     doc["created_at"] = doc["created_at"].isoformat()
     if doc.get("last_login"):
         doc["last_login"] = doc["last_login"].isoformat()
@@ -4590,8 +4644,8 @@ async def register_user(request: Request, input: UserSelfRegister):
             "id": user.id,
             "email": user.email,
             "full_name": user.full_name,
-            "role": user.role.value,
-            "country": user.country if user.country else None,
+            "role": user.role.value if hasattr(user.role, "value") else user.role,
+            "country": doc.get("country"),
             "is_approved": False,
         },
     }
@@ -4656,18 +4710,27 @@ async def bootstrap_group_fleet_manager(
 @limiter.limit("30/minute")
 async def login(request: Request, input: UserLogin):
     """Login and get access token"""
-    user = await db.users.find_one({"email": input.email}, {"_id": 0})
+    user = await _find_user_by_email(input.email)
     if not user:
         raise HTTPException(status_code=401, detail="Invalid email or password")
     
     if not verify_password(input.password, user['hashed_password']):
         raise HTTPException(status_code=401, detail="Invalid email or password")
     
+    if user.get("invite_pending") and not user.get("is_active", True):
+        raise HTTPException(
+            status_code=403,
+            detail="Your driver invite is not finished yet. Open the invite link from your email to set a password, then sign in.",
+        )
+
     if not user.get('is_active', True):
         raise HTTPException(status_code=403, detail="Account is deactivated")
     
     if user.get("role") != "GROUP_FLEET_MANAGER" and not user.get("is_approved", False):
-        raise HTTPException(status_code=403, detail="Account pending approval by Group Fleet Manager")
+        raise HTTPException(
+            status_code=403,
+            detail="Your account is pending manager approval. Please wait until a Fleet Manager or Group Fleet Manager approves your registration, then try again.",
+        )
 
     # Check if user is Group Fleet Manager - require OTP verification
     if user['role'] == 'GROUP_FLEET_MANAGER':
@@ -4707,7 +4770,7 @@ async def login(request: Request, input: UserLogin):
 @limiter.limit("10/minute")
 async def send_otp(request: Request, input: UserLogin):
     """Send OTP to Group Fleet Manager email for verification"""
-    user = await db.users.find_one({"email": input.email}, {"_id": 0})
+    user = await _find_user_by_email(input.email)
     if not user:
         raise HTTPException(status_code=401, detail="Invalid email or password")
     
@@ -4721,12 +4784,13 @@ async def send_otp(request: Request, input: UserLogin):
     import random
     otp_code = ''.join([str(random.randint(0, 9)) for _ in range(6)])
     
-    # Store OTP with expiry (5 minutes)
+    # Store OTP with expiry (5 minutes) using the canonical stored email
+    otp_email = user["email"]
     otp_expiry = datetime.now(timezone.utc) + timedelta(minutes=5)
     await db.otp_codes.update_one(
-        {"email": input.email},
+        {"email": otp_email},
         {"$set": {
-            "email": input.email,
+            "email": otp_email,
             "otp": otp_code,
             "expires_at": otp_expiry.isoformat(),
             "created_at": datetime.now(timezone.utc).isoformat()
@@ -4744,15 +4808,20 @@ async def send_otp(request: Request, input: UserLogin):
 @limiter.limit("30/minute")
 async def verify_otp(request: Request, email: str = Body(...), otp: str = Body(...)):
     """Verify OTP and complete Group Fleet Manager login"""
+    user = await _find_user_by_email(email)
+    if not user:
+        raise HTTPException(status_code=401, detail="User not found")
+
+    otp_email = user["email"]
     # Find OTP record
-    otp_record = await db.otp_codes.find_one({"email": email}, {"_id": 0})
+    otp_record = await db.otp_codes.find_one({"email": otp_email}, {"_id": 0})
     if not otp_record:
         raise HTTPException(status_code=400, detail="No OTP found. Please request a new one.")
     
     # Check expiry
     expiry = datetime.fromisoformat(otp_record['expires_at'])
     if datetime.now(timezone.utc) > expiry:
-        await db.otp_codes.delete_one({"email": email})
+        await db.otp_codes.delete_one({"email": otp_email})
         raise HTTPException(status_code=400, detail="OTP has expired. Please request a new one.")
     
     # Verify OTP
@@ -4760,12 +4829,7 @@ async def verify_otp(request: Request, email: str = Body(...), otp: str = Body(.
         raise HTTPException(status_code=400, detail="Invalid OTP")
     
     # Delete used OTP
-    await db.otp_codes.delete_one({"email": email})
-    
-    # Get user and complete login
-    user = await db.users.find_one({"email": email}, {"_id": 0})
-    if not user:
-        raise HTTPException(status_code=401, detail="User not found")
+    await db.otp_codes.delete_one({"email": otp_email})
     
     # Update last login
     await db.users.update_one(
@@ -4833,11 +4897,11 @@ async def approve_user(user_id: str, current_user: dict = Depends(get_current_us
         can_approve = True
     elif approver_role == 'FLEET_MANAGER':
         # Fleet Manager can approve Fleet Officers, Drivers, Users in their country
-        if user_role in ['FLEET_OFFICER', 'DRIVER', 'USER'] and user_country == approver_country:
+        if user_role in ['FLEET_OFFICER', 'DRIVER', 'USER'] and _countries_match(user_country, approver_country):
             can_approve = True
     elif approver_role == 'FLEET_OFFICER':
         # Fleet Officer can approve Drivers and Users in their country
-        if user_role in ['DRIVER', 'USER'] and user_country == approver_country:
+        if user_role in ['DRIVER', 'USER'] and _countries_match(user_country, approver_country):
             can_approve = True
     
     if not can_approve:
@@ -4880,27 +4944,23 @@ async def get_pending_users(current_user: dict = Depends(get_current_user)):
     """Get pending users that current user can approve"""
     approver_role = current_user.get('role')
     approver_country = current_user.get('country')
-    
-    # Build filter based on role
-    query = {"is_approved": False}
-    
+
+    query: dict = {"is_approved": False}
+
     if approver_role == 'GROUP_FLEET_MANAGER':
-        # Can see all pending users
         pass
     elif approver_role == 'FLEET_MANAGER':
-        # Can see Fleet Officers, Drivers, Users in their country
-        query['country'] = approver_country
         query['role'] = {"$in": ['FLEET_OFFICER', 'DRIVER', 'USER']}
     elif approver_role == 'FLEET_OFFICER':
-        # Can see Drivers and Users in their country
-        query['country'] = approver_country
         query['role'] = {"$in": ['DRIVER', 'USER']}
     else:
-        # Drivers/Users cannot approve anyone
         return []
-    
-    users = await db.users.find(query, {"_id": 0, "hashed_password": 0}).to_list(100)
-    return users
+
+    users = await db.users.find(query, {"_id": 0, "hashed_password": 0}).to_list(500)
+    if approver_role == 'GROUP_FLEET_MANAGER':
+        return users
+    # Match country after normalizing GHANA ↔ GH etc.
+    return [u for u in users if _countries_match(u.get("country"), approver_country)]
 
 
 @api_router.put("/auth/users/{user_id}")

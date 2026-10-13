@@ -162,10 +162,27 @@ async def approve_user(user_id: str, current_user: dict = Depends(get_current_us
     if approver_role == 'GROUP_FLEET_MANAGER':
         can_approve = True
     elif approver_role == 'FLEET_MANAGER':
-        if user_role in ['FLEET_OFFICER', 'DRIVER', 'USER'] and user_country == approver_country:
+        # Country codes may differ by legacy name vs ISO (GHANA vs GH)
+        try:
+            from country_utils import normalize_country_code
+            same_country = (
+                normalize_country_code(user_country) == normalize_country_code(approver_country)
+                if user_country and approver_country else False
+            )
+        except Exception:
+            same_country = user_country == approver_country
+        if user_role in ['FLEET_OFFICER', 'DRIVER', 'USER'] and same_country:
             can_approve = True
     elif approver_role == 'FLEET_OFFICER':
-        if user_role in ['DRIVER', 'USER'] and user_country == approver_country:
+        try:
+            from country_utils import normalize_country_code
+            same_country = (
+                normalize_country_code(user_country) == normalize_country_code(approver_country)
+                if user_country and approver_country else False
+            )
+        except Exception:
+            same_country = user_country == approver_country
+        if user_role in ['DRIVER', 'USER'] and same_country:
             can_approve = True
     if not can_approve:
         raise HTTPException(status_code=403, detail=f"You don't have permission to approve {user_role.replace('_', ' ').title()} accounts")

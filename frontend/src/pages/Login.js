@@ -71,27 +71,26 @@ const Login = () => {
     e.preventDefault();
     setLoading(true);
     try {
-      const response = await axios.post(`${API}/auth/login`, loginData);
-      
+      const result = await login(loginData.email, loginData.password);
+
       // Check if OTP verification is required (Group Fleet Manager)
-      if (response.data.requires_otp) {
-        setOtpEmail(response.data.email);
+      if (result?.requires_otp) {
+        setOtpEmail(result.email);
         setOtpSending(true);
-        
-        // Send OTP
-        await axios.post(`${API}/auth/send-otp`, loginData);
+        await axios.post(`${API}/auth/send-otp`, {
+          email: loginData.email,
+          password: loginData.password,
+        });
         toast.success('Verification code sent to your email');
         setShowOtpForm(true);
         setOtpSending(false);
         return;
       }
-      
-      // Normal login flow
-      await login(loginData.email, loginData.password);
+
       toast.success('Login successful!');
       navigate('/', { replace: true });
     } catch (error) {
-      toast.error(error.response?.data?.detail || 'Login failed');
+      toast.error(error.response?.data?.detail || error.message || 'Login failed');
       setOtpSending(false);
     } finally {
       setLoading(false);
@@ -154,10 +153,16 @@ const Login = () => {
     setLoading(true);
     try {
       const { confirmPassword, ...dataToSend } = registerData;
-      await register(dataToSend);
-      toast.success('Registration submitted! Waiting for manager approval.');
-      // Stay on login page - user needs approval
+      const result = await register(dataToSend);
+      const msg =
+        result?.message ||
+        'Registration submitted! A manager must approve your account before you can sign in.';
+      toast.success(msg);
       setActiveTab('login');
+      setLoginData((prev) => ({
+        ...prev,
+        email: (dataToSend.email || '').trim().toLowerCase(),
+      }));
       setRegisterData({
         email: '',
         password: '',
@@ -167,7 +172,11 @@ const Login = () => {
         country: '',
       });
     } catch (error) {
-      toast.error(error.response?.data?.detail || 'Registration failed');
+      const detail = error.response?.data?.detail;
+      const message = Array.isArray(detail)
+        ? detail.map((d) => d.msg || JSON.stringify(d)).join('; ')
+        : detail || 'Registration failed';
+      toast.error(message);
     } finally {
       setLoading(false);
     }

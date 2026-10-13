@@ -43,27 +43,43 @@ export const AuthProvider = ({ children }) => {
   }, [token, fetchUser]);
 
   const login = async (email, password) => {
-    const response = await axios.post(`${API}/auth/login`, { email, password });
+    const response = await axios.post(`${API}/auth/login`, {
+      email: (email || '').trim(),
+      password,
+    });
+    // Group Fleet Manager OTP challenge — do not store a token
+    if (response.data?.requires_otp) {
+      return response.data;
+    }
     const { access_token, user: userData } = response.data;
-    
+    if (!access_token) {
+      throw new Error(response.data?.detail || 'Login failed');
+    }
+
     localStorage.setItem('token', access_token);
     axios.defaults.headers.common['Authorization'] = `Bearer ${access_token}`;
     setToken(access_token);
     setUser(userData);
-    
+
     return userData;
   };
 
   const register = async (data) => {
-    const response = await axios.post(`${API}/auth/register`, data);
-    const { access_token, user: userData } = response.data;
-    if (access_token) {
+    const payload = {
+      ...data,
+      email: (data?.email || '').trim().toLowerCase(),
+    };
+    const response = await axios.post(`${API}/auth/register`, payload);
+    // Self-registration never returns a JWT — account stays pending approval
+    if (response.data?.access_token) {
+      const { access_token, user: userData } = response.data;
       localStorage.setItem('token', access_token);
       axios.defaults.headers.common['Authorization'] = `Bearer ${access_token}`;
       setToken(access_token);
       setUser(userData);
+      return userData;
     }
-    return userData ?? response.data.user;
+    return response.data;
   };
 
   const bootstrapAdmin = async (data, bootstrapToken) => {
