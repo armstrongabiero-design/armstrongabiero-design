@@ -1,0 +1,596 @@
+"""In-process authorization tests. They use an in-memory database, not MongoDB or a live API."""
+from __future__ import annotations
+
+import os
+import re
+import uuid
+from datetime import datetime, timezone
+from types import SimpleNamespace
+
+os.environ.update(
+    MONGO_URL="mongodb://127.0.0.1:1/authz_tests",
+    DB_NAME="authz_tests",
+    JWT_SECRET_KEY="authz-tests-" + "x" * 40,
+    ENVIRONMENT="development",
+    RESEND_API_KEY="",
+    DRIVER_REMINDERS_ENABLED="false",
+)
+
+import pytest
+from fastapi.routing import APIRoute
+from fastapi.testclient import TestClient
+
+import audit_service
+import auth_deps
+import authz
+import security_middleware
+import server
+from auth_service import create_access_token
+
+
+def _matches(doc, query):
+    for key, cond in query.items():
+        if key == "$and":
+            if not all(_matches(doc, q) for q in cond):
+                return False
+        elif key == "$or":
+            if not any(_matches(doc, q) for q in cond):
+                return False
+        elif isinstance(cond, dict) and any(k.startswith("$") for k in cond):
+            value = doc.get(key)
+            for op, arg in cond.items():
+                if op == "$in":
+                    ok = any(item in arg for item in value) if isinstance(value, list) else value in arg
+                elif op == "$nin":
+                    ok = value not in arg
+                elif op == "$ne":
+                    ok = value != arg
+                elif op == "$exists":
+                    ok = (key in doc) == arg
+                elif op == "$gte":
+                    ok = value is not None and value >= arg
+                elif op == "$lte":
+                    ok = value is not None and value <= arg
+                elif op == "$gt":
+                    ok = value is not None and value > arg
+                elif op == "$lt":
+                    ok = value is not None and value < arg
+                elif op == "$regex":
+                    ok = value is not None and re.search(arg, str(value), re.I) is not None
+                elif op == "$options":
+                    ok = True
+                else:
+                    raise AssertionError(f"Unsupported operator {op}")
+                if not ok:
+                    return False
+        else:
+            value = doc.get(key)
+            if not (cond in value if isinstance(value, list) else value == cond):
+                return False
+    return True
+
+
+class _Cursor:
+    def __init__(self, docs):
+        self._docs = docs
+
+    def sort(self, *_args, **_kwargs):
+        return self
+
+    def limit(self, _count):
+        return self
+
+    async def to_list(self, length=None):
+        return [dict(d) for d in self._docs[:length]]
+
+
+class _Collection:
+    def __init__(self):
+        self.docs = []
+
+    def find(self, query=None, _projection=None):
+        return _Cursor([d for d in self.docs if _matches(d, query or {})])
+
+    async def find_one(self, query=None, _projection=None, **_kwargs):
+        for doc in self.docs:
+            if _matches(doc, query or {}):
+                return dict(doc)
+        return None
+
+    async def insert_one(self, doc):
+        self.docs.append(dict(doc))
+        return SimpleNamespace(inserted_id=str(uuid.uuid4()))
+
+    async def update_one(self, query, update, **_kwargs):
+        for doc in self.docs:
+            if _matches(doc, query):
+                doc.update(update.get("$set", {}))
+                for field, value in update.get("$push", {}).items():
+                    doc.setdefault(field, []).append(value)
+                return SimpleNamespace(matched_count=1, modified_count=1)
+        return SimpleNamespace(matched_count=0, modified_count=0)
+
+    async def update_many(self, query, update, **_kwargs):
+        for doc in self.docs:
+            if _matches(doc, query):
+                doc.update(update.get("$set", {}))
+        return SimpleNamespace(matched_count=0, modified_count=0)
+
+    async def delete_one(self, query):
+        before = len(self.docs)
+        self.docs = [d for d in self.docs if not _matches(d, query)]
+        return SimpleNamespace(deleted_count=before - len(self.docs))
+
+    async def count_documents(self, query):
+        return len([d for d in self.docs if _matches(d, query)])
+
+
+class _DB:
+    def __init__(self):
+        self._collections = {}
+
+    def __getattr__(self, name):
+        return self._collections.setdefault(name, _Collection())
+
+
+USERS = {
+    "gfm": {"role": "GROUP_FLEET_MANAGER", "country": None},
+    "fm_gh": {"role": "FLEET_MANAGER", "country": "GH"},
+    "fo_gh": {"role": "FLEET_OFFICER", "country": "GH"},
+    "fo_lr": {"role": "FLEET_OFFICER", "country": "LR"},
+    "fo_none": {"role": "FLEET_OFFICER", "country": None},
+    "driver_gh": {"role": "DRIVER", "country": "GH", "driver_id": "d_gh"},
+    "driver2_gh": {"role": "DRIVER", "country": "GH", "driver_id": "d2_gh"},
+    "user_gh": {"role": "USER", "country": "GH"},
+}
+
+
+@pytest.fixture()
+def fake_db(monkeypatch):
+    db = _DB()
+    for module in (server, security_middleware, auth_deps, audit_service, authz):
+        monkeypatch.setattr(module, "db", db)
+    monkeypatch.setattr(server.currency_converter, "get_rate", lambda *a, **k: 1.0)
+    monkeypatch.setattr(server.email_service, "send_email", lambda *a, **k: False)
+    for name, attrs in USERS.items():
+        db.users.docs.append({
+            "id": name,
+            "email": f"{name}@example.com",
+            "full_name": name,
+            "is_active": True,
+            "is_approved": True,
+            "token_version": 0,
+            "driver_id": None,
+            **attrs,
+        })
+    db.vehicles.docs += [
+        {"id": "v_gh", "country": "GH", "registration_number": "GH-1", "make": "T", "model": "H",
+         "year": 2020, "vin": "V", "status": "ACTIVE", "odometer_reading": 10, "acquisition_date": "2020-01-01T00:00:00",
+         "acquisition_currency": "USD", "acquisition_cost": 5000, "acquisition_cost_usd": 5000},
+        {"id": "v_lr", "country": "LR", "registration_number": "LR-1", "make": "T", "model": "H",
+         "year": 2020, "vin": "V", "status": "ACTIVE", "odometer_reading": 10, "acquisition_date": "2020-01-01T00:00:00",
+         "acquisition_currency": "USD", "acquisition_cost": 7000, "acquisition_cost_usd": 7000},
+    ]
+    db.drivers.docs += [
+        {"id": "d_gh", "country": "GH", "first_name": "A", "last_name": "A",
+         "license_number": "L", "license_expiry": "2030-01-01T00:00:00", "phone": "1", "safety_score": 100},
+        {"id": "d2_gh", "country": "GH", "first_name": "B", "last_name": "B",
+         "license_number": "L", "license_expiry": "2030-01-01T00:00:00", "phone": "1", "safety_score": 100},
+        {"id": "d_lr", "country": "LR", "first_name": "C", "last_name": "C",
+         "license_number": "L", "license_expiry": "2030-01-01T00:00:00", "phone": "1", "safety_score": 100},
+    ]
+    db.documents.docs += [
+        {"id": "doc_gh", "country": "GH", "entity_id": "d_gh", "entity_type": "DRIVER", "s3_key": "k1"},
+        {"id": "doc_lr", "country": "LR", "entity_id": "d_lr", "entity_type": "DRIVER", "s3_key": "k2"},
+    ]
+    db.expenditures.docs += [
+        {"id": "exp_gh", "country": "GH", "category": "OTHER", "description": "x", "amount": 1, "currency": "USD", "date": "2026-01-01T00:00:00", "amount_usd": 1},
+        {"id": "exp_lr", "country": "LR", "category": "OTHER", "description": "x", "amount": 1, "currency": "USD", "date": "2026-01-01T00:00:00", "amount_usd": 1},
+    ]
+    now = datetime.now(timezone.utc).isoformat()
+    trip = {
+        "date": now, "start_time": now, "start_location": "A", "start_odometer": 1.0,
+        "purpose": "x", "fuel_used_liters": 1.0,
+    }
+    db.driver_logbook.docs += [
+        {**trip, "id": "log_gh", "driver_id": "d_gh", "vehicle_id": "v_gh", "country": "GH", "distance_km": 7.0},
+        {**trip, "id": "log2_gh", "driver_id": "d2_gh", "vehicle_id": "v_gh", "country": "GH", "distance_km": 9.0},
+        {**trip, "id": "log_lr", "driver_id": "d_lr", "vehicle_id": "v_lr", "country": "LR", "distance_km": 3.0},
+    ]
+    db.maintenance_requests.docs += [
+        {"id": "req_gh", "driver_id": "d_gh", "vehicle_id": "v_gh", "country": "GH",
+         "status": "PENDING", "request_type": "R", "description": "x"},
+        {"id": "req_lr", "driver_id": "d_lr", "vehicle_id": "v_lr", "country": "LR",
+         "status": "PENDING", "request_type": "R", "description": "x"},
+    ]
+    db.pretrip_checklists.docs += [
+        {"id": "pt_gh", "driver_id": "d_gh", "vehicle_id": "v_gh", "overall_status": "PASSED",
+         "damage_photos": ["/api/damage-photos/ph_gh"]},
+    ]
+    db.damage_photos.docs += [
+        {"id": "ph_gh", "uploaded_by": "someone_else", "content_type": "image/png", "data": "aGk="},
+    ]
+    db.vendors.docs += [
+        {"id": "vendor_lr", "country": "LR", "name": "Vendor", "category": "PARTS"},
+    ]
+    return db
+
+
+@pytest.fixture()
+def client(fake_db):
+    # No context manager: startup would run migrations and background jobs.
+    return TestClient(server.app, raise_server_exceptions=False)
+
+
+def auth(name, **claims):
+    user = USERS.get(name, {})
+    payload = {
+        "sub": name,
+        "email": f"{name}@example.com",
+        "full_name": name,
+        "tv": 0,
+        "role": user.get("role"),
+        "country": user.get("country"),
+        "driver_id": user.get("driver_id"),
+        **claims,
+    }
+    return {"Authorization": f"Bearer {create_access_token(payload)}"}
+
+
+EXPENDITURE = {
+    "country": "GH", "category": "OTHER", "description": "x", "amount": 5,
+    "currency": "USD", "date": "2026-01-01T00:00:00",
+}
+INCIDENT = {
+    "driver_id": "d_gh", "vehicle_id": "v_gh", "incident_date": "2026-01-01T00:00:00",
+    "incident_type": "SPEEDING", "severity": "HIGH", "description": "x", "location": "x",
+}
+LOGBOOK = {
+    "driver_id": "d_gh", "vehicle_id": "v_gh", "date": "2026-01-01T00:00:00",
+    "start_time": "2026-01-01T08:00:00", "start_location": "A", "start_odometer": 1.0, "purpose": "x",
+}
+
+# Every /api route must be either guarded by a role dependency or listed here on purpose.
+PUBLIC_ROUTES = {
+    ("POST", "/api/auth/register"), ("POST", "/api/auth/bootstrap"), ("POST", "/api/auth/login"),
+    ("POST", "/api/auth/send-otp"), ("POST", "/api/auth/verify-otp"),
+    ("POST", "/api/auth/forgot-password"), ("POST", "/api/auth/reset-password"),
+    ("GET", "/api/auth/verify-reset-token/{token}"), ("GET", "/api/auth/verify-invite/{token}"),
+    ("POST", "/api/auth/accept-invite"), ("GET", "/api/countries/all-list"),
+}
+# Open to any signed-in user, and each one limits results inside the handler.
+SIGNED_IN_ROUTES = {
+    ("GET", "/api/"), ("GET", "/api/countries"), ("GET", "/api/countries/{country_name}"),
+    ("GET", "/api/exchange-rates/current"), ("GET", "/api/exchange-rates/history"),
+    ("POST", "/api/vehicles/availability/snapshot"), ("POST", "/api/reminders/run"),
+    ("GET", "/api/vehicles"), ("GET", "/api/vehicles/{vehicle_id}"),
+    ("GET", "/api/drivers"), ("GET", "/api/drivers/{driver_id}"),
+    ("GET", "/api/documents"), ("GET", "/api/documents/{document_id}/download-url"),
+    ("GET", "/api/documents/{document_id}/file"), ("GET", "/api/fleet-managers"),
+    ("GET", "/api/fuel"), ("POST", "/api/fuel"), ("GET", "/api/safety/incidents"),
+    ("GET", "/api/maintenance-requests"), ("POST", "/api/maintenance-requests"),
+    ("GET", "/api/maintenance-requests/{request_id}"), ("PUT", "/api/maintenance-requests/{request_id}"),
+    ("GET", "/api/pre-trip-checklists"), ("POST", "/api/pre-trip-checklists"),
+    ("GET", "/api/pre-trip-checklists/export"), ("PUT", "/api/pre-trip-checklists/{checklist_id}"),
+    ("GET", "/api/pre-trip-checklists/today/{driver_id}/{vehicle_id}"),
+    ("POST", "/api/pre-trip-checklists/upload-photo"), ("GET", "/api/damage-photos/{photo_id}"),
+    ("GET", "/api/logbook"), ("POST", "/api/logbook"), ("GET", "/api/logbook/export"),
+    ("PUT", "/api/logbook/{entry_id}"), ("GET", "/api/logbook/summary/{driver_id}"),
+    ("GET", "/api/dashboard/personal"), ("GET", "/api/auth/me"), ("GET", "/api/auth/users/pending"),
+    ("PUT", "/api/auth/users/{user_id}/approve"), ("GET", "/api/notifications/mine"),
+    ("POST", "/api/notifications/{notification_id}/read"), ("POST", "/api/notifications/read-all"),
+}
+
+
+def _dependency_names(dependant):
+    names = set()
+    for dep in dependant.dependencies:
+        names.add(getattr(dep.call, "__qualname__", getattr(dep.call, "__name__", "")))
+        names |= _dependency_names(dep)
+    return names
+
+
+def _has_role_guard(route):
+    names = _dependency_names(route.dependant)
+    return any(
+        name in ("_require_staff", "_require_logbook_bulk_role")
+        or name.startswith(("require_manager.", "require_group_manager.", "require_role."))
+        for name in names
+    )
+
+
+def _handler_checks_delete_role(route):
+    return "assert_can_hard_delete" in route.endpoint.__code__.co_names
+
+
+def test_every_api_route_has_an_access_decision():
+    undecided = []
+    for route in server.app.routes:
+        if not isinstance(route, APIRoute) or not route.path.startswith("/api"):
+            continue
+        for method in route.methods - {"HEAD", "OPTIONS"}:
+            key = (method, route.path)
+            if key in PUBLIC_ROUTES or key in SIGNED_IN_ROUTES:
+                continue
+            if _has_role_guard(route) or _handler_checks_delete_role(route):
+                continue
+            undecided.append(key)
+    assert not undecided, f"Add a role guard or list these on purpose: {sorted(undecided)}"
+
+
+def test_public_routes_match_the_middleware_allowlist():
+    for method, path in PUBLIC_ROUTES:
+        probe = path.replace("{token}", "abc")
+        assert security_middleware.is_public_api_route(method, probe), path
+
+
+@pytest.mark.parametrize("method,path,body", [
+    ("post", "/api/expenditures", EXPENDITURE),
+    ("post", "/api/safety/incidents", INCIDENT),
+    ("post", "/api/countries", {"name": "GH", "currency": "GHS", "tax_id_label": "x", "regulatory_body": "x"}),
+    ("post", "/api/vehicles", {}),
+    ("post", "/api/drivers", {}),
+    ("post", "/api/maintenance", {}),
+    ("post", "/api/inventory", {}),
+    ("post", "/api/documents", {}),
+    ("post", "/api/assets", {}),
+    ("post", "/api/tires", {}),
+    ("post", "/api/vendors", {}),
+    ("post", "/api/vehicle-locations", {}),
+    ("post", "/api/tires/rotations", {}),
+    ("post", "/api/inventory/transactions", {}),
+    ("post", "/api/maintenance/predict/v_gh", None),
+    ("get", "/api/expenditures", None),
+    ("get", "/api/maintenance", None),
+    ("get", "/api/inventory", None),
+    ("get", "/api/assets", None),
+    ("get", "/api/tires", None),
+    ("get", "/api/vendors", None),
+    ("get", "/api/vehicle-locations", None),
+    ("get", "/api/vehicle-locations/v_gh/history", None),
+    ("get", "/api/dashboard/stats", None),
+    ("get", "/api/dashboard/staff", None),
+    ("get", "/api/dashboard/alerts", None),
+    ("get", "/api/dashboard/compliance", None),
+    ("get", "/api/tco/fleet", None),
+    ("get", "/api/reports/expense-breakdown", None),
+    ("get", "/api/reports/utilization", None),
+])
+@pytest.mark.parametrize("role", ["driver_gh", "user_gh"])
+def test_non_staff_are_blocked_from_staff_routes(client, role, method, path, body):
+    kwargs = {"json": body} if body is not None else {}
+    response = getattr(client, method)(path, headers=auth(role), **kwargs)
+    assert response.status_code == 403, response.text
+
+
+def test_framing_a_driver_no_longer_changes_their_score(client, fake_db):
+    response = client.post("/api/safety/incidents", headers=auth("user_gh"), json=INCIDENT)
+    assert response.status_code == 403
+    driver = next(d for d in fake_db.drivers.docs if d["id"] == "d_gh")
+    assert driver["safety_score"] == 100
+
+
+def test_country_staff_only_list_their_country(client):
+    response = client.get("/api/expenditures", headers=auth("fo_gh"))
+    assert [e["id"] for e in _ids(response)] == ["exp_gh"]
+
+
+def test_country_staff_cannot_widen_scope_with_the_query_string(client):
+    response = client.get("/api/expenditures?country=LR", headers=auth("fo_gh"))
+    assert [e["id"] for e in _ids(response)] == ["exp_gh"]
+    vehicles = client.get("/api/vehicles?country=LR", headers=auth("fo_gh"))
+    assert [v["id"] for v in vehicles.json()] == ["v_gh"]
+
+
+def _ids(response):
+    assert response.status_code == 200, response.text
+    return [{"id": row["id"]} for row in response.json()]
+
+
+def test_group_manager_sees_all_and_can_filter(client):
+    response = client.get("/api/expenditures", headers=auth("gfm"))
+    assert {e["id"] for e in _ids(response)} == {"exp_gh", "exp_lr"}
+    response = client.get("/api/expenditures?country=LR", headers=auth("gfm"))
+    assert [e["id"] for e in _ids(response)] == ["exp_lr"]
+
+
+def test_staff_with_no_country_see_nothing(client):
+    assert client.get("/api/expenditures", headers=auth("fo_none")).json() == []
+    assert client.get("/api/dashboard/stats", headers=auth("fo_none")).status_code == 403
+
+
+def test_country_staff_cannot_create_in_another_country(client):
+    body = {**EXPENDITURE, "country": "LR"}
+    assert client.post("/api/expenditures", headers=auth("fo_gh"), json=body).status_code == 403
+    assert client.post("/api/expenditures", headers=auth("fo_gh"), json=EXPENDITURE).status_code == 200
+
+
+def test_country_staff_cannot_change_or_delete_another_countrys_records(client, fake_db):
+    assert client.put("/api/expenditures/exp_lr", headers=auth("fo_gh"), json={"description": "x"}).status_code == 403
+    assert client.delete("/api/expenditures/exp_lr", headers=auth("fm_gh")).status_code == 403
+    assert client.put("/api/vendors/vendor_lr", headers=auth("fo_gh"), json={"name": "x"}).status_code == 403
+    assert any(e["id"] == "exp_lr" for e in fake_db.expenditures.docs)
+    assert client.delete("/api/expenditures/exp_gh", headers=auth("fm_gh")).status_code == 200
+
+
+def test_country_staff_cannot_move_a_record_out_of_their_country(client):
+    response = client.put("/api/expenditures/exp_gh", headers=auth("fo_gh"), json={"country": "LR"})
+    assert response.status_code == 403
+
+
+def test_country_staff_cannot_approve_another_countrys_request(client, fake_db):
+    body = {"manager_id": "x", "approved": True}
+    url = "/api/maintenance-requests/req_lr/approve"
+    assert client.post(url, headers=auth("fm_gh"), json=body).status_code == 403
+    assert client.post("/api/maintenance-requests/req_gh/approve", headers=auth("fm_gh"), json=body).status_code == 200
+
+
+@pytest.mark.parametrize("role", ["driver_gh", "user_gh"])
+def test_non_staff_cannot_approve_maintenance_requests(client, role, fake_db):
+    response = client.post(
+        "/api/maintenance-requests/req_gh/approve",
+        headers=auth(role),
+        json={"manager_id": "x", "approved": True},
+    )
+    assert response.status_code == 403
+    assert next(r for r in fake_db.maintenance_requests.docs if r["id"] == "req_gh")["status"] == "PENDING"
+
+
+def test_driver_only_sees_own_records_even_when_asking_for_others(client):
+    for url in ("/api/logbook", "/api/logbook?driver_id=d2_gh", "/api/logbook?driver_id=d_lr"):
+        rows = client.get(url, headers=auth("driver_gh")).json()
+        assert {r["id"] for r in rows} == {"log_gh"}, url
+    requests = client.get("/api/maintenance-requests?driver_id=d_lr", headers=auth("driver_gh")).json()
+    assert {r["id"] for r in requests} == {"req_gh"}
+
+
+def test_driver_cannot_submit_as_another_driver(client, fake_db):
+    forged = {**LOGBOOK, "driver_id": "d2_gh"}
+    assert client.post("/api/logbook", headers=auth("driver_gh"), json=forged).status_code == 403
+    assert client.post("/api/logbook", headers=auth("driver_gh"), json=LOGBOOK).status_code == 200
+    fuel = {
+        "vehicle_id": "v_gh", "driver_id": "d2_gh", "date": "2026-01-01T00:00:00", "quantity_liters": 1,
+        "cost": 1, "currency": "USD", "odometer_reading": 1, "location": "x", "fuel_type": "DIESEL",
+    }
+    assert client.post("/api/fuel", headers=auth("driver_gh"), json=fuel).status_code == 403
+
+
+def test_driver_cannot_use_a_vehicle_in_another_country(client):
+    body = {**LOGBOOK, "vehicle_id": "v_lr"}
+    assert client.post("/api/logbook", headers=auth("driver_gh"), json=body).status_code == 403
+
+
+def test_driver_cannot_reassign_their_record_to_someone_else(client):
+    response = client.put("/api/logbook/log_gh", headers=auth("driver_gh"), json={"driver_id": "d2_gh"})
+    assert response.status_code == 403
+    assert client.put("/api/logbook/log2_gh", headers=auth("driver_gh"), json={"purpose": "x"}).status_code == 403
+
+
+def test_driver_cannot_close_their_own_request(client):
+    response = client.put(
+        "/api/maintenance-requests/req_gh",
+        headers=auth("driver_gh"),
+        json={"work_status": "WORK_COMPLETED"},
+    )
+    assert response.status_code == 403
+
+
+def test_driver_vehicle_list_hides_costs_and_other_countries(client):
+    rows = client.get("/api/vehicles", headers=auth("driver_gh")).json()
+    assert [v["id"] for v in rows] == ["v_gh"]
+    assert "acquisition_cost" not in rows[0]
+    assert rows[0]["registration_number"] == "GH-1"
+    assert client.get("/api/vehicles/v_lr", headers=auth("driver_gh")).status_code == 403
+
+
+def test_staff_still_get_full_vehicle_details(client):
+    rows = client.get("/api/vehicles", headers=auth("fo_gh")).json()
+    assert [v["id"] for v in rows] == ["v_gh"]
+    assert rows[0]["acquisition_cost"] == 5000
+
+
+def test_driver_list_is_limited_to_own_profile(client):
+    rows = client.get("/api/drivers", headers=auth("driver_gh")).json()
+    assert [d["id"] for d in rows] == ["d_gh"]
+    assert client.get("/api/drivers/d2_gh", headers=auth("driver_gh")).status_code == 403
+
+
+def test_fleet_managers_list_is_empty_for_non_staff_so_pages_still_load(client, fake_db):
+    fake_db.fleet_managers.docs.append({"id": "m", "name": "x", "email": "x", "phone": "x", "country": "GH"})
+    response = client.get("/api/fleet-managers", headers=auth("driver_gh"))
+    assert response.status_code == 200 and response.json() == []
+
+
+def test_document_files_require_ownership_or_country_scope(client, monkeypatch):
+    monkeypatch.setattr(server, "read_bytes", lambda _key: b"file")
+    monkeypatch.setattr(server, "storage_enabled", lambda: False)
+    assert client.get("/api/documents/doc_lr/file", headers=auth("driver_gh")).status_code == 403
+    assert client.get("/api/documents/doc_lr/file", headers=auth("fo_gh")).status_code == 403
+    assert client.get("/api/documents/doc_gh/file", headers=auth("driver2_gh")).status_code == 403
+    assert client.get("/api/documents/doc_gh/file", headers=auth("driver_gh")).status_code == 200
+    assert client.get("/api/documents/doc_gh/file", headers=auth("fo_gh")).status_code == 200
+    assert client.get("/api/documents/doc_lr/download-url", headers=auth("fo_gh")).status_code == 403
+
+
+def test_damage_photos_are_limited_to_checklist_access(client):
+    url = "/api/damage-photos/ph_gh"
+    assert client.get(url, headers=auth("driver2_gh")).status_code == 403
+    assert client.get(url, headers=auth("fo_lr")).status_code == 403
+    assert client.get(url, headers=auth("driver_gh")).status_code == 200
+    assert client.get(url, headers=auth("fo_gh")).status_code == 200
+    assert client.get(url, headers=auth("gfm")).status_code == 200
+
+
+def test_logbook_summary_accepts_either_driver_identity(client, fake_db):
+    # The metrics page asks by account id; records are stored under the driver id.
+    body = client.get("/api/logbook/summary/driver_gh?period_days=30", headers=auth("driver_gh"))
+    assert body.status_code == 200
+    assert body.json()["total_distance_km"] == 7.0
+    assert client.get("/api/logbook/summary/d2_gh", headers=auth("driver_gh")).status_code == 403
+
+
+def test_revoked_approval_ends_access_immediately(client, fake_db):
+    next(u for u in fake_db.users.docs if u["id"] == "user_gh")["is_approved"] = False
+    assert client.get("/api/logbook", headers=auth("user_gh")).status_code == 403
+
+
+def test_deactivation_still_ends_access_immediately(client, fake_db):
+    next(u for u in fake_db.users.docs if u["id"] == "user_gh")["is_active"] = False
+    assert client.get("/api/logbook", headers=auth("user_gh")).status_code == 403
+
+
+def test_role_comes_from_the_database_not_the_token(client):
+    forged_claim = auth("user_gh", role="GROUP_FLEET_MANAGER", country=None)
+    assert client.get("/api/expenditures", headers=forged_claim).status_code == 403
+
+
+def test_country_comes_from_the_database_not_the_token(client):
+    stale_claim = auth("fo_gh", country="LR")
+    assert [e["id"] for e in _ids(client.get("/api/expenditures", headers=stale_claim))] == ["exp_gh"]
+
+
+def test_requests_without_a_token_are_rejected(client):
+    assert client.get("/api/expenditures").status_code == 401
+
+
+def test_group_manager_daily_report_still_runs(client):
+    response = client.post("/api/reports/send-daily", headers=auth("gfm"))
+    assert response.status_code == 200, response.text
+
+
+def test_group_manager_weekly_report_still_runs(client, monkeypatch):
+    # EmailService has no send_weekly_summary_report yet, so the real route fails at the send step.
+    monkeypatch.setattr(
+        server.email_service, "send_weekly_summary_report", lambda *a, **k: False, raising=False
+    )
+    response = client.post("/api/reports/send-weekly", headers=auth("gfm"))
+    assert response.status_code == 200, response.text
+    assert response.json()["report_data"]["trips_completed"] == 3
+
+
+def test_fleet_tco_totals_are_not_silently_dropped(client):
+    response = client.get("/api/tco/fleet", headers=auth("gfm"))
+    assert response.status_code == 200
+    assert response.json()["vehicle_count"] == 2
+    assert response.json()["total_distance_km"] == 19.0
+    scoped = client.get("/api/tco/fleet?country=LR", headers=auth("fm_gh")).json()
+    assert scoped["vehicle_count"] == 1 and scoped["total_distance_km"] == 16.0
+    single = client.get("/api/tco/vehicle/v_gh", headers=auth("fm_gh"))
+    assert single.status_code == 200
+    assert client.get("/api/tco/vehicle/v_lr", headers=auth("fm_gh")).status_code == 403
+
+
+def test_manager_can_delete_vehicle_master_record(client, fake_db):
+    fake_db.vehicle_masters.docs.append({"id": "m1", "country": "GH", "registration_number": "GH-1"})
+    assert client.delete("/api/master/vehicles/m1", headers=auth("fo_gh")).status_code == 403
+    assert client.delete("/api/master/vehicles/m1", headers=auth("fm_gh")).status_code == 200
+    assert fake_db.vehicle_masters.docs == []
+
+
+def test_officers_cannot_delete_workshop_records(client, fake_db):
+    fake_db.master_workshops.docs.append({"id": "w1", "country": "GH", "name": "W"})
+    fake_db.workshop_jobs.docs.append({"id": "j1", "vehicle_id": "v_gh", "workshop_name": "W"})
+    assert client.delete("/api/master/workshops/w1", headers=auth("fo_gh")).status_code == 403
+    assert client.delete("/api/workshops/j1", headers=auth("fo_gh")).status_code == 403
+    assert client.delete("/api/master/workshops/w1", headers=auth("fm_gh")).status_code == 200
+    assert client.delete("/api/workshops/j1", headers=auth("fm_gh")).status_code == 200

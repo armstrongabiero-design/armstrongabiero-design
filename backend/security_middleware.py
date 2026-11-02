@@ -98,7 +98,17 @@ class JWTAuthMiddleware(BaseHTTPMiddleware):
             )
         user = await db.users.find_one(
             {"id": user_id},
-            {"_id": 0, "token_version": 1, "is_active": 1},
+            {
+                "_id": 0,
+                "token_version": 1,
+                "is_active": 1,
+                "is_approved": 1,
+                "role": 1,
+                "email": 1,
+                "country": 1,
+                "full_name": 1,
+                "driver_id": 1,
+            },
         )
         if not user:
             return JSONResponse(
@@ -127,5 +137,19 @@ class JWTAuthMiddleware(BaseHTTPMiddleware):
                 content={"detail": "Session expired or invalidated. Please sign in again."},
                 headers={"WWW-Authenticate": "Bearer"},
             )
-        request.state.jwt_payload = payload
+        if user.get("role") != "GROUP_FLEET_MANAGER" and not user.get("is_approved", False):
+            return JSONResponse(
+                status_code=403,
+                content={"detail": "Account pending approval by a fleet manager"},
+                headers={"WWW-Authenticate": "Bearer"},
+            )
+        # The database is authoritative: role and country changes apply on the next request.
+        request.state.jwt_payload = {
+            **payload,
+            "role": user.get("role"),
+            "email": user.get("email"),
+            "country": user.get("country"),
+            "full_name": user.get("full_name"),
+            "driver_id": user.get("driver_id"),
+        }
         return await call_next(request)
