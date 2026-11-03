@@ -594,3 +594,19 @@ def test_officers_cannot_delete_workshop_records(client, fake_db):
     assert client.delete("/api/workshops/j1", headers=auth("fo_gh")).status_code == 403
     assert client.delete("/api/master/workshops/w1", headers=auth("fm_gh")).status_code == 200
     assert client.delete("/api/workshops/j1", headers=auth("fm_gh")).status_code == 200
+
+
+def test_trips_with_null_distance_or_fuel_do_not_break_totals(client, fake_db):
+    # MongoDB stores unset optional fields as explicit nulls.
+    now = datetime.now(timezone.utc).isoformat()
+    fake_db.driver_logbook.docs.append({
+        "id": "log_open", "driver_id": "d_gh", "vehicle_id": "v_gh", "country": "GH", "date": now,
+        "start_time": now, "start_location": "A", "start_odometer": 1.0, "purpose": "x",
+        "distance_km": None, "fuel_used_liters": None, "total_hours": None,
+    })
+    summary = client.get("/api/logbook/summary/d_gh", headers=auth("driver_gh"))
+    assert summary.status_code == 200 and summary.json()["total_distance_km"] == 7.0
+    assert client.get("/api/dashboard/personal", headers=auth("driver_gh")).status_code == 200
+    assert client.get("/api/reports/utilization", headers=auth("fm_gh")).status_code == 200
+    fleet = client.get("/api/tco/fleet", headers=auth("gfm")).json()
+    assert fleet["total_distance_km"] == 19.0

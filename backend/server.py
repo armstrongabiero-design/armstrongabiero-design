@@ -3481,8 +3481,8 @@ async def get_personal_dashboard(current_user: dict = Depends(get_current_user))
     ).to_list(100)
     
     total_trips = len(logbook_entries)
-    total_distance = sum(e.get('distance_km', 0) for e in logbook_entries)
-    total_fuel = sum(e.get('fuel_used_liters', 0) for e in logbook_entries)
+    total_distance = sum((e.get('distance_km') or 0) for e in logbook_entries)
+    total_fuel = sum((e.get('fuel_used_liters') or 0) for e in logbook_entries)
     
     # Get user's maintenance requests
     my_requests = await db.maintenance_requests.find(
@@ -6023,10 +6023,10 @@ async def get_driver_logbook_summary(driver_id: str, period_days: int = 30, curr
         {"_id": 0}
     ).to_list(1000)
     
-    total_distance = sum(e.get('distance_km', 0) for e in entries)
+    total_distance = sum((e.get('distance_km') or 0) for e in entries)
     total_trips = len(entries)
     total_violations = sum(e.get('speed_limit_violations', 0) for e in entries)
-    total_fuel = sum(e.get('fuel_used_liters', 0) for e in entries)
+    total_fuel = sum((e.get('fuel_used_liters') or 0) for e in entries)
     
     return {
         "driver_id": driver_id,
@@ -6244,7 +6244,7 @@ async def get_vehicle_tco(vehicle_id: str, period_days: int = 365, current_user:
         {"vehicle_id": vehicle_id, "date": {"$gte": start_date}},
         {"_id": 0, "distance_km": 1}
     ).to_list(1000)
-    total_distance = sum(e.get('distance_km', 0) for e in logbook)
+    total_distance = sum((e.get('distance_km') or 0) for e in logbook)
     
     # Calculate totals
     total_cost = fuel_cost + maintenance_cost + tire_cost
@@ -6385,8 +6385,8 @@ async def get_utilization_report(country: Optional[str] = None, period_days: int
             {"_id": 0}
         ).to_list(1000)
         
-        total_distance = sum(e.get('distance_km', 0) for e in logbook)
-        total_hours = sum(e.get('total_hours', 0) for e in logbook)
+        total_distance = sum((e.get('distance_km') or 0) for e in logbook)
+        total_hours = sum((e.get('total_hours') or 0) for e in logbook)
         trip_count = len(logbook)
         
         # Calculate utilization rate (assuming 8 hours/day max usage)
@@ -6488,7 +6488,7 @@ async def send_weekly_report(current_user: dict = Depends(require_group_manager(
         {"date": {"$gte": start_date}},
         {"_id": 0, "distance_km": 1, "speed_limit_violations": 1}
     ).to_list(1000)
-    total_distance = sum(e.get('distance_km', 0) for e in logbook_entries)
+    total_distance = sum((e.get('distance_km') or 0) for e in logbook_entries)
     speed_violations = sum(e.get('speed_limit_violations', 0) for e in logbook_entries)
     
     # Maintenance completed
