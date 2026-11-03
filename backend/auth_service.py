@@ -8,7 +8,8 @@ import os
 from datetime import datetime, timedelta, timezone
 from typing import Optional
 
-from jose import JWTError, jwt
+import jwt
+from jwt import PyJWTError as JWTError
 from passlib.context import CryptContext
 from fastapi import Depends, HTTPException, status
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
@@ -59,7 +60,7 @@ def tokens_match(expected: str, supplied: Optional[str]) -> bool:
 
 
 def decode_token_raw(token: str) -> dict:
-    """Decode JWT or raise jose.JWTError (for middleware)."""
+    """Decode JWT or raise JWTError (for middleware)."""
     return jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
 
 

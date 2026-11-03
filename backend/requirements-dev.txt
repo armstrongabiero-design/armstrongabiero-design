@@ -1,0 +1,8 @@
+# Tools for tests and CI. Not needed on servers.
+-r requirements.txt
+bandit
+httpx
+pip-audit
+pyflakes
+pytest
+requests

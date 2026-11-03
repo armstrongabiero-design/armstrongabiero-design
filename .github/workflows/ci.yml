@@ -1,0 +1,76 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  backend:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: "3.11"
+      - name: Install dependencies
+        run: pip install -r backend/requirements-dev.txt
+      - name: Authorization and security tests
+        run: pytest backend/tests/test_authorization.py
+      - name: Undefined names
+        run: |
+          ! python -m pyflakes backend/*.py backend/models/*.py | grep -E "undefined name"
+      - name: Security lint
+        run: bandit -q -r backend -x backend/tests,backend/routes,backend/models.py --severity-level medium
+      - name: Known vulnerabilities in backend packages
+        run: pip-audit -r backend/requirements.txt --no-deps --disable-pip
+
+  frontend:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: frontend
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: "20"
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+      - run: npm ci
+      - name: Production build
+        run: npm run build
+        env:
+          CI: "false"
+          GENERATE_SOURCEMAP: "false"
+          REACT_APP_BACKEND_URL: https://fleet.gtiholding.com
+      # Set to critical because xlsx has a high advisory with no npm fix. Raise to high once it is resolved.
+      - name: Known vulnerabilities in shipped packages
+        run: npm audit --omit=dev --audit-level=critical
+
+  secrets:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+      - name: Install gitleaks
+        run: |
+          curl -sSfL -o gitleaks.tgz https://github.com/gitleaks/gitleaks/releases/download/v8.30.1/gitleaks_8.30.1_linux_x64.tar.gz
+          echo "551f6fc83ea457d62a0d98237cbad105af8d557003051f41f3e7ca7b3f2470eb  gitleaks.tgz" | sha256sum -c -
+          tar xzf gitleaks.tgz gitleaks
+      # Only new commits are scanned, because history still holds known leaks until it is purged.
+      - name: Scan new commits for secrets
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.before }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          if [ -z "$BASE_SHA" ] || [ "$BASE_SHA" = "0000000000000000000000000000000000000000" ]; then
+            RANGE="$HEAD_SHA~1..$HEAD_SHA"
+          else
+            RANGE="$BASE_SHA..$HEAD_SHA"
+          fi
+          ./gitleaks git --redact --no-banner --log-opts="$RANGE"

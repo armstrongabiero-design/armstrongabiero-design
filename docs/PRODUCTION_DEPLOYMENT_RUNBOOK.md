@@ -825,7 +825,7 @@ python3.11 -m venv .venv
 source .venv/bin/activate
 python --version
 pip install --upgrade pip wheel
-pip install -r requirements.txt gunicorn
+pip install -r requirements.txt
 ```
 
 ### E5. Backend `.env`

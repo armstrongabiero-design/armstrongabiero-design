@@ -4852,17 +4852,15 @@ def _send_account_status_email(user: dict, status: str) -> bool:
     )
 
 
-_dummy_password_hash: Optional[str] = None
+# Built at startup so no request pays for hashing it, which would itself be measurable.
+_DUMMY_PASSWORD_HASH = get_password_hash(uuid.uuid4().hex)
 
 
 def _password_matches(user: Optional[dict], password: str) -> bool:
     """Check a password, spending the same time whether or not the account exists."""
-    global _dummy_password_hash
     if user:
         return verify_password(password, user["hashed_password"])
-    if _dummy_password_hash is None:
-        _dummy_password_hash = get_password_hash(uuid.uuid4().hex)
-    verify_password(password, _dummy_password_hash)
+    verify_password(password, _DUMMY_PASSWORD_HASH)
     return False
 
 

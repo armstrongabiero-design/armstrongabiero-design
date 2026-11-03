@@ -106,3 +106,26 @@ App: http://localhost:3000
 | Still hitting DC replica set | Check `MONGO_URL` in `backend/.env` — must be `127.0.0.1`, not `192.168.135.*` |
 
 More detail: [`docs/side_doc/LOCAL_DEV.md`](docs/side_doc/LOCAL_DEV.md)
+
+---
+
+## Running tests
+
+From the **repository root**, with dev tools installed (`pip install -r backend/requirements-dev.txt`):
+
+```bash
+pytest backend/tests/test_authorization.py   # no database or running server needed
+```
+
+Plain `pytest` also runs the older live-API tests, which skip unless `REACT_APP_BACKEND_URL` and test logins are set. See `backend/tests/http_helpers.py`.
+
+## Updating dependencies
+
+`backend/requirements.in` lists the packages the backend imports directly. `backend/requirements.txt` is the locked install set, generated from it. To update:
+
+```bash
+python3.11 -m venv /tmp/lock && /tmp/lock/bin/pip install -r backend/requirements.in
+/tmp/lock/bin/pip freeze   # replace the pinned lines in backend/requirements.txt with this
+```
+
+Keep the `cryptography` lines with their platform markers. Intel Macs have no wheels for the newest releases, so they stay on an older version for development only. Servers use the patched one.
