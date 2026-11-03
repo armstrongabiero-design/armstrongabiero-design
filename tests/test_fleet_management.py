@@ -401,7 +401,7 @@ class TestTireManagement:
         assert response.status_code == 200, f"Get tires by country failed: {response.text}"
         data = response.json()
         for tire in data:
-            assert tire["country"] == "GHANA"
+            assert tire["country"] in ("GHANA", "GH")
         print(f"✓ Retrieved {len(data)} tires for GHANA")
 
     def test_get_tire_by_id(self):

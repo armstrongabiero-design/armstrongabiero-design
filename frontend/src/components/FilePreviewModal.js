@@ -4,6 +4,7 @@ import { Download, ExternalLink } from 'lucide-react';
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } from './ui/dialog';
 import { Button } from './ui/button';
 import { toast } from 'sonner';
+import { sanitizeDocumentHtml } from '../utils/sanitizeHtml';
 
 const BACKEND_URL = process.env.REACT_APP_BACKEND_URL;
 
@@ -84,7 +85,7 @@ export default function FilePreviewModal({
             const mammoth = await import('mammoth/mammoth.browser');
             const arrayBuffer = await blob.arrayBuffer();
             const result = await mammoth.convertToHtml({ arrayBuffer });
-            if (!cancelled) setHtmlPreview(result.value || '<p>(empty document)</p>');
+            if (!cancelled) setHtmlPreview(sanitizeDocumentHtml(result.value) || '<p>(empty document)</p>');
           } catch {
             if (!cancelled) setError('Word preview unavailable. You can download the file.');
           }

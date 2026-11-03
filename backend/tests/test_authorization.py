@@ -1,10 +1,11 @@
 """In-process authorization tests. They use an in-memory database, not MongoDB or a live API."""
 from __future__ import annotations
 
+import io
 import os
 import re
 import uuid
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 
 os.environ.update(
@@ -19,6 +20,7 @@ os.environ.update(
 import pytest
 from fastapi.routing import APIRoute
 from fastapi.testclient import TestClient
+from openpyxl import load_workbook
 
 import audit_service
 import auth_deps
@@ -26,6 +28,7 @@ import authz
 import security_middleware
 import server
 from auth_service import create_access_token
+from export_utils import build_export_bytes
 
 
 def _matches(doc, query):
@@ -101,14 +104,34 @@ class _Collection:
         self.docs.append(dict(doc))
         return SimpleNamespace(inserted_id=str(uuid.uuid4()))
 
-    async def update_one(self, query, update, **_kwargs):
+    @staticmethod
+    def _apply(doc, update):
+        doc.update(update.get("$set", {}))
+        for field in update.get("$unset", {}):
+            doc.pop(field, None)
+        for field, value in update.get("$inc", {}).items():
+            doc[field] = doc.get(field, 0) + value
+        for field, value in update.get("$push", {}).items():
+            doc.setdefault(field, []).append(value)
+
+    async def update_one(self, query, update, upsert=False, **_kwargs):
         for doc in self.docs:
             if _matches(doc, query):
-                doc.update(update.get("$set", {}))
-                for field, value in update.get("$push", {}).items():
-                    doc.setdefault(field, []).append(value)
+                self._apply(doc, update)
                 return SimpleNamespace(matched_count=1, modified_count=1)
+        if upsert:
+            doc = dict(query)
+            self._apply(doc, update)
+            self.docs.append(doc)
         return SimpleNamespace(matched_count=0, modified_count=0)
+
+    async def find_one_and_update(self, query, update, **_kwargs):
+        for doc in self.docs:
+            if _matches(doc, query):
+                before = dict(doc)
+                self._apply(doc, update)
+                return before
+        return None
 
     async def update_many(self, query, update, **_kwargs):
         for doc in self.docs:
@@ -152,6 +175,7 @@ def fake_db(monkeypatch):
         monkeypatch.setattr(module, "db", db)
     monkeypatch.setattr(server.currency_converter, "get_rate", lambda *a, **k: 1.0)
     monkeypatch.setattr(server.email_service, "send_email", lambda *a, **k: False)
+    monkeypatch.setattr(server.limiter, "enabled", False)
     for name, attrs in USERS.items():
         db.users.docs.append({
             "id": name,
@@ -610,3 +634,168 @@ def test_trips_with_null_distance_or_fuel_do_not_break_totals(client, fake_db):
     assert client.get("/api/reports/utilization", headers=auth("fm_gh")).status_code == 200
     fleet = client.get("/api/tco/fleet", headers=auth("gfm")).json()
     assert fleet["total_distance_km"] == 19.0
+
+
+# --- Group Fleet Manager login codes ---
+GFM_LOGIN = {"email": "gfm@example.com", "password": "Correct-Pass1!"}
+
+
+@pytest.fixture()
+def otp_env(client, fake_db, monkeypatch):
+    user = next(u for u in fake_db.users.docs if u["id"] == "gfm")
+    user["hashed_password"] = server.get_password_hash(GFM_LOGIN["password"])
+    sent = []
+    monkeypatch.setattr(
+        server.email_service, "send_otp_email", lambda _email, _name, code: sent.append(code) or True
+    )
+    return SimpleNamespace(client=client, db=fake_db, sent=sent, user=user)
+
+
+def _verify(client, code, email="gfm@example.com"):
+    return client.post("/api/auth/verify-otp", json={"email": email, "otp": code})
+
+
+def _wrong(code):
+    return "000000" if code != "000000" else "111111"
+
+
+def _age_code(env, seconds):
+    record = env.db.otp_codes.docs[0]
+    record["created_at"] = (datetime.fromisoformat(record["created_at"]) - timedelta(seconds=seconds)).isoformat()
+
+
+def test_otp_is_not_stored_in_plain_text(otp_env):
+    assert otp_env.client.post("/api/auth/send-otp", json=GFM_LOGIN).status_code == 200
+    record = otp_env.db.otp_codes.docs[0]
+    assert "otp" not in record
+    assert otp_env.sent[0] not in record["otp_hash"]
+    assert re.fullmatch(r"\d{6}", otp_env.sent[0])
+
+
+def test_correct_otp_logs_in_once(otp_env):
+    otp_env.client.post("/api/auth/send-otp", json=GFM_LOGIN)
+    response = _verify(otp_env.client, otp_env.sent[0])
+    assert response.status_code == 200 and response.json()["access_token"]
+    assert _verify(otp_env.client, otp_env.sent[0]).status_code == 400
+
+
+def test_otp_locks_after_five_wrong_attempts_even_with_the_right_code(otp_env):
+    otp_env.client.post("/api/auth/send-otp", json=GFM_LOGIN)
+    code = otp_env.sent[0]
+    for _ in range(5):
+        assert _verify(otp_env.client, _wrong(code)).status_code == 400
+    assert _verify(otp_env.client, code).status_code == 400
+
+
+def test_expired_otp_is_rejected(otp_env):
+    otp_env.client.post("/api/auth/send-otp", json=GFM_LOGIN)
+    past = (datetime.now(timezone.utc) - timedelta(seconds=1)).isoformat()
+    otp_env.db.otp_codes.docs[0]["expires_at"] = past
+    assert _verify(otp_env.client, otp_env.sent[0]).status_code == 400
+
+
+def test_old_plaintext_otp_records_stop_working(otp_env):
+    future = (datetime.now(timezone.utc) + timedelta(minutes=5)).isoformat()
+    otp_env.db.otp_codes.docs.append({"email": "gfm@example.com", "otp": "123456", "expires_at": future})
+    assert _verify(otp_env.client, "123456").status_code == 400
+
+
+def test_verify_otp_does_not_reveal_whether_an_account_exists(otp_env):
+    unknown = _verify(otp_env.client, "123456", email="nobody@example.com")
+    known = _verify(otp_env.client, "123456")
+    assert unknown.status_code == known.status_code == 400
+    assert unknown.json() == known.json()
+
+
+def test_resend_within_cooldown_keeps_the_same_code(otp_env):
+    first = otp_env.client.post("/api/auth/send-otp", json=GFM_LOGIN)
+    second = otp_env.client.post("/api/auth/send-otp", json=GFM_LOGIN)
+    assert first.status_code == second.status_code == 200
+    assert len(otp_env.sent) == 1
+    assert _verify(otp_env.client, otp_env.sent[0]).status_code == 200
+
+
+def test_send_limit_caps_new_codes_per_account(otp_env):
+    for _ in range(5):
+        assert otp_env.client.post("/api/auth/send-otp", json=GFM_LOGIN).status_code == 200
+        _age_code(otp_env, 61)
+    assert otp_env.client.post("/api/auth/send-otp", json=GFM_LOGIN).status_code == 429
+    assert len(otp_env.sent) == 5
+
+
+def test_send_limit_resets_after_the_window(otp_env):
+    for _ in range(5):
+        otp_env.client.post("/api/auth/send-otp", json=GFM_LOGIN)
+        _age_code(otp_env, 61)
+    record = otp_env.db.otp_codes.docs[0]
+    record["window_start"] = (datetime.now(timezone.utc) - timedelta(minutes=16)).isoformat()
+    assert otp_env.client.post("/api/auth/send-otp", json=GFM_LOGIN).status_code == 200
+    assert len(otp_env.sent) == 6
+
+
+def test_wrong_password_never_sends_a_code(otp_env):
+    response = otp_env.client.post("/api/auth/send-otp", json={**GFM_LOGIN, "password": "wrong"})
+    assert response.status_code == 401 and otp_env.sent == []
+
+
+def test_deactivated_manager_cannot_get_or_use_a_code(otp_env):
+    otp_env.client.post("/api/auth/send-otp", json=GFM_LOGIN)
+    otp_env.user["is_active"] = False
+    assert _verify(otp_env.client, otp_env.sent[0]).status_code == 400
+    assert otp_env.client.post("/api/auth/send-otp", json=GFM_LOGIN).status_code == 403
+
+
+def test_otp_code_is_not_logged_unless_explicitly_enabled(otp_env, caplog, monkeypatch):
+    monkeypatch.delenv("DEV_LOG_OTP", raising=False)
+    otp_env.client.post("/api/auth/send-otp", json=GFM_LOGIN)
+    assert otp_env.sent[0] not in caplog.text
+
+
+def test_dev_otp_logging_stays_off_in_production(otp_env, caplog, monkeypatch):
+    monkeypatch.setenv("DEV_LOG_OTP", "true")
+    monkeypatch.setattr(server, "_IS_PRODUCTION", True)
+    otp_env.client.post("/api/auth/send-otp", json=GFM_LOGIN)
+    assert otp_env.sent[0] not in caplog.text
+
+
+# --- Spreadsheet exports ---
+@pytest.mark.parametrize("payload", ['=HYPERLINK("http://evil/","x")', "=1+1", "#N/A", "+1", "-1", "@SUM(A1)"])
+def test_exports_keep_stored_values_as_text(payload):
+    workbook = load_workbook(io.BytesIO(build_export_bytes("T", ["a"], [[payload]], "xlsx")))
+    cell = workbook.active["A2"]
+    assert cell.data_type == "s" and cell.value == payload
+
+
+def test_master_data_export_keeps_stored_values_as_text(client, fake_db):
+    fake_db.master_workshops.docs.append({"id": "w", "name": "=1+1", "country": "GH"})
+    response = client.post(
+        "/api/master/export",
+        headers=auth("gfm"),
+        json={"entities": ["workshops", "maintenance_types"], "fmt": "xlsx"},
+    )
+    assert response.status_code == 200, response.text
+    cell = load_workbook(io.BytesIO(response.content))["Workshops"]["A2"]
+    assert cell.data_type == "s" and cell.value == "=1+1"
+
+
+# --- Regular expressions from user input ---
+def _maintenance_record(record_id, description):
+    return {
+        "id": record_id, "vehicle_id": "v_gh", "maintenance_type": "ROUTINE", "description": description,
+        "scheduled_date": "2026-01-01T00:00:00", "odometer_at_maintenance": 1.0, "cost": 1.0,
+        "currency": "USD", "cost_usd": 1.0, "created_at": "2026-01-01T00:00:00",
+    }
+
+
+def test_maintenance_search_treats_input_as_literal_text(client, fake_db):
+    fake_db.maintenance_records.docs += [_maintenance_record("m1", "axb"), _maintenance_record("m2", "a.b")]
+    rows = client.get("/api/maintenance", params={"search": "a.b"}, headers=auth("gfm"))
+    assert [r["id"] for r in rows.json()] == ["m2"]
+    assert client.get("/api/maintenance", params={"search": "("}, headers=auth("gfm")).status_code == 200
+    assert client.get("/api/maintenance", params={"registration": "("}, headers=auth("gfm")).status_code == 200
+
+
+def test_registration_search_still_matches_partial_text(client, fake_db):
+    fake_db.maintenance_records.docs.append(_maintenance_record("m1", "x"))
+    rows = client.get("/api/maintenance", params={"registration": "gh-"}, headers=auth("gfm"))
+    assert [r["id"] for r in rows.json()] == ["m1"]

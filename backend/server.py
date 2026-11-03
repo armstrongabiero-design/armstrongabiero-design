@@ -3,6 +3,7 @@ import asyncio
 import base64
 import logging
 import os
+import re
 import uuid
 from datetime import datetime, timezone, timedelta
 from pathlib import Path
@@ -111,7 +112,8 @@ from maintenance_bulk_import import build_maintenance_template_workbook, parse_m
 from tire_bulk_import import build_tire_template_workbook, parse_tire_bulk_upload
 from inventory_bulk_import import build_inventory_template_workbook, parse_inventory_bulk_upload
 from expenditure_bulk_import import build_expenditure_template_workbook, parse_expenditure_bulk_upload
-from export_utils import build_export_bytes, export_filename, export_mime
+from export_utils import build_export_bytes, export_filename, export_mime, write_text_cell
+from otp_service import OtpSendLimitExceeded, issue_otp, verify_otp_code
 from security_middleware import JWTAuthMiddleware
 
 limiter = Limiter(key_func=get_remote_address)
@@ -163,8 +165,6 @@ def _normalize_email(email: str) -> str:
 
 async def _find_user_by_email(email: str) -> Optional[dict]:
     """Case-insensitive user lookup by email."""
-    import re
-
     normalized = _normalize_email(email)
     if not normalized:
         return None
@@ -1180,7 +1180,7 @@ async def get_maintenance_records(
     if vehicle_id:
         query["vehicle_id"] = vehicle_id
     if registration:
-        reg = registration.strip()
+        reg = re.escape(registration.strip())
         vehicle_ids = [
             v["id"]
             for v in await db.vehicles.find(
@@ -1192,7 +1192,7 @@ async def get_maintenance_records(
     if maintenance_type:
         query["maintenance_type"] = maintenance_type
     if search:
-        query["description"] = {"$regex": search.strip(), "$options": "i"}
+        query["description"] = {"$regex": re.escape(search.strip()), "$options": "i"}
     if date_from or date_to:
         date_q: dict = {}
         if date_from:
@@ -1784,7 +1784,7 @@ async def bulk_upload_vehicle_masters(
             existing = None
             if reg:
                 existing = await db.vehicle_masters.find_one(
-                    {"registration_number": {"$regex": f"^{reg}$", "$options": "i"}},
+                    {"registration_number": {"$regex": f"^{re.escape(reg)}$", "$options": "i"}},
                     {"_id": 0},
                 )
             if existing:
@@ -1929,7 +1929,7 @@ async def export_master_data(
                 cell.font = header_font
             for r_idx, row in enumerate(rows, start=2):
                 for c_idx, value in enumerate(row, start=1):
-                    ws.cell(row=r_idx, column=c_idx, value="" if value is None else str(value))
+                    write_text_cell(ws, r_idx, c_idx, value)
             for col in range(1, len(headers) + 1):
                 ws.column_dimensions[get_column_letter(col)].width = 16
         buf = _io.BytesIO()
@@ -4982,28 +4982,26 @@ async def send_otp(request: Request, input: UserLogin):
     
     if user['role'] != 'GROUP_FLEET_MANAGER':
         raise HTTPException(status_code=400, detail="OTP verification only required for Group Fleet Manager")
-    
-    # Generate 6-digit OTP
-    import random
-    otp_code = ''.join([str(random.randint(0, 9)) for _ in range(6)])
-    
-    # Store OTP with expiry (5 minutes) using the canonical stored email
-    otp_email = user["email"]
-    otp_expiry = datetime.now(timezone.utc) + timedelta(minutes=5)
-    await db.otp_codes.update_one(
-        {"email": otp_email},
-        {"$set": {
-            "email": otp_email,
-            "otp": otp_code,
-            "expires_at": otp_expiry.isoformat(),
-            "created_at": datetime.now(timezone.utc).isoformat()
-        }},
-        upsert=True
-    )
-    
-    # Send OTP via email
+
+    if not user.get('is_active', True):
+        raise HTTPException(status_code=403, detail="Account is deactivated")
+
+    try:
+        otp_code = await issue_otp(db, user["email"])
+    except OtpSendLimitExceeded:
+        raise HTTPException(
+            status_code=429,
+            detail="Too many verification codes requested. Please try again in 15 minutes.",
+        )
+
+    if otp_code is None:
+        return {"message": "A code was sent recently. Please check your email.", "email": user['email']}
+
+    if not _IS_PRODUCTION and os.environ.get("DEV_LOG_OTP", "").lower() == "true":
+        logger.warning("DEV_LOG_OTP: login code for %s is %s", user["email"], otp_code)
+
     email_service.send_otp_email(user['email'], user['full_name'], otp_code)
-    
+
     return {"message": "OTP sent to your email", "email": user['email']}
 
 
@@ -5011,29 +5009,17 @@ async def send_otp(request: Request, input: UserLogin):
 @limiter.limit("30/minute")
 async def verify_otp(request: Request, email: str = Body(...), otp: str = Body(...)):
     """Verify OTP and complete Group Fleet Manager login"""
+    invalid = HTTPException(
+        status_code=400,
+        detail="Invalid or expired code. Please check it or request a new one.",
+    )
+    # One response for every failure, so this route cannot be used to discover accounts.
     user = await _find_user_by_email(email)
-    if not user:
-        raise HTTPException(status_code=401, detail="User not found")
+    if not user or not await verify_otp_code(db, user["email"], otp):
+        raise invalid
+    if not user.get("is_active", True):
+        raise invalid
 
-    otp_email = user["email"]
-    # Find OTP record
-    otp_record = await db.otp_codes.find_one({"email": otp_email}, {"_id": 0})
-    if not otp_record:
-        raise HTTPException(status_code=400, detail="No OTP found. Please request a new one.")
-    
-    # Check expiry
-    expiry = datetime.fromisoformat(otp_record['expires_at'])
-    if datetime.now(timezone.utc) > expiry:
-        await db.otp_codes.delete_one({"email": otp_email})
-        raise HTTPException(status_code=400, detail="OTP has expired. Please request a new one.")
-    
-    # Verify OTP
-    if otp_record['otp'] != otp:
-        raise HTTPException(status_code=400, detail="Invalid OTP")
-    
-    # Delete used OTP
-    await db.otp_codes.delete_one({"email": otp_email})
-    
     # Update last login
     await db.users.update_one(
         {"id": user['id']},

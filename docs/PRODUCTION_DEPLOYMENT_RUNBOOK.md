@@ -997,8 +997,9 @@ server {
         client_max_body_size 25m;
     }
 
-    location ~ ^/api/auth/(login|register|forgot-password|reset-password) {
+    location ~ ^/api/auth/(login|register|forgot-password|reset-password|send-otp|verify-otp|accept-invite) {
         limit_req zone=auth_limit burst=5 nodelay;
+        limit_req_status 429;
         proxy_pass http://fleet_api;
         proxy_http_version 1.1;
         proxy_set_header Host $host;
@@ -1093,8 +1094,9 @@ server {
         client_max_body_size 25m;
     }
 
-    location ~ ^/api/auth/(login|register|forgot-password|reset-password) {
+    location ~ ^/api/auth/(login|register|forgot-password|reset-password|send-otp|verify-otp|accept-invite) {
         limit_req zone=auth_limit burst=5 nodelay;
+        limit_req_status 429;
         proxy_pass http://fleet_api;
         proxy_http_version 1.1;
         proxy_set_header Host $host;

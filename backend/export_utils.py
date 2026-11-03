@@ -57,6 +57,13 @@ def _cell_str(value: object) -> str:
     return str(value)
 
 
+def write_text_cell(ws, row: int, column: int, value: object) -> None:
+    """Write a value as plain text so Excel never runs stored data as a formula."""
+    cell = ws.cell(row=row, column=column)
+    cell.value = _cell_str(value)
+    cell.data_type = "s"
+
+
 def _build_xlsx(
     title: str,
     headers: Sequence[str],
@@ -76,7 +83,7 @@ def _build_xlsx(
 
     for row_idx, row in enumerate(rows, start=2):
         for col, value in enumerate(row, start=1):
-            ws.cell(row=row_idx, column=col, value=_cell_str(value))
+            write_text_cell(ws, row_idx, col, value)
 
     for col in range(1, len(headers) + 1):
         ws.column_dimensions[get_column_letter(col)].width = 18
