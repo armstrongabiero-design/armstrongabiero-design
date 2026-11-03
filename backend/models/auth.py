@@ -47,12 +47,14 @@ class UserCreate(BaseModel):
 
 
 class UserSelfRegister(BaseModel):
-    """Public self-registration: USER, DRIVER, FLEET_MANAGER, or FLEET_OFFICER; awaits approval."""
-    email: str
+    """Public self-registration: USER, DRIVER, FLEET_MANAGER, or FLEET_OFFICER; awaits approval.
+
+    There is no driver_id field: a signup cannot choose which driver it belongs to.
+    """
+    email: EmailStr
     password: str = Field(..., min_length=8)
     full_name: str
     country: Optional[str] = None
-    driver_id: Optional[str] = None
     role: UserRole = UserRole.USER
 
     @field_validator("password")

@@ -799,3 +799,222 @@ def test_registration_search_still_matches_partial_text(client, fake_db):
     fake_db.maintenance_records.docs.append(_maintenance_record("m1", "x"))
     rows = client.get("/api/maintenance", params={"registration": "gh-"}, headers=auth("gfm"))
     assert [r["id"] for r in rows.json()] == ["m1"]
+
+
+# --- Driver invites (H8) ---
+def _add_user(fake_db, user_id, **attrs):
+    doc = {
+        "id": user_id, "email": f"{user_id}@example.com", "full_name": user_id, "role": "USER",
+        "country": "GH", "is_active": True, "is_approved": True, "token_version": 0,
+        "hashed_password": "x", "driver_id": None, **attrs,
+    }
+    fake_db.users.docs.append(doc)
+    return doc
+
+
+def _driver_with_email(fake_db, email, driver_id="d_invite", country="GH"):
+    fake_db.drivers.docs.append({
+        "id": driver_id, "country": country, "first_name": "I", "last_name": "V", "license_number": "L",
+        "license_expiry": "2030-01-01T00:00:00", "phone": "1", "email": email,
+    })
+    return driver_id
+
+
+def _invite_token(fake_db, driver_id):
+    return next(i["token"] for i in fake_db.driver_invites.docs if i["driver_id"] == driver_id and i["status"] == "PENDING")
+
+
+GOOD_PASSWORD = "New-Pass-123!"
+
+
+@pytest.mark.parametrize("attrs", [
+    {"role": "FLEET_MANAGER"},
+    {"role": "GROUP_FLEET_MANAGER"},
+    {"role": "USER", "is_approved": False},
+    {"role": "FLEET_MANAGER", "is_active": False, "last_login": "2026-01-01T00:00:00"},
+    {"role": "DRIVER", "is_active": False, "last_login": "2026-01-01T00:00:00", "approved_at": "2026-01-01"},
+    {"role": "DRIVER", "is_active": False, "approved_at": "2026-01-01"},
+    {"role": "DRIVER", "last_login": "2026-01-01T00:00:00"},
+])
+def test_invite_cannot_take_over_an_existing_account(client, fake_db, attrs):
+    user = _add_user(fake_db, "victim", **attrs)
+    before = dict(user)
+    driver_id = _driver_with_email(fake_db, user["email"])
+    response = client.post(f"/api/drivers/{driver_id}/invite", headers=auth("fo_gh"))
+    assert response.status_code == 400, response.text
+    assert user == before
+    assert fake_db.driver_invites.docs == []
+
+
+def test_invite_matches_existing_accounts_regardless_of_email_case(client, fake_db):
+    user = _add_user(fake_db, "victim", role="FLEET_MANAGER", email="Victim@Example.com")
+    driver_id = _driver_with_email(fake_db, "victim@example.com")
+    assert client.post(f"/api/drivers/{driver_id}/invite", headers=auth("fo_gh")).status_code == 400
+    assert user["role"] == "FLEET_MANAGER"
+
+
+def test_new_driver_invite_flow_still_works(client, fake_db):
+    driver_id = _driver_with_email(fake_db, "new@example.com")
+    response = client.post(f"/api/drivers/{driver_id}/invite", headers=auth("fo_gh"))
+    assert response.status_code == 200, response.text
+    assert "token" not in response.json()["invite"]
+    user = next(u for u in fake_db.users.docs if u["email"] == "new@example.com")
+    assert user["role"] == "DRIVER" and user["is_active"] is False and user["invite_pending"] is True
+    accepted = client.post(
+        "/api/auth/accept-invite",
+        json={"token": _invite_token(fake_db, driver_id), "new_password": GOOD_PASSWORD},
+    )
+    assert accepted.status_code == 200, accepted.text
+    assert user["is_active"] is True and user["driver_id"] == driver_id and user["email_verified"] is True
+
+
+def test_invite_link_works_once(client, fake_db):
+    driver_id = _driver_with_email(fake_db, "new@example.com")
+    client.post(f"/api/drivers/{driver_id}/invite", headers=auth("fo_gh"))
+    body = {"token": _invite_token(fake_db, driver_id), "new_password": GOOD_PASSWORD}
+    assert client.post("/api/auth/accept-invite", json=body).status_code == 200
+    assert client.post("/api/auth/accept-invite", json=body).status_code == 400
+
+
+def test_pending_driver_signup_can_be_invited_and_loses_their_chosen_password(client, fake_db):
+    user = _add_user(fake_db, "signup", role="DRIVER", is_approved=False, hashed_password="attacker-chosen")
+    driver_id = _driver_with_email(fake_db, user["email"])
+    assert client.post(f"/api/drivers/{driver_id}/invite", headers=auth("fo_gh")).status_code == 200
+    assert user["is_active"] is False
+    client.post(
+        "/api/auth/accept-invite",
+        json={"token": _invite_token(fake_db, driver_id), "new_password": GOOD_PASSWORD},
+    )
+    assert user["hashed_password"] != "attacker-chosen" and user["driver_id"] == driver_id
+
+
+def test_deleting_an_invite_restores_a_pending_signup_rather_than_deleting_it(client, fake_db):
+    user = _add_user(fake_db, "signup", role="DRIVER", is_approved=False)
+    driver_id = _driver_with_email(fake_db, user["email"])
+    client.post(f"/api/drivers/{driver_id}/invite", headers=auth("fo_gh"))
+    invite_id = fake_db.driver_invites.docs[0]["id"]
+    assert client.delete(f"/api/drivers/invites/{invite_id}", headers=auth("fo_gh")).status_code == 200
+    kept = next(u for u in fake_db.users.docs if u["id"] == "signup")
+    assert kept["is_active"] is True and kept["is_approved"] is False and kept["driver_id"] is None
+    assert kept["invite_pending"] is False and kept["approved_at"] is None
+
+
+def test_deleting_an_invite_removes_only_the_placeholder_account_it_created(client, fake_db):
+    driver_id = _driver_with_email(fake_db, "new@example.com")
+    client.post(f"/api/drivers/{driver_id}/invite", headers=auth("fo_gh"))
+    invite_id = fake_db.driver_invites.docs[0]["id"]
+    client.delete(f"/api/drivers/invites/{invite_id}", headers=auth("fo_gh"))
+    assert not any(u["email"] == "new@example.com" for u in fake_db.users.docs)
+
+
+def test_deleting_a_revoked_invite_leaves_the_live_invite_and_account(client, fake_db):
+    driver_id = _driver_with_email(fake_db, "new@example.com")
+    client.post(f"/api/drivers/{driver_id}/invite", headers=auth("fo_gh"))
+    client.post(f"/api/drivers/{driver_id}/invite", headers=auth("fo_gh"))
+    revoked = next(i for i in fake_db.driver_invites.docs if i["status"] == "REVOKED")
+    assert client.delete(f"/api/drivers/invites/{revoked['id']}", headers=auth("fo_gh")).status_code == 200
+    assert any(u["email"] == "new@example.com" for u in fake_db.users.docs)
+    token = _invite_token(fake_db, driver_id)
+    accepted = client.post("/api/auth/accept-invite", json={"token": token, "new_password": GOOD_PASSWORD})
+    assert accepted.status_code == 200
+
+
+def test_deactivating_someone_mid_invite_kills_the_link(client, fake_db):
+    driver_id = _driver_with_email(fake_db, "new@example.com")
+    client.post(f"/api/drivers/{driver_id}/invite", headers=auth("fo_gh"))
+    user = next(u for u in fake_db.users.docs if u["email"] == "new@example.com")
+    token = _invite_token(fake_db, driver_id)
+    assert client.put(f"/api/auth/users/{user['id']}", headers=auth("gfm"), json={"is_active": False}).status_code == 200
+    accepted = client.post("/api/auth/accept-invite", json={"token": token, "new_password": GOOD_PASSWORD})
+    assert accepted.status_code == 400
+    assert user["is_active"] is False
+
+
+def test_invite_actions_are_audited_without_the_token(client, fake_db):
+    driver_id = _driver_with_email(fake_db, "new@example.com")
+    client.post(f"/api/drivers/{driver_id}/invite", headers=auth("fo_gh"))
+    invite = fake_db.driver_invites.docs[0]
+    client.post(f"/api/drivers/invites/{invite['id']}/resend", headers=auth("fo_gh"))
+    client.delete(f"/api/drivers/invites/{invite['id']}", headers=auth("fo_gh"))
+    actions = [a["action"] for a in fake_db.audit_logs.docs if a["entity_type"] == "driver_invite"]
+    assert actions == ["invite_create", "invite_resend", "invite_delete"]
+    assert fake_db.audit_logs.docs[0]["actor_id"] == "fo_gh"
+    assert "token" not in str(fake_db.audit_logs.docs)
+
+
+def test_other_country_officer_cannot_invite(client, fake_db):
+    driver_id = _driver_with_email(fake_db, "new@example.com")
+    assert client.post(f"/api/drivers/{driver_id}/invite", headers=auth("fo_lr")).status_code == 403
+
+
+# --- Self-registration cannot claim a driver (H10) ---
+SIGNUP = {"password": GOOD_PASSWORD, "full_name": "New Person", "country": "GH"}
+
+
+def _signup(client, email, **extra):
+    return client.post("/api/auth/register", json={**SIGNUP, "email": email, **extra})
+
+
+def test_signup_ignores_a_supplied_driver_id(client, fake_db):
+    response = _signup(client, "new@example.com", role="DRIVER", driver_id="d_gh")
+    assert response.status_code == 201, response.text
+    user = next(u for u in fake_db.users.docs if u["email"] == "new@example.com")
+    assert user.get("driver_id") is None
+
+
+@pytest.mark.parametrize("email", ["not-an-email", "a@b", "x y@example.com"])
+def test_signup_rejects_invalid_email(client, email):
+    assert _signup(client, email).status_code == 422
+
+
+@pytest.mark.parametrize("role", ["DRIVER", "USER"])
+def test_approval_clears_a_driver_claim_from_an_old_signup(client, fake_db, role):
+    user = _add_user(fake_db, "old_signup", role=role, is_approved=False, driver_id="d_gh")
+    assert client.put(f"/api/auth/users/{user['id']}/approve", headers=auth("fo_gh")).status_code == 200
+    assert user["driver_id"] != "d_gh"
+    token = auth("old_signup", role=role, driver_id=user["driver_id"])
+    assert all(r["driver_id"] != "d_gh" for r in client.get("/api/logbook", headers=token).json())
+
+
+def test_gfm_approval_route_also_clears_a_driver_claim(client, fake_db):
+    user = _add_user(fake_db, "old_signup", role="USER", is_approved=False, driver_id="d_gh")
+    response = client.put(f"/api/auth/users/{user['id']}", headers=auth("gfm"), json={"is_approved": True})
+    assert response.status_code == 200
+    assert user["driver_id"] is None and user["approved_at"]
+
+
+def test_signup_using_a_drivers_email_needs_an_invite_not_approval(client, fake_db):
+    driver_id = _driver_with_email(fake_db, "Driver.Real@example.com")
+    _signup(client, "driver.real@example.com", role="DRIVER")
+    user = next(u for u in fake_db.users.docs if u["email"] == "driver.real@example.com")
+    response = client.put(f"/api/auth/users/{user['id']}/approve", headers=auth("fo_gh"))
+    assert response.status_code == 409 and "invite" in response.json()["detail"]
+    assert user["is_approved"] is False and user.get("driver_id") is None
+    gfm = client.put(f"/api/auth/users/{user['id']}", headers=auth("gfm"), json={"is_approved": True})
+    assert gfm.status_code == 409 and user["is_approved"] is False
+    assert client.post(f"/api/drivers/{driver_id}/invite", headers=auth("fo_gh")).status_code == 200
+
+
+def test_ordinary_driver_signup_still_gets_their_own_profile(client, fake_db):
+    _signup(client, "fresh@example.com", role="DRIVER")
+    user = next(u for u in fake_db.users.docs if u["email"] == "fresh@example.com")
+    assert client.put(f"/api/auth/users/{user['id']}/approve", headers=auth("fo_gh")).status_code == 200
+    assert user["is_approved"] is True and user["driver_id"] == user["id"]
+    assert any(d["id"] == user["id"] for d in fake_db.drivers.docs)
+
+
+def test_reapproval_keeps_a_link_proven_earlier(client, fake_db):
+    user = _add_user(fake_db, "real_driver", role="DRIVER", driver_id="d_gh", approved_at="2026-01-01T00:00:00")
+    user["email"] = "real@example.com"
+    next(d for d in fake_db.drivers.docs if d["id"] == "d_gh")["email"] = "real@example.com"
+    assert client.put(f"/api/auth/users/{user['id']}", headers=auth("gfm"), json={"is_approved": False}).status_code == 200
+    assert client.put(f"/api/auth/users/{user['id']}", headers=auth("gfm"), json={"is_approved": True}).status_code == 200
+    assert user["driver_id"] == "d_gh"
+
+
+def test_email_link_never_shares_a_profile_already_claimed(client, fake_db):
+    next(d for d in fake_db.drivers.docs if d["id"] == "d_gh")["email"] = "shared@example.com"
+    _add_user(fake_db, "owner", role="DRIVER", driver_id="d_gh", approved_at="2026-01-01")
+    user = _add_user(fake_db, "second", role="DRIVER", email="shared@example.com", approved_at="2026-01-01")
+    assert client.get("/api/drivers", headers=auth("gfm")).status_code == 200
+    assert user["driver_id"] is None

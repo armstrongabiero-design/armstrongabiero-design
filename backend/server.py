@@ -1024,11 +1024,24 @@ async def delete_driver(
     return {"message": "Driver deleted successfully"}
 
 
-async def _assert_invite_scope(current_user: dict, invite_id: str) -> None:
-    invite = await db.driver_invites.find_one({"id": invite_id}, {"_id": 0, "driver_id": 1})
+async def _assert_invite_scope(current_user: dict, invite_id: str) -> dict:
+    invite = await db.driver_invites.find_one({"id": invite_id}, {"_id": 0, "token": 0})
     if not invite:
         raise HTTPException(status_code=400, detail="Invite not found")
     await assert_driver_scope(current_user, invite.get("driver_id"))
+    return invite
+
+
+async def _audit_invite(action: str, current_user: dict, invite_id: str, driver_id, email) -> None:
+    await write_audit_log(
+        action=action,
+        entity_type="driver_invite",
+        entity_id=invite_id,
+        actor_id=current_user["id"],
+        actor_role=current_user.get("role", ""),
+        actor_email=current_user.get("email"),
+        details={"driver_id": driver_id, "email": email},
+    )
 
 
 def _send_driver_invite_email(result: dict) -> bool:
@@ -1054,6 +1067,7 @@ async def invite_driver_endpoint(
         result = await create_or_refresh_invite(db, driver_id, current_user)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
+    await _audit_invite("invite_create", current_user, result["invite"]["id"], driver_id, result["email"])
     email_sent = _send_driver_invite_email(result)
     return {
         "status": "success",
@@ -1078,6 +1092,7 @@ async def resend_driver_invite_endpoint(
         result = await resend_invite(db, invite_id, current_user)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
+    await _audit_invite("invite_resend", current_user, invite_id, result["invite"].get("driver_id"), result["email"])
     email_sent = _send_driver_invite_email(result)
     return {
         "status": "success",
@@ -1097,11 +1112,13 @@ async def delete_driver_invite_endpoint(
     current_user: dict = Depends(_require_staff),
 ):
     from driver_invite_service import delete_invite
-    await _assert_invite_scope(current_user, invite_id)
+    invite = await _assert_invite_scope(current_user, invite_id)
     try:
-        return await delete_invite(db, invite_id)
+        deleted = await delete_invite(db, invite_id)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
+    await _audit_invite("invite_delete", current_user, invite_id, invite.get("driver_id"), invite.get("email"))
+    return deleted
 
 
 @api_router.get("/auth/verify-invite/{token}")
@@ -4821,7 +4838,6 @@ async def register_user(request: Request, input: UserSelfRegister):
         full_name=input.full_name,
         role=input.role,
         country=input.country,
-        driver_id=input.driver_id,
         is_approved=False,
     )
 
@@ -5065,6 +5081,14 @@ async def get_all_users(current_user: dict = Depends(require_group_manager())):
     return users
 
 
+async def _prepare_signup_or_conflict(user: dict) -> dict:
+    from driver_profile_service import DriverLinkConflict, prepare_signup_for_approval
+    try:
+        return await prepare_signup_for_approval(db, user)
+    except DriverLinkConflict as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+
 @api_router.put("/auth/users/{user_id}/approve")
 async def approve_user(user_id: str, current_user: dict = Depends(get_current_user_validated)):
     """Approve a user based on role hierarchy and country"""
@@ -5098,7 +5122,9 @@ async def approve_user(user_id: str, current_user: dict = Depends(get_current_us
             status_code=403, 
             detail=f"You don't have permission to approve {user_role.replace('_', ' ').title()} accounts"
         )
-    
+
+    user_to_approve = await _prepare_signup_or_conflict(user_to_approve)
+
     result = await db.users.update_one(
         {"id": user_id},
         {"$set": {
@@ -5162,6 +5188,19 @@ async def update_user(user_id: str, input: UserUpdate, current_user: dict = Depe
     existing = await db.users.find_one({"id": user_id}, {"_id": 0})
     if not existing:
         raise HTTPException(status_code=404, detail="User not found")
+
+    if update_data.get("is_approved") and not existing.get("is_approved", False):
+        existing = await _prepare_signup_or_conflict(existing)
+        update_data["approved_by"] = current_user.get("id")
+        update_data["approved_at"] = datetime.now(timezone.utc).isoformat()
+
+    if update_data.get("is_active") is False and existing.get("invite_pending"):
+        # Deactivating someone mid-invite must not leave a link that reactivates them.
+        update_data["invite_pending"] = False
+        await db.driver_invites.update_many(
+            {"user_id": user_id, "status": "PENDING"},
+            {"$set": {"status": "REVOKED"}},
+        )
 
     result = await db.users.update_one({"id": user_id}, {"$set": update_data})
     updated_user = {**existing, **update_data}
