@@ -32,6 +32,7 @@ from auth_deps import (
 )
 from authz import (
     assert_country,
+    assert_document_entity,
     assert_driver_scope,
     assert_own_driver,
     assert_payload_scope,
@@ -46,6 +47,7 @@ from authz import (
     merge_scope,
     own_driver_filter,
     read_scope,
+    same_country,
     vehicle_scope_query,
 )
 from auth_service import (
@@ -1732,7 +1734,7 @@ async def create_vehicle_master(
     doc["created_at"] = doc["created_at"].isoformat()
     doc["updated_at"] = doc["updated_at"].isoformat()
     await db.vehicle_masters.insert_one(doc)
-    await sync_master_to_vehicles(db, doc)
+    await sync_master_to_vehicles(db, doc, country_query(current_user))
     await write_audit_log(
         action="create",
         entity_type="vehicle_master",
@@ -1762,7 +1764,7 @@ async def update_vehicle_master(
     update_data["updated_at"] = datetime.now(timezone.utc).isoformat()
     await db.vehicle_masters.update_one({"id": record_id}, {"$set": update_data})
     updated = await db.vehicle_masters.find_one({"id": record_id}, {"_id": 0})
-    await sync_master_to_vehicles(db, updated)
+    await sync_master_to_vehicles(db, updated, country_query(current_user))
     return VehicleMaster(**_parse_vehicle_master_dates(updated))
 
 
@@ -1816,7 +1818,7 @@ async def bulk_upload_vehicle_masters(
                 upd["updated_at"] = datetime.now(timezone.utc).isoformat()
                 await db.vehicle_masters.update_one({"id": existing["id"]}, {"$set": upd})
                 merged = {**existing, **upd}
-                await sync_master_to_vehicles(db, merged)
+                await sync_master_to_vehicles(db, merged, country_query(current_user))
                 updated += 1
             else:
                 record = VehicleMaster(**{k: v for k, v in row.items() if k != "row"})
@@ -1824,7 +1826,7 @@ async def bulk_upload_vehicle_masters(
                 doc["created_at"] = doc["created_at"].isoformat()
                 doc["updated_at"] = doc["updated_at"].isoformat()
                 await db.vehicle_masters.insert_one(doc)
-                await sync_master_to_vehicles(db, doc)
+                await sync_master_to_vehicles(db, doc, country_query(current_user))
                 created += 1
         except HTTPException as exc:
             errors.append({"row": row.get("row"), "message": str(exc.detail)})
@@ -2055,9 +2057,10 @@ async def bulk_upload_inventory(
         try:
             assert_country(current_user, row["country"])
             unit_cost_usd = currency_converter.convert(row["unit_cost"], row["currency"], CurrencyEnum.USD)
-            existing = await db.inventory_items.find_one({"sku": row["sku"]}, {"_id": 0})
-            if existing:
-                await assert_record_scope(current_user, existing)
+            # The same part can be stocked in several countries, each with its own record.
+            existing = await db.inventory_items.find_one(
+                {"sku": row["sku"], **country_filter_query(row["country"])}, {"_id": 0}
+            )
             now_iso = datetime.now(timezone.utc).isoformat()
             if existing:
                 await db.inventory_items.update_one(
@@ -2436,9 +2439,9 @@ async def bulk_upload_expenditures(
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
-    vehicles = await db.vehicles.find(country_query(current_user), {"_id": 0, "id": 1, "registration_number": 1}).to_list(10000)
+    vehicles = await db.vehicles.find(country_query(current_user), {"_id": 0, "id": 1, "registration_number": 1, "country": 1}).to_list(10000)
     vehicles_by_reg = {(v.get("registration_number") or "").upper(): v for v in vehicles}
-    drivers = await db.drivers.find(country_query(current_user), {"_id": 0, "id": 1, "license_number": 1}).to_list(10000)
+    drivers = await db.drivers.find(country_query(current_user), {"_id": 0, "id": 1, "license_number": 1, "country": 1}).to_list(10000)
     drivers_by_license = {(d.get("license_number") or "").upper(): d for d in drivers}
 
     created = 0
@@ -2451,12 +2454,12 @@ async def bulk_upload_expenditures(
             driver_id = None
             if row.get("registration_number"):
                 vehicle = vehicles_by_reg.get(row["registration_number"].upper())
-                if not vehicle:
+                if not vehicle or not same_country(vehicle.get("country"), row["country"]):
                     raise ValueError(f"No vehicle found with registration {row['registration_number']}")
                 vehicle_id = vehicle["id"]
             if row.get("license_number"):
                 driver = drivers_by_license.get(row["license_number"].upper())
-                if not driver:
+                if not driver or not same_country(driver.get("country"), row["country"]):
                     raise ValueError(f"No driver found with license {row['license_number']}")
                 driver_id = driver["id"]
 
@@ -2628,6 +2631,7 @@ def _document_ocr_updates(ocr_result: dict) -> dict:
 @api_router.post("/documents", response_model=Document)
 async def create_document(input: DocumentCreate, current_user: dict = Depends(_require_staff)):
     await assert_payload_scope(current_user, input.model_dump())
+    await assert_document_entity(input.model_dump())
     doc_type = input.document_type.value if hasattr(input.document_type, "value") else str(input.document_type)
     if doc_type != "VEHICLE_REGISTRATION" and not input.expiry_date:
         raise HTTPException(status_code=400, detail="Expiry date is required for this document type")
@@ -2744,8 +2748,8 @@ async def bulk_upload_documents(
         file_map[name] = entry
         file_map.setdefault(name.lower(), entry)
 
-    vehicles = await db.vehicles.find(country_query(current_user), {"_id": 0, "id": 1, "registration_number": 1}).to_list(10000)
-    drivers = await db.drivers.find(country_query(current_user), {"_id": 0, "id": 1, "license_number": 1}).to_list(10000)
+    vehicles = await db.vehicles.find(country_query(current_user, country_code), {"_id": 0, "id": 1, "registration_number": 1}).to_list(10000)
+    drivers = await db.drivers.find(country_query(current_user, country_code), {"_id": 0, "id": 1, "license_number": 1}).to_list(10000)
     vehicles_by_reg = {(v.get("registration_number") or "").upper(): v for v in vehicles}
     drivers_by_license = {(d.get("license_number") or "").upper(): d for d in drivers}
 
@@ -3050,6 +3054,9 @@ async def update_document(
     await assert_payload_scope(current_user, update_data)
     if not update_data:
         raise HTTPException(status_code=400, detail="No fields to update")
+    # Only when the link changes, so older records can still have dates corrected.
+    if {"country", "entity_id", "entity_type"} & update_data.keys():
+        await assert_document_entity({**document, **update_data})
 
     await db.documents.update_one({"id": document_id}, {"$set": update_data})
     updated = await db.documents.find_one({"id": document_id}, {"_id": 0})
@@ -5523,7 +5530,7 @@ async def bulk_upload_tires(
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
-    vehicles = await db.vehicles.find(country_query(current_user), {"_id": 0, "id": 1, "registration_number": 1}).to_list(10000)
+    vehicles = await db.vehicles.find(country_query(current_user), {"_id": 0, "id": 1, "registration_number": 1, "country": 1}).to_list(10000)
     vehicles_by_reg = {(v.get("registration_number") or "").upper(): v for v in vehicles}
 
     existing_tires = await db.tires.find({}, {"_id": 0}).to_list(20000)
@@ -5538,7 +5545,7 @@ async def bulk_upload_tires(
         vehicle_id = None
         if registration:
             vehicle = vehicles_by_reg.get(registration.upper())
-            if not vehicle:
+            if not vehicle or not same_country(vehicle.get("country"), row["country"]):
                 errors.append({
                     "row": row["row"],
                     "serial_number": row["serial_number"],
@@ -5553,7 +5560,9 @@ async def bulk_upload_tires(
         try:
             assert_country(current_user, row["country"])
             if existing:
-                await assert_record_scope(current_user, existing)
+                # A serial identifies one physical tire: an import never moves it between countries.
+                if not same_country(existing.get("country"), row["country"]):
+                    raise HTTPException(status_code=409, detail="This serial number is already registered in another country")
                 update_data = {
                     "brand": row["brand"],
                     "model": row["model"],
@@ -5609,7 +5618,7 @@ async def bulk_upload_tires(
                     if doc.get(field):
                         doc[field] = doc[field].isoformat()
                 await db.tires.insert_one(doc)
-                tires_by_serial[serial_key] = {"id": tire.id, "serial_number": tire.serial_number}
+                tires_by_serial[serial_key] = {"id": tire.id, "serial_number": tire.serial_number, "country": row["country"]}
                 created.append({
                     "id": tire.id,
                     "serial_number": tire.serial_number,

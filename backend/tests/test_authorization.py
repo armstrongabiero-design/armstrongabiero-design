@@ -1444,3 +1444,167 @@ def test_weekly_email_escapes_and_lists_figures(monkeypatch):
     assert service.send_weekly_summary_report("a@b.c", {"week_start": EVIL, "week_end": "x", "trips_completed": 12, "distance_km": None}) is True
     html = captured[0][1]
     assert "<script" not in html and ">12<" in html and "Average safety score" in html
+
+
+# --- Documents must point at a vehicle or driver in their own country ---
+DOCUMENT = {
+    "country": "GH", "document_type": "INSURANCE", "entity_id": "v_gh", "entity_type": "VEHICLE",
+    "document_number": "D1", "issue_date": "2026-01-01T00:00:00", "expiry_date": "2027-01-01T00:00:00",
+}
+
+
+def test_document_can_be_created_for_a_vehicle_or_driver_in_country(client):
+    assert client.post("/api/documents", headers=auth("fo_gh"), json=DOCUMENT).status_code == 200
+    body = {**DOCUMENT, "entity_id": "d_gh", "entity_type": "DRIVER"}
+    assert client.post("/api/documents", headers=auth("fo_gh"), json=body).status_code == 200
+
+
+@pytest.mark.parametrize("user", ["fo_gh", "gfm"])
+@pytest.mark.parametrize("entity_id, entity_type, status", [
+    ("v_lr", "VEHICLE", 400),
+    ("d_lr", "DRIVER", 400),
+    ("missing", "VEHICLE", 404),
+    ("v_gh", "ASSET", 400),
+])
+def test_document_cannot_point_outside_its_country(client, fake_db, user, entity_id, entity_type, status):
+    before = len(fake_db.documents.docs)
+    body = {**DOCUMENT, "entity_id": entity_id, "entity_type": entity_type}
+    assert client.post("/api/documents", headers=auth(user), json=body).status_code == status
+    assert len(fake_db.documents.docs) == before
+
+
+def test_document_update_cannot_relink_outside_its_country(client, fake_db):
+    response = client.put("/api/documents/doc_gh", headers=auth("fo_gh"), json={"entity_id": "d_lr"})
+    assert response.status_code == 400
+    assert fake_db.documents.docs[0]["entity_id"] == "d_gh"
+
+
+def test_older_mislinked_document_can_still_have_its_dates_corrected(client, fake_db):
+    fake_db.documents.docs[0].update(
+        entity_id="d_lr", document_type="INSURANCE", document_number="N",
+        issue_date="2026-01-01T00:00:00", created_at="2026-01-01T00:00:00",
+    )
+    response = client.put("/api/documents/doc_gh", headers=auth("fo_gh"), json={"document_number": "N2"})
+    assert response.status_code == 200, response.text
+
+
+def _upload(client, user, path, monkeypatch, parser, rows, **data):
+    monkeypatch.setattr(server, parser, lambda *a, **k: (rows, []))
+    return client.post(path, headers=auth(user), data=data, files={"file": ("x.xlsx", b"x", "application/octet-stream")})
+
+
+def test_group_manager_document_import_only_matches_the_chosen_country(client, fake_db, monkeypatch):
+    row = {
+        "row": 2, "filename": "a.pdf", "entity_key": "LR-1", "entity_type": "VEHICLE",
+        "document_type": "INSURANCE", "document_number": "N", "issue_date": datetime(2026, 1, 1),
+        "expiry_date": datetime(2027, 1, 1),
+    }
+    monkeypatch.setattr(server, "parse_document_bulk_upload", lambda *_: ([row], []))
+    monkeypatch.setattr(server, "upload_bytes", lambda **_: ("k", "u"))
+    before = len(fake_db.documents.docs)
+    response = client.post(
+        "/api/documents/bulk-upload",
+        headers=auth("gfm"),
+        data={"country": "GH"},
+        files=[
+            ("metadata", ("m.xlsx", b"x", "application/octet-stream")),
+            ("files", ("a.pdf", b"%PDF-1.4", "application/pdf")),
+        ],
+    )
+    assert response.status_code == 200, response.text
+    assert response.json()["created"] == 0 and "No vehicle found" in response.json()["errors"][0]["message"]
+    assert len(fake_db.documents.docs) == before
+
+
+# --- Imports never touch another country's records ---
+INVENTORY_ROW = {
+    "row": 2, "name": "New", "sku": "S1", "category": "PARTS", "country": "GH", "location": "A",
+    "quantity": 1, "reorder_level": 1, "unit_cost": 1.0, "currency": "USD", "lead_time_days": 1,
+}
+
+
+@pytest.mark.parametrize("user", ["fo_gh", "gfm"])
+def test_inventory_import_leaves_the_same_sku_in_another_country_alone(client, fake_db, monkeypatch, user):
+    fake_db.inventory_items.docs.append({"id": "i_lr", "sku": "S1", "country": "LR", "name": "Liberia", "quantity": 99})
+    response = _upload(client, user, "/api/inventory/bulk-upload", monkeypatch, "parse_inventory_bulk_upload", [dict(INVENTORY_ROW)], country="GH")
+    assert response.status_code == 200, response.text
+    assert response.json()["created"] == 1 and response.json()["updated"] == 0
+    liberia = next(i for i in fake_db.inventory_items.docs if i["id"] == "i_lr")
+    assert liberia["country"] == "LR" and liberia["quantity"] == 99 and liberia["name"] == "Liberia"
+
+
+def test_inventory_import_still_updates_the_same_country(client, fake_db, monkeypatch):
+    fake_db.inventory_items.docs.append({"id": "i_gh", "sku": "S1", "country": "GHANA", "name": "Old", "quantity": 99})
+    response = _upload(client, "fo_gh", "/api/inventory/bulk-upload", monkeypatch, "parse_inventory_bulk_upload", [dict(INVENTORY_ROW)], country="GH")
+    assert response.json()["updated"] == 1 and response.json()["created"] == 0
+    assert fake_db.inventory_items.docs[0]["name"] == "New"
+
+
+TIRE_ROW = {
+    "row": 2, "serial_number": "T1", "brand": "B", "model": "M", "size": "S", "country": "GH",
+    "purchase_date": datetime(2026, 1, 1), "purchase_cost": 1.0, "currency": "USD",
+}
+
+
+@pytest.mark.parametrize("user", ["fo_gh", "gfm"])
+def test_tire_import_never_moves_a_tire_between_countries(client, fake_db, monkeypatch, user):
+    fake_db.tires.docs.append({"id": "t_lr", "serial_number": "T1", "country": "LR", "brand": "Keep"})
+    response = _upload(client, user, "/api/tires/bulk-upload", monkeypatch, "parse_tire_bulk_upload", [dict(TIRE_ROW)], country="GH")
+    assert response.status_code == 200, response.text
+    assert response.json()["errors"][0]["message"] == "This serial number is already registered in another country"
+    assert fake_db.tires.docs == [{"id": "t_lr", "serial_number": "T1", "country": "LR", "brand": "Keep"}]
+
+
+def test_group_manager_tire_import_cannot_fit_a_tire_to_another_countrys_vehicle(client, fake_db, monkeypatch):
+    rows = [{**TIRE_ROW, "registration_number": "LR-1"}]
+    response = _upload(client, "gfm", "/api/tires/bulk-upload", monkeypatch, "parse_tire_bulk_upload", rows, country="GH")
+    assert "No vehicle found" in response.json()["errors"][0]["message"] and not fake_db.tires.docs
+
+
+def test_group_manager_expenditure_import_cannot_cross_countries(client, fake_db, monkeypatch):
+    before = len(fake_db.expenditures.docs)
+    row = {
+        "row": 2, "country": "GH", "category": "OTHER", "description": "x", "amount": 1.0,
+        "currency": "USD", "date": datetime(2026, 1, 1), "registration_number": "LR-1",
+    }
+    response = _upload(client, "gfm", "/api/expenditures/bulk-upload", monkeypatch, "parse_expenditure_bulk_upload", [row], country="GH")
+    assert response.json()["created"] == 0 and "No vehicle found" in response.json()["errors"][0]["message"]
+    assert len(fake_db.expenditures.docs) == before
+
+
+# --- Vehicle master sync stays in the user's country and treats input as text ---
+MASTER = {"country": "GH", "make": "Overwritten", "model": "Overwritten"}
+
+
+@pytest.mark.parametrize("master", [
+    {"registration_number": "LR-1"},
+    {"registration_number": ".*"},
+    {"chassis_vin": ".*"},
+    {"linked_vehicle_id": "v_lr"},
+])
+def test_officer_master_record_cannot_overwrite_another_countrys_vehicle(client, fake_db, master):
+    response = client.post("/api/master/vehicles", headers=auth("fo_gh"), json={**MASTER, **master})
+    assert response.status_code == 200, response.text
+    liberian = next(v for v in fake_db.vehicles.docs if v["id"] == "v_lr")
+    assert liberian["make"] == "T" and liberian["country"] == "LR"
+
+
+def test_master_registration_is_not_treated_as_a_pattern(client, fake_db):
+    client.post("/api/master/vehicles", headers=auth("gfm"), json={**MASTER, "registration_number": ".*"})
+    assert {v["make"] for v in fake_db.vehicles.docs} == {"T"}
+
+
+def test_master_record_still_syncs_to_a_vehicle_in_country(client, fake_db):
+    response = client.post("/api/master/vehicles", headers=auth("fo_gh"), json={**MASTER, "registration_number": "gh-1"})
+    assert response.status_code == 200, response.text
+    assert next(v for v in fake_db.vehicles.docs if v["id"] == "v_gh")["make"] == "Overwritten"
+
+
+def test_vehicle_save_does_not_take_over_another_countrys_master(client, fake_db):
+    from vehicle_master_service import upsert_master_from_vehicle
+    fake_db.vehicle_masters.docs.append({"id": "m_lr", "country": "LR", "registration_number": "GH-1", "make": "Keep"})
+    vehicle = next(v for v in fake_db.vehicles.docs if v["id"] == "v_gh")
+    import asyncio
+    new_id = asyncio.run(upsert_master_from_vehicle(fake_db, vehicle))
+    assert new_id != "m_lr"
+    assert fake_db.vehicle_masters.docs[0]["make"] == "Keep" and fake_db.vehicle_masters.docs[0]["country"] == "LR"

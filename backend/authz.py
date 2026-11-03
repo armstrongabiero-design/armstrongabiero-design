@@ -98,6 +98,11 @@ def merge_scope(query: Dict[str, Any], scope: Dict[str, Any]) -> Dict[str, Any]:
     return {"$and": [query, scope]} if query else scope
 
 
+def same_country(first: Any, second: Any) -> bool:
+    code = _normalize(first)
+    return bool(code) and code == _normalize(second)
+
+
 def assert_country(user: Dict[str, Any], country: Any) -> None:
     if is_group_manager(user):
         return
@@ -145,6 +150,27 @@ async def assert_payload_scope(user: Dict[str, Any], payload: Dict[str, Any]) ->
             await assert_driver_scope(user, payload["driver_id"])
         else:
             assert_own_driver(user, payload["driver_id"])
+
+
+async def assert_document_entity(document: Dict[str, Any]) -> None:
+    """A document's vehicle or driver must exist and be in the document's country."""
+    entity_type = str(document.get("entity_type") or "").upper()
+    if entity_type not in ("VEHICLE", "DRIVER"):
+        raise HTTPException(status_code=400, detail="Entity type must be VEHICLE or DRIVER")
+    projection = {"_id": 0, "country": 1}
+    entity_id = document.get("entity_id")
+    if entity_type == "VEHICLE":
+        entity = await db.vehicles.find_one({"id": entity_id}, projection)
+    else:
+        # Older records store the account id as the driver id.
+        entity = await db.drivers.find_one({"id": entity_id}, projection) or await db.users.find_one(
+            {"id": entity_id}, projection
+        )
+    label = entity_type.capitalize()
+    if not entity:
+        raise HTTPException(status_code=404, detail=f"{label} not found")
+    if not same_country(entity.get("country"), document.get("country")):
+        raise HTTPException(status_code=400, detail=f"{label} is not in this document's country")
 
 
 async def assert_record_scope(user: Dict[str, Any], record: Dict[str, Any]) -> None:
