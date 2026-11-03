@@ -147,6 +147,15 @@ class EmailService:
                 "action": "You will receive another email when your account is approved.",
                 "show_login": False,
             },
+            "REGISTRATION_ATTEMPT": {
+                "subject": "Someone tried to register with your GTI Fleet email",
+                "heading": "Registration attempt",
+                "color": "#d97706",
+                "icon": "⚠️",
+                "message": "Someone tried to create a new GTI Fleet account with this email address, but you already have an account. No changes were made.",
+                "action": "If this was you, sign in or use Forgot password. If it was not, you can ignore this email.",
+                "show_login": True,
+            },
             "APPROVED": {
                 "subject": "Your GTI Fleet account has been approved",
                 "heading": "Account approved",
@@ -489,6 +498,42 @@ class EmailService:
             </div>
             <div style="padding: 15px; background: #f3f4f6; border-radius: 0 0 8px 8px; text-align: center; color: #6b7280; font-size: 12px;">
                 This is an automated report from GTI Fleet Solutions.
+            </div>
+        </body>
+        </html>
+        """
+        return self.send_email(email, subject, html_content)
+
+    def send_weekly_summary_report(self, email: str, report_data: dict) -> bool:
+        """Send the weekly fleet summary to the Group Fleet Manager."""
+        subject = f"GTI Fleet Weekly Summary - {report_data.get('week_start', '')} to {report_data.get('week_end', '')}"
+        report_data = _escaped(report_data)
+        rows = [
+            ("Trips completed", report_data.get("trips_completed", 0)),
+            ("Distance driven (km)", round(report_data.get("distance_km", 0) or 0, 1)),
+            ("Maintenance jobs completed", report_data.get("maintenance_completed", 0)),
+            ("Fuel cost (GHS)", report_data.get("fuel_cost_ghs", 0)),
+            ("Maintenance cost (GHS)", report_data.get("maintenance_cost_ghs", 0)),
+            ("Total cost (GHS)", report_data.get("total_cost_ghs", 0)),
+            ("Average utilization (%)", report_data.get("avg_utilization", 0)),
+            ("Speed violations", report_data.get("speed_violations", 0)),
+            ("Pre-trip checklists completed", report_data.get("checklists_completed", 0)),
+            ("Average safety score", report_data.get("avg_safety_score", 0)),
+        ]
+        rows_html = "".join(
+            f'''<tr style="border-bottom: 1px solid #e5e7eb;"><td style="padding: 10px; font-weight: bold;">{label}</td><td style="padding: 10px;">{value}</td></tr>'''
+            for label, value in rows
+        )
+        html_content = f"""
+        <html>
+        <body style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
+            <div style="background: linear-gradient(135deg, #e3aa27, #c4912a); color: white; padding: 20px; border-radius: 8px 8px 0 0;">
+                <h2 style="margin: 0;">GTI Fleet Solutions - Weekly Summary</h2>
+                <p style="margin: 5px 0 0 0;">{report_data.get('week_start', '')} to {report_data.get('week_end', '')}</p>
+            </div>
+            <div style="padding: 20px; border: 1px solid #e5e7eb; border-top: none; border-radius: 0 0 8px 8px;">
+                <table style="width: 100%; border-collapse: collapse;">{rows_html}</table>
+                <p style="color: #6b7280; font-size: 13px;">Generated {report_data.get('generated_date', '')}.</p>
             </div>
         </body>
         </html>

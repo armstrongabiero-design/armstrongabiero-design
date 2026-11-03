@@ -13,7 +13,9 @@ from dotenv import load_dotenv
 
 ROOT_DIR = Path(__file__).parent
 load_dotenv(ROOT_DIR / ".env")
-from fastapi import FastAPI, APIRouter, HTTPException, UploadFile, File, Form, Depends, Query, Body, Request, Header
+from fastapi import (
+    APIRouter, BackgroundTasks, Body, Depends, FastAPI, File, Form, Header, HTTPException, Query, Request, UploadFile,
+)
 from fastapi.responses import JSONResponse, Response
 from slowapi import Limiter, _rate_limit_exceeded_handler
 from slowapi.errors import RateLimitExceeded
@@ -1136,7 +1138,9 @@ async def accept_driver_invite(request: Request, body: dict = Body(...)):
     from models.invites import AcceptDriverInviteRequest
     try:
         payload = AcceptDriverInviteRequest(**body)
-        return await accept_invite(db, payload.token, payload.new_password)
+        accepted = await accept_invite(db, payload.token, payload.new_password)
+        await _audit_security_event("invite_accepted", request, email=accepted.get("email"))
+        return accepted
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
@@ -4848,18 +4852,82 @@ def _send_account_status_email(user: dict, status: str) -> bool:
     )
 
 
+_dummy_password_hash: Optional[str] = None
+
+
+def _password_matches(user: Optional[dict], password: str) -> bool:
+    """Check a password, spending the same time whether or not the account exists."""
+    global _dummy_password_hash
+    if user:
+        return verify_password(password, user["hashed_password"])
+    if _dummy_password_hash is None:
+        _dummy_password_hash = get_password_hash(uuid.uuid4().hex)
+    verify_password(password, _dummy_password_hash)
+    return False
+
+
+async def _audit_security_event(
+    action: str,
+    request: Request,
+    *,
+    email: Optional[str] = None,
+    user: Optional[dict] = None,
+    target: Optional[dict] = None,
+    **details,
+) -> None:
+    """Record a sign-in or account event. A failure here must never block the user.
+
+    `user` is someone who proved who they are. `target` is an account an unproven caller
+    acted on, which stays anonymous so a victim is never recorded as the attacker.
+    """
+    try:
+        await write_audit_log(
+            action=action,
+            entity_type="auth",
+            entity_id=(user or target or {}).get("id") or "-",
+            actor_id=(user or {}).get("id") or "anonymous",
+            actor_role=(user or {}).get("role") or "anonymous",
+            actor_email=str(email or (user or target or {}).get("email") or "")[:254] or None,
+            details={"ip": request.client.host if request.client else None, **details},
+        )
+    except Exception:
+        logger.exception("Could not write audit entry for %s", action)
+
+
+def _registration_response(user_id: str, email: str, input: UserSelfRegister, country) -> dict:
+    return {
+        "status": "pending_approval",
+        "message": "Registration successful. An authorized manager must approve your account before you can log in.",
+        "user": {
+            "id": user_id,
+            "email": email,
+            "full_name": input.full_name,
+            "role": input.role.value if hasattr(input.role, "value") else input.role,
+            "country": country,
+            "is_approved": False,
+        },
+    }
+
+
 @api_router.post("/auth/register", status_code=201)
 @limiter.limit("10/minute")
-async def register_user(request: Request, input: UserSelfRegister):
-    """Public self-registration (USER, DRIVER, FLEET_MANAGER, FLEET_OFFICER). No JWT until a manager approves."""
+async def register_user(request: Request, input: UserSelfRegister, background_tasks: BackgroundTasks):
+    """Public self-registration (USER, DRIVER, FLEET_MANAGER, FLEET_OFFICER). No JWT until a manager approves.
+
+    The reply is the same whether or not the email is taken, so this cannot reveal who has an
+    account. The owner of an existing account gets an email instead.
+    """
     email = _normalize_email(input.email)
+    hashed_password = get_password_hash(input.password)
     existing = await _find_user_by_email(email)
     if existing:
-        raise HTTPException(status_code=400, detail="Email already registered")
+        await _audit_security_event("register_duplicate", request, email=email)
+        background_tasks.add_task(_send_account_status_email, existing, "REGISTRATION_ATTEMPT")
+        return _registration_response(str(uuid.uuid4()), email, input, input.country)
 
     user = User(
         email=email,
-        hashed_password=get_password_hash(input.password),
+        hashed_password=hashed_password,
         full_name=input.full_name,
         role=input.role,
         country=input.country,
@@ -4879,20 +4947,10 @@ async def register_user(request: Request, input: UserSelfRegister):
         doc["last_login"] = doc["last_login"].isoformat()
 
     await db.users.insert_one(doc)
-    _send_account_status_email(doc, "PENDING_APPROVAL")
+    await _audit_security_event("register", request, email=email, requested_role=doc.get("role"))
+    background_tasks.add_task(_send_account_status_email, doc, "PENDING_APPROVAL")
 
-    return {
-        "status": "pending_approval",
-        "message": "Registration successful. An authorized manager must approve your account before you can log in.",
-        "user": {
-            "id": user.id,
-            "email": user.email,
-            "full_name": user.full_name,
-            "role": user.role.value if hasattr(user.role, "value") else user.role,
-            "country": doc.get("country"),
-            "is_approved": False,
-        },
-    }
+    return _registration_response(user.id, user.email, input, doc.get("country"))
 
 
 @api_router.post("/auth/bootstrap", response_model=Token)
@@ -4932,6 +4990,7 @@ async def bootstrap_group_fleet_manager(
     doc = user.model_dump()
     doc["created_at"] = doc["created_at"].isoformat()
     await db.users.insert_one(doc)
+    await _audit_security_event("bootstrap_group_manager", request, email=input.email)
 
     access_token = create_access_token(
         data=access_token_payload_from_user_record(user.model_dump())
@@ -4955,10 +5014,8 @@ async def bootstrap_group_fleet_manager(
 async def login(request: Request, input: UserLogin):
     """Login and get access token"""
     user = await _find_user_by_email(input.email)
-    if not user:
-        raise HTTPException(status_code=401, detail="Invalid email or password")
-    
-    if not verify_password(input.password, user['hashed_password']):
+    if not _password_matches(user, input.password):
+        await _audit_security_event("login_failed", request, email=input.email, target=user)
         raise HTTPException(status_code=401, detail="Invalid email or password")
     
     if user.get("invite_pending") and not user.get("is_active", True):
@@ -4990,6 +5047,7 @@ async def login(request: Request, input: UserLogin):
         {"id": user['id']},
         {"$set": {"last_login": datetime.now(timezone.utc).isoformat()}}
     )
+    await _audit_security_event("login_succeeded", request, user=user)
     
     access_token = create_access_token(
         data=access_token_payload_from_user_record(user)
@@ -5015,10 +5073,8 @@ async def login(request: Request, input: UserLogin):
 async def send_otp(request: Request, input: UserLogin):
     """Send OTP to Group Fleet Manager email for verification"""
     user = await _find_user_by_email(input.email)
-    if not user:
-        raise HTTPException(status_code=401, detail="Invalid email or password")
-    
-    if not verify_password(input.password, user['hashed_password']):
+    if not _password_matches(user, input.password):
+        await _audit_security_event("login_failed", request, email=input.email, target=user)
         raise HTTPException(status_code=401, detail="Invalid email or password")
     
     if user['role'] != 'GROUP_FLEET_MANAGER':
@@ -5030,6 +5086,7 @@ async def send_otp(request: Request, input: UserLogin):
     try:
         otp_code = await issue_otp(db, user["email"])
     except OtpSendLimitExceeded:
+        await _audit_security_event("otp_send_limit_reached", request, user=user)
         raise HTTPException(
             status_code=429,
             detail="Too many verification codes requested. Please try again in 15 minutes.",
@@ -5057,9 +5114,12 @@ async def verify_otp(request: Request, email: str = Body(...), otp: str = Body(.
     # One response for every failure, so this route cannot be used to discover accounts.
     user = await _find_user_by_email(email)
     if not user or not await verify_otp_code(db, user["email"], otp):
+        await _audit_security_event("otp_failed", request, email=email, target=user)
         raise invalid
     if not user.get("is_active", True):
+        await _audit_security_event("otp_failed", request, target=user, reason="deactivated")
         raise invalid
+    await _audit_security_event("login_succeeded", request, user=user, otp=True)
 
     # Update last login
     await db.users.update_one(
@@ -5271,9 +5331,10 @@ async def update_user(user_id: str, input: UserUpdate, current_user: dict = Depe
 
 @api_router.post("/auth/forgot-password")
 @limiter.limit("5/minute")
-async def forgot_password(request: Request, input: ForgotPasswordRequest):
+async def forgot_password(request: Request, input: ForgotPasswordRequest, background_tasks: BackgroundTasks):
     """Request a password reset token"""
-    user = await db.users.find_one({"email": input.email}, {"_id": 0})
+    user = await _find_user_by_email(input.email)
+    await _audit_security_event("password_reset_requested", request, email=input.email, target=user)
     
     # Always return success to prevent email enumeration
     if not user:
@@ -5288,17 +5349,24 @@ async def forgot_password(request: Request, input: ForgotPasswordRequest):
     token_doc = PasswordResetToken(
         user_id=user['id'],
         token=reset_token,
-        email=input.email,
+        email=user['email'],
         expires_at=expires_at
     )
     doc = token_doc.model_dump()
     doc['expires_at'] = doc['expires_at'].isoformat()
     doc['created_at'] = doc['created_at'].isoformat()
+    # Only the newest link should work.
+    await db.password_reset_tokens.update_many(
+        {"user_id": user['id'], "used": False},
+        {"$set": {"used": True}},
+    )
     await db.password_reset_tokens.insert_one(doc)
     
-    # Send email with reset link (if Resend is configured)
+    # Sent after the reply, so the response time does not reveal whether the account exists.
     reset_link = f"{os.environ.get('FRONTEND_URL', 'http://localhost:3000')}/reset-password?token={reset_token}"
-    email_service.send_password_reset_email(input.email, reset_link, user.get('full_name', 'User'))
+    background_tasks.add_task(
+        email_service.send_password_reset_email, user['email'], reset_link, user.get('full_name', 'User')
+    )
     
     return {"status": "success", "message": "If an account with that email exists, a reset link will be sent."}
 
@@ -5343,6 +5411,7 @@ async def reset_password(request: Request, input: ResetPasswordRequest):
         {"token": input.token},
         {"$set": {"used": True}}
     )
+    await _audit_security_event("password_reset_completed", request, target={"id": token_doc['user_id']})
     
     return {"status": "success", "message": "Password reset successfully"}
 

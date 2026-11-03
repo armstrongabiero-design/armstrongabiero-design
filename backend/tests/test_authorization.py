@@ -599,13 +599,12 @@ def test_group_manager_daily_report_still_runs(client):
 
 
 def test_group_manager_weekly_report_still_runs(client, monkeypatch):
-    # EmailService has no send_weekly_summary_report yet, so the real route fails at the send step.
-    monkeypatch.setattr(
-        server.email_service, "send_weekly_summary_report", lambda *a, **k: False, raising=False
-    )
+    sent = []
+    monkeypatch.setattr(server.email_service, "send_email", lambda _to, subject, html: sent.append(html) or True)
     response = client.post("/api/reports/send-weekly", headers=auth("gfm"))
     assert response.status_code == 200, response.text
-    assert response.json()["report_data"]["trips_completed"] == 3
+    assert response.json()["status"] == "success"
+    assert "Trips completed" in sent[0] and ">3<" in sent[0]
 
 
 def test_fleet_tco_totals_are_not_silently_dropped(client):
@@ -1264,5 +1263,184 @@ def test_every_bulk_importer_reads_its_own_template_and_refuses_junk(builder, pa
 
     template = resolve(builder)()
     resolve(parser)(template, **kwargs)  # Must not raise: the template is a real workbook.
+    has_sample = "vehicle_master" not in builder
+    if has_sample:
+        parsed, errors = resolve(parser)(template, **kwargs)
+        assert not parsed and any("sample row" in e["message"] for e in errors)
     with pytest.raises(ValueError):
         resolve(parser)(b"<html>not excel</html>", **kwargs)
+
+
+# --- Sample rows ---
+def test_edited_sample_rows_are_imported_as_real_data():
+    from upload_safety import is_sample_row
+    assert is_sample_row(("GR-1", 2022, None), ("GR-1", 2022.0, None)) is True
+    assert is_sample_row((" GR-1 ", 2022, None, None), ("GR-1", 2022, None)) is True
+    assert is_sample_row(("GR-2", 2022, None), ("GR-1", 2022, None)) is False
+    assert is_sample_row(("GR-1", 2022, None, "extra"), ("GR-1", 2022, None)) is False
+    assert is_sample_row(("GR-1",), ("GR-1", 2022)) is False
+
+
+def test_vehicle_template_upload_creates_nothing(client, fake_db):
+    from vehicle_bulk_import import build_template_workbook
+    before = len(fake_db.vehicles.docs)
+    response = client.post(
+        "/api/vehicles/bulk-upload",
+        headers=auth("gfm"),
+        data={"country": "GH"},
+        files={"file": ("t.xlsx", build_template_workbook(), "application/octet-stream")},
+    )
+    assert response.status_code == 200, response.text
+    assert response.json()["created"] == 0 and len(fake_db.vehicles.docs) == before
+    assert "sample row" in response.json()["errors"][0]["message"]
+
+
+# --- Cron token ---
+def test_cron_token_works_on_scheduled_routes_only(client, fake_db, monkeypatch):
+    monkeypatch.setenv("REMINDER_CRON_TOKEN", "cron-secret")
+    good = {"X-Reminder-Token": "cron-secret"}
+    assert client.post("/api/vehicles/availability/snapshot", headers=good).status_code == 200
+    assert client.post("/api/reminders/run", headers=good).status_code == 200
+    assert client.post("/api/vehicles/availability/snapshot", headers={"X-Reminder-Token": "bad"}).status_code == 401
+    assert client.post("/api/vehicles/availability/snapshot").status_code == 401
+    assert client.post("/api/expenditures", headers=good, json=EXPENDITURE).status_code == 401
+
+
+def test_cron_token_stops_working_when_not_configured(client, monkeypatch):
+    monkeypatch.delenv("REMINDER_CRON_TOKEN", raising=False)
+    response = client.post("/api/vehicles/availability/snapshot", headers={"X-Reminder-Token": "x"})
+    assert response.status_code == 401
+
+
+def test_staff_can_still_trigger_a_snapshot(client):
+    assert client.post("/api/vehicles/availability/snapshot", headers=auth("fo_gh")).status_code == 200
+    assert client.post("/api/vehicles/availability/snapshot", headers=auth("driver_gh")).status_code == 403
+
+
+# --- Audit logging ---
+def _api_writes(fake_db):
+    return [a for a in fake_db.audit_logs.docs if a["action"] == "api_write"]
+
+
+def test_every_successful_write_is_audited_with_route_and_actor(client, fake_db):
+    assert client.post("/api/expenditures", headers=auth("fo_gh"), json=EXPENDITURE).status_code == 200
+    assert client.put("/api/expenditures/exp_gh", headers=auth("fo_gh"), json={"description": "y"}).status_code == 200
+    entries = _api_writes(fake_db)
+    assert [e["entity_type"] for e in entries] == ["/api/expenditures", "/api/expenditures/{expenditure_id}"]
+    assert entries[1]["entity_id"] == "exp_gh"
+    assert entries[1]["actor_id"] == "fo_gh" and entries[1]["actor_role"] == "FLEET_OFFICER"
+    assert entries[1]["details"]["method"] == "PUT" and entries[1]["details"]["status"] == 200
+
+
+def test_failed_and_read_requests_are_not_write_audited(client, fake_db):
+    client.get("/api/expenditures", headers=auth("fo_gh"))
+    client.post("/api/expenditures", headers=auth("user_gh"), json=EXPENDITURE)
+    client.put("/api/expenditures/exp_lr", headers=auth("fo_gh"), json={"description": "y"})
+    assert _api_writes(fake_db) == []
+
+
+def test_write_audit_never_stores_the_request_body(client, fake_db):
+    body = {**EXPENDITURE, "description": "private-body-text"}
+    client.post("/api/expenditures", headers=auth("fo_gh"), json=body)
+    assert "private-body-text" not in str(_api_writes(fake_db))
+
+
+def test_cron_writes_are_audited_as_system(client, fake_db, monkeypatch):
+    monkeypatch.setenv("REMINDER_CRON_TOKEN", "cron-secret")
+    client.post("/api/reminders/run", headers={"X-Reminder-Token": "cron-secret"})
+    entry = _api_writes(fake_db)[-1]
+    assert entry["actor_id"] == "cron" and entry["actor_role"] == "system"
+
+
+def test_audit_failure_does_not_break_the_request(client, monkeypatch):
+    async def broken(**_kwargs):
+        raise RuntimeError("audit store down")
+    monkeypatch.setattr(security_middleware, "write_audit_log", broken)
+    assert client.post("/api/expenditures", headers=auth("fo_gh"), json=EXPENDITURE).status_code == 200
+
+
+def _events(fake_db, action):
+    return [a for a in fake_db.audit_logs.docs if a["action"] == action]
+
+
+def test_sign_in_events_are_audited_without_passwords(otp_env):
+    client, db = otp_env.client, otp_env.db
+    assert client.post("/api/auth/login", json={"email": "nobody@example.com", "password": "Secret-Guess1!"}).status_code == 401
+    assert client.post("/api/auth/login", json={**GFM_LOGIN, "password": "Wrong-Pass1!"}).status_code == 401
+    client.post("/api/auth/send-otp", json=GFM_LOGIN)
+    _verify(client, _wrong(otp_env.sent[0]))
+    _verify(client, otp_env.sent[0])
+    failed = _events(db, "login_failed")
+    assert [f["actor_email"] for f in failed] == ["nobody@example.com", "gfm@example.com"]
+    assert all(f["actor_id"] == "anonymous" for f in failed)
+    assert failed[0]["entity_id"] == "-" and failed[1]["entity_id"] == "gfm"
+    assert len(_events(db, "otp_failed")) == 1 and len(_events(db, "login_succeeded")) == 1
+    log = str(db.audit_logs.docs)
+    assert "Secret-Guess1!" not in log and "Wrong-Pass1!" not in log and otp_env.sent[0] not in log
+
+
+def test_password_reset_events_are_audited(otp_env, monkeypatch):
+    client, db = otp_env.client, otp_env.db
+    monkeypatch.setattr(server.email_service, "send_password_reset_email", lambda *a, **k: True)
+    client.post("/api/auth/forgot-password", json={"email": "gfm@example.com"})
+    token = db.password_reset_tokens.docs[0]["token"]
+    assert client.post("/api/auth/reset-password", json={"token": token, "new_password": GOOD_PASSWORD}).status_code == 200
+    assert len(_events(db, "password_reset_requested")) == 1 and len(_events(db, "password_reset_completed")) == 1
+    assert token not in str(db.audit_logs.docs)
+
+
+# --- Account discovery (M6) ---
+def test_register_gives_the_same_reply_for_a_taken_email(client, fake_db, monkeypatch):
+    sent = []
+    monkeypatch.setattr(server.email_service, "send_account_status_notification", lambda email, _data, status: sent.append((email, status)) or True)
+    new = _signup(client, "free@example.com", role="USER")
+    taken = _signup(client, "fo_gh@example.com", role="USER")
+    assert new.status_code == taken.status_code == 201
+    assert set(new.json()) == set(taken.json()) and new.json()["message"] == taken.json()["message"]
+    assert set(new.json()["user"]) == set(taken.json()["user"])
+    assert sent == [("free@example.com", "PENDING_APPROVAL"), ("fo_gh@example.com", "REGISTRATION_ATTEMPT")]
+
+
+def test_duplicate_signup_changes_nothing_on_the_account(client, fake_db):
+    user = next(u for u in fake_db.users.docs if u["id"] == "fo_gh")
+    before, count = dict(user), len(fake_db.users.docs)
+    response = _signup(client, "FO_GH@example.com", role="FLEET_MANAGER")
+    assert response.status_code == 201
+    assert user == before and len(fake_db.users.docs) == count
+    assert response.json()["user"]["id"] != "fo_gh"
+
+
+def test_password_is_checked_even_when_the_account_does_not_exist(client, monkeypatch):
+    calls = []
+    real = server.verify_password
+    monkeypatch.setattr(server, "verify_password", lambda p, h: calls.append(h) or real(p, h))
+    assert client.post("/api/auth/login", json={"email": "nobody@example.com", "password": "x"}).status_code == 401
+    assert client.post("/api/auth/send-otp", json={"email": "nobody@example.com", "password": "x"}).status_code == 401
+    assert len(calls) == 2
+
+
+def test_forgot_password_replies_identically_and_sends_to_the_stored_address(client, fake_db, monkeypatch):
+    sent = []
+    monkeypatch.setattr(server.email_service, "send_password_reset_email", lambda email, *_a: sent.append(email) or True)
+    fake_db.users.docs.append({"id": "mixed", "email": "Mixed.Case@example.com", "full_name": "M", "role": "USER"})
+    known = client.post("/api/auth/forgot-password", json={"email": "mixed.case@EXAMPLE.com"})
+    unknown = client.post("/api/auth/forgot-password", json={"email": "nobody@example.com"})
+    assert known.status_code == unknown.status_code == 200 and known.json() == unknown.json()
+    assert sent == ["Mixed.Case@example.com"]
+
+
+def test_only_the_newest_reset_link_works(client, fake_db, monkeypatch):
+    monkeypatch.setattr(server.email_service, "send_password_reset_email", lambda *a, **k: True)
+    for _ in range(2):
+        client.post("/api/auth/forgot-password", json={"email": "fo_gh@example.com"})
+    old, new = [t["token"] for t in fake_db.password_reset_tokens.docs]
+    assert client.post("/api/auth/reset-password", json={"token": old, "new_password": GOOD_PASSWORD}).status_code == 400
+    assert client.post("/api/auth/reset-password", json={"token": new, "new_password": GOOD_PASSWORD}).status_code == 200
+
+
+# --- Weekly report ---
+def test_weekly_email_escapes_and_lists_figures(monkeypatch):
+    service, captured = _capture_email(monkeypatch)
+    assert service.send_weekly_summary_report("a@b.c", {"week_start": EVIL, "week_end": "x", "trips_completed": 12, "distance_km": None}) is True
+    html = captured[0][1]
+    assert "<script" not in html and ">12<" in html and "Average safety score" in html

@@ -47,6 +47,30 @@ def safe_load_workbook(file_bytes: bytes):
     return load_workbook(io.BytesIO(file_bytes), read_only=True, data_only=True)
 
 
+SAMPLE_ROW_MESSAGE = "This is the template's sample row, so it was not imported. Delete it or replace it with your data."
+
+
+def _normalize_cell(value: object) -> str:
+    if value is None:
+        return ""
+    if isinstance(value, bool):
+        return str(value)
+    if isinstance(value, (int, float)):
+        return repr(float(value))
+    if hasattr(value, "isoformat"):
+        return value.isoformat()
+    return str(value).strip()
+
+
+def is_sample_row(row, sample_row) -> bool:
+    """True when a spreadsheet row is still the unedited example from the template."""
+    cells = [_normalize_cell(cell) for cell in (row or ())]
+    expected = [_normalize_cell(cell) for cell in sample_row]
+    if len(cells) < len(expected) or any(cells[len(expected):]):
+        return False
+    return cells[:len(expected)] == expected
+
+
 def content_matches_type(content: bytes, content_type: str) -> bool:
     """Check that a file's bytes match its declared type, which the client controls."""
     head = content[:2048]
