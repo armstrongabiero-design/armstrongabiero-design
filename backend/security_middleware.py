@@ -8,7 +8,7 @@ from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.requests import Request
 from starlette.responses import JSONResponse
 
-from auth_service import decode_token_raw
+from auth_service import decode_token_raw, tokens_match
 from database import db
 
 # (method, path) exact match after normalizing trailing slash on path
@@ -63,7 +63,7 @@ class JWTAuthMiddleware(BaseHTTPMiddleware):
         if request.method == "POST" and norm == "/api/reminders/run":
             cron_token = os.environ.get("REMINDER_CRON_TOKEN", "").strip()
             header_token = request.headers.get("X-Reminder-Token", "")
-            if cron_token and header_token and header_token == cron_token:
+            if tokens_match(cron_token, header_token):
                 request.state.jwt_payload = None
                 return await call_next(request)
 

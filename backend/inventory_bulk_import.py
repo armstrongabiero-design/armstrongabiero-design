@@ -5,10 +5,11 @@ import io
 import re
 from typing import Any, Dict, List, Optional, Tuple
 
-from openpyxl import Workbook, load_workbook
+from openpyxl import Workbook
 from openpyxl.styles import Font, PatternFill
 from openpyxl.utils import get_column_letter
 
+from upload_safety import safe_load_workbook
 from country_utils import normalize_country_code
 from models.enums import CurrencyEnum
 
@@ -137,7 +138,7 @@ def parse_inventory_bulk_upload(
     file_bytes: bytes,
     default_country: Optional[str] = None,
 ) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
-    wb = load_workbook(io.BytesIO(file_bytes), read_only=True, data_only=True)
+    wb = safe_load_workbook(file_bytes)
     ws = None
     for name in wb.sheetnames:
         if name.strip().lower() in ("inventory", "items", "sheet1"):

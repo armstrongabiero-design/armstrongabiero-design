@@ -2,6 +2,7 @@
 Authentication Service for Fleet Management System
 Handles user authentication, JWT tokens, and role-based access
 """
+import hmac
 import logging
 import os
 from datetime import datetime, timedelta, timezone
@@ -48,6 +49,13 @@ def assert_jwt_configuration() -> None:
                 "(e.g. openssl rand -hex 32)."
             )
         logger.warning("JWT_SECRET_KEY should be at least 32 characters for adequate entropy")
+
+
+def tokens_match(expected: str, supplied: Optional[str]) -> bool:
+    """Compare secret tokens in constant time. Empty values never match."""
+    if not expected or not supplied:
+        return False
+    return hmac.compare_digest(expected.encode(), supplied.encode())
 
 
 def decode_token_raw(token: str) -> dict:

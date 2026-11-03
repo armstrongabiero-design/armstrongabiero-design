@@ -5,6 +5,7 @@ import io
 import os
 import re
 import uuid
+import zipfile
 from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 
@@ -27,8 +28,10 @@ import auth_deps
 import authz
 import security_middleware
 import server
-from auth_service import create_access_token
+from auth_service import create_access_token, tokens_match
+from email_service import EmailService
 from export_utils import build_export_bytes
+from upload_safety import content_disposition, content_matches_type, safe_load_workbook
 
 
 def _matches(doc, query):
@@ -143,6 +146,19 @@ class _Collection:
         before = len(self.docs)
         self.docs = [d for d in self.docs if not _matches(d, query)]
         return SimpleNamespace(deleted_count=before - len(self.docs))
+
+    def aggregate(self, pipeline):
+        match, group = pipeline[0]["$match"], pipeline[1]["$group"]
+        total_field = group["total"]["$sum"].lstrip("$")
+        key_field = group["_id"].lstrip("$") if group["_id"] else None
+        groups = {}
+        for doc in self.docs:
+            if _matches(doc, match):
+                row = groups.setdefault(doc.get(key_field) if key_field else None, {"total": 0, "count": 0})
+                value = doc.get(total_field)
+                row["total"] += value if isinstance(value, (int, float)) else 0
+                row["count"] += 1
+        return _Cursor([{"_id": key, **row} for key, row in groups.items()])
 
     async def count_documents(self, query):
         return len([d for d in self.docs if _matches(d, query)])
@@ -1018,3 +1034,235 @@ def test_email_link_never_shares_a_profile_already_claimed(client, fake_db):
     user = _add_user(fake_db, "second", role="DRIVER", email="shared@example.com", approved_at="2026-01-01")
     assert client.get("/api/drivers", headers=auth("gfm")).status_code == 200
     assert user["driver_id"] is None
+
+
+# --- Dashboard totals ---
+def _add_costs(fake_db):
+    fake_db.fuel_transactions.docs += [
+        {"id": "f1", "vehicle_id": "v_gh", "cost_usd": 10.0, "date": "2026-11-01T00:00:00"},
+        {"id": "f2", "vehicle_id": "v_lr", "cost_usd": 200.0, "date": "2026-11-01T00:00:00"},
+    ]
+    fake_db.maintenance_records.docs += [
+        {"id": "m1", "vehicle_id": "v_gh", "cost_usd": 30.0, "completed_date": None, "scheduled_date": "2026-11-01T00:00:00"},
+        {"id": "m2", "vehicle_id": "v_lr", "cost_usd": 400.0, "completed_date": None, "scheduled_date": "2026-11-01T00:00:00"},
+    ]
+
+
+@pytest.mark.parametrize("path", ["/api/dashboard/staff", "/api/dashboard/stats"])
+def test_country_dashboards_show_their_own_costs(client, fake_db, path):
+    _add_costs(fake_db)
+    body = client.get(path, headers=auth("fm_gh")).json()
+    assert body["total_fuel_cost_usd"] == 10.0
+    assert body["total_maintenance_cost_usd"] == 30.0
+    assert body["pending_maintenance"] == 1
+
+
+@pytest.mark.parametrize("path", ["/api/dashboard/staff", "/api/dashboard/stats"])
+def test_group_manager_dashboards_total_and_filter_costs(client, fake_db, path):
+    _add_costs(fake_db)
+    everyone = client.get(path, headers=auth("gfm")).json()
+    assert everyone["total_fuel_cost_usd"] == 210.0 and everyone["total_maintenance_cost_usd"] == 430.0
+    liberia = client.get(f"{path}?country=LR", headers=auth("gfm")).json()
+    assert liberia["total_fuel_cost_usd"] == 200.0 and liberia["pending_maintenance"] == 1
+
+
+def test_staff_with_no_country_get_no_dashboard_rather_than_all_costs(client, fake_db):
+    _add_costs(fake_db)
+    assert client.get("/api/dashboard/staff", headers=auth("fo_none")).status_code == 403
+
+
+def test_totals_are_not_cut_off_at_a_thousand_records(client, fake_db):
+    fake_db.fuel_transactions.docs += [
+        {"id": f"f{i}", "vehicle_id": "v_gh", "cost_usd": 1.0, "date": "2026-11-01T00:00:00"} for i in range(1500)
+    ]
+    body = client.get("/api/dashboard/staff", headers=auth("fm_gh")).json()
+    assert body["total_fuel_cost_usd"] == 1500.0
+
+
+def test_null_costs_do_not_break_totals(client, fake_db):
+    fake_db.fuel_transactions.docs.append({"id": "n", "vehicle_id": "v_gh", "cost_usd": None})
+    assert client.get("/api/dashboard/staff", headers=auth("fm_gh")).status_code == 200
+
+
+def test_fuel_anomaly_alerts_reach_country_staff(client, fake_db):
+    fake_db.fuel_transactions.docs += [
+        {"id": "a1", "vehicle_id": "v_gh", "anomaly_detected": True},
+        {"id": "a2", "vehicle_id": "v_lr", "anomaly_detected": True},
+    ]
+    alerts = client.get("/api/dashboard/alerts", headers=auth("fm_gh")).json()["alerts"]
+    assert [a["entity_id"] for a in alerts if a["type"] == "FUEL_ANOMALY"] == ["a1"]
+
+
+def test_expense_breakdown_totals_by_country(client, fake_db):
+    _add_costs(fake_db)
+    now = datetime.now(timezone.utc).isoformat()
+    for doc in fake_db.fuel_transactions.docs + fake_db.expenditures.docs:
+        doc["date"] = now
+    for doc in fake_db.maintenance_records.docs:
+        doc["scheduled_date"] = now
+    body = client.get("/api/reports/expense-breakdown", headers=auth("fm_gh")).json()
+    assert body["breakdown"]["FUEL"] == {"count": 1, "total_usd": 10.0}
+    assert body["breakdown"]["MAINTENANCE"] == {"count": 1, "total_usd": 30.0}
+    assert body["breakdown"]["OTHER"] == {"count": 1, "total_usd": 1.0}
+    assert body["total_usd"] == 41.0
+
+
+# --- Emails ---
+EVIL = '<script>alert(1)</script><a href="http://evil">x</a>'
+
+
+def _capture_email(monkeypatch):
+    service = EmailService()
+    captured = []
+    monkeypatch.setattr(service, "send_email", lambda _to, subject, html: captured.append((subject, html)) or True)
+    return service, captured
+
+
+@pytest.mark.parametrize("send", [
+    lambda s: s.send_maintenance_request_notification("a@b.c", {
+        "vehicle_registration": EVIL, "driver_name": EVIL, "request_type": EVIL, "priority": EVIL, "description": EVIL,
+    }),
+    lambda s: s.send_request_status_notification("a@b.c", {"vehicle_registration": EVIL, "request_type": EVIL}, "REJECTED", EVIL),
+    lambda s: s.send_driver_invite_email("a@b.c", "https://x/?t=1", EVIL),
+    lambda s: s.send_password_reset_email("a@b.c", "https://x/?t=1", EVIL),
+    lambda s: s.send_otp_email("a@b.c", EVIL, "123456"),
+    lambda s: s.send_document_expiry_alert("a@b.c", {"document_type": EVIL, "entity_name": EVIL, "expiry_date": EVIL}),
+    lambda s: s.send_daily_fleet_report("a@b.c", {
+        "date": EVIL, "alerts": [{"severity": "WARNING", "title": EVIL, "country": EVIL}], "compliance": {},
+    }),
+    lambda s: s.send_daily_compliance_reminder("a@b.c", {"driver_name": EVIL, "local_date": EVIL, "missing": [EVIL]}),
+])
+def test_email_templates_escape_stored_text(monkeypatch, send):
+    service, captured = _capture_email(monkeypatch)
+    assert send(service) is True
+    html = captured[0][1]
+    assert "<script" not in html and 'href="http://evil"' not in html
+    assert "&lt;script&gt;" in html
+
+
+def test_email_templates_keep_working_links_and_values(monkeypatch):
+    service, captured = _capture_email(monkeypatch)
+    service.send_password_reset_email("a@b.c", "https://x/reset?token=abc&v=1", "Ama")
+    assert 'href="https://x/reset?token=abc&amp;v=1"' in captured[0][1]
+    service.send_daily_fleet_report("a@b.c", {"total_vehicles": 7, "alerts": [], "compliance": {"compliance_rate": 90}})
+    assert ">7<" in captured[1][1] and "90%" in captured[1][1]
+    assert captured[0][0] == "GTI Fleet Solutions - Password Reset Request"
+
+
+# --- Upload checks ---
+def _workbook_bytes():
+    workbook_bytes = build_export_bytes("T", ["a"], [["1"]], "xlsx")
+    return workbook_bytes
+
+
+def test_normal_workbook_opens():
+    assert safe_load_workbook(_workbook_bytes()).active is not None
+
+
+def test_workbook_that_expands_too_far_is_refused():
+    buffer = io.BytesIO()
+    with zipfile.ZipFile(buffer, "w", zipfile.ZIP_DEFLATED) as archive:
+        archive.writestr("xl/worksheets/sheet1.xml", b"0" * (60 * 1024 * 1024))
+    assert len(buffer.getvalue()) < 5 * 1024 * 1024
+    with pytest.raises(ValueError, match="too large"):
+        safe_load_workbook(buffer.getvalue())
+
+
+def test_file_that_is_not_a_workbook_is_refused():
+    with pytest.raises(ValueError, match="not a valid"):
+        safe_load_workbook(b"<html>not excel</html>")
+
+
+def test_openpyxl_uses_defused_xml_parsing():
+    from openpyxl import xml
+    assert xml.DEFUSEDXML is True
+
+
+@pytest.mark.parametrize("content,content_type,expected", [
+    (b"\xff\xd8\xff\xe0data", "image/jpeg", True),
+    (b"\x89PNG\r\n\x1a\ndata", "image/png", True),
+    (b"GIF89adata", "image/gif", True),
+    (b"RIFF\x00\x00\x00\x00WEBPdata", "image/webp", True),
+    (b"%PDF-1.7 data", "application/pdf", True),
+    (b"PK\x03\x04data", "application/vnd.openxmlformats-officedocument.wordprocessingml.document", True),
+    (b"\xd0\xcf\x11\xe0\xa1\xb1\x1a\xe1data", "application/msword", True),
+    (b"a,b\n1,2\n", "text/csv", True),
+    (b"\x00\x00\x00\x18ftypmp42", "video/mp4", True),
+    (b"<html><script>alert(1)</script>", "image/png", False),
+    (b"<html><script>alert(1)</script>", "application/pdf", False),
+    (b"<html><script>alert(1)</script>", "application/vnd.openxmlformats-officedocument.wordprocessingml.document", False),
+    (b"MZ\x90\x00binary\x00", "text/csv", False),
+    (b"anything", "application/x-unknown", False),
+])
+def test_content_is_checked_against_its_declared_type(content, content_type, expected):
+    assert content_matches_type(content, content_type) is expected
+
+
+def test_disguised_uploads_are_refused(client, fake_db):
+    html = ("x.png", b"<html><script>alert(1)</script>", "image/png")
+    response = client.post("/api/documents/doc_gh/upload", headers=auth("fo_gh"), files={"file": html})
+    assert response.status_code == 400
+    photo = client.post("/api/pre-trip-checklists/upload-photo", headers=auth("driver_gh"), files={"file": html})
+    assert photo.status_code == 400
+
+
+def test_download_headers_survive_hostile_filenames(client, fake_db, monkeypatch):
+    monkeypatch.setattr(server, "read_bytes", lambda _key: b"%PDF-1.4")
+    monkeypatch.setattr(server, "storage_enabled", lambda: False)
+    document = next(d for d in fake_db.documents.docs if d["id"] == "doc_gh")
+    document.update(original_filename='ré"s;umé\r\nX-Evil: 1.pdf', content_type="application/pdf")
+    response = client.get("/api/documents/doc_gh/file", headers=auth("fo_gh"))
+    assert response.status_code == 200
+    assert "x-evil" not in response.headers
+    assert response.headers["x-content-type-options"] == "nosniff"
+    assert response.headers["content-disposition"].startswith("inline;")
+
+
+def test_only_safe_types_open_inline():
+    assert content_disposition("a.pdf", "application/pdf").startswith("inline;")
+    assert content_disposition("a.csv", "text/csv").startswith("attachment;")
+    assert content_disposition("a.docx", "application/msword").startswith("attachment;")
+    assert content_disposition("", "").startswith('attachment; filename="download"')
+
+
+# --- Secret token comparison ---
+def test_token_comparison():
+    assert tokens_match("secret", "secret") is True
+    assert tokens_match("secret", "wrong") is False
+    assert tokens_match("", "") is False
+    assert tokens_match("secret", None) is False
+    assert tokens_match("secret", "sécret") is False
+
+
+def test_non_ascii_bootstrap_token_is_refused_cleanly(client, monkeypatch):
+    monkeypatch.setenv("BOOTSTRAP_TOKEN", "secret")
+    response = client.post(
+        "/api/auth/bootstrap",
+        headers={"X-Bootstrap-Token": "s\xe9cret".encode("latin-1")},
+        json={"email": "a@example.com", "password": "Correct-Pass1!", "full_name": "x"},
+    )
+    assert response.status_code == 404
+
+
+@pytest.mark.parametrize("builder,parser,kwargs", [
+    ("vehicle_bulk_import.build_template_workbook", "vehicle_bulk_import.parse_bulk_upload", {"country": "GH"}),
+    ("driver_bulk_import.build_driver_template_workbook", "driver_bulk_import.parse_driver_bulk_upload", {"country": "GH"}),
+    ("logbook_bulk_import.build_logbook_template_workbook", "logbook_bulk_import.parse_logbook_bulk_upload", {}),
+    ("document_bulk_import.build_document_template_workbook", "document_bulk_import.parse_document_bulk_upload", {}),
+    ("maintenance_bulk_import.build_maintenance_template_workbook", "maintenance_bulk_import.parse_maintenance_bulk_upload", {}),
+    ("tire_bulk_import.build_tire_template_workbook", "tire_bulk_import.parse_tire_bulk_upload", {"default_country": "GH"}),
+    ("inventory_bulk_import.build_inventory_template_workbook", "inventory_bulk_import.parse_inventory_bulk_upload", {"default_country": "GH"}),
+    ("expenditure_bulk_import.build_expenditure_template_workbook", "expenditure_bulk_import.parse_expenditure_bulk_upload", {"default_country": "GH"}),
+    ("vehicle_master_bulk_import.build_vehicle_master_template_workbook", "vehicle_master_bulk_import.parse_vehicle_master_bulk_upload", {}),
+])
+def test_every_bulk_importer_reads_its_own_template_and_refuses_junk(builder, parser, kwargs):
+    import importlib
+
+    def resolve(path):
+        module, name = path.split(".")
+        return getattr(importlib.import_module(module), name)
+
+    template = resolve(builder)()
+    resolve(parser)(template, **kwargs)  # Must not raise: the template is a real workbook.
+    with pytest.raises(ValueError):
+        resolve(parser)(b"<html>not excel</html>", **kwargs)

@@ -10,6 +10,11 @@ from country_utils import country_display_name
 
 logger = logging.getLogger(__name__)
 
+def _escaped(data: dict) -> dict:
+    """Escape every text value before it goes into HTML. Records hold user-written text."""
+    return {k: escape(v, quote=True) if isinstance(v, str) else v for k, v in data.items()}
+
+
 class EmailService:
     def __init__(self):
         self.api_key = os.environ.get('RESEND_API_KEY')
@@ -45,6 +50,7 @@ class EmailService:
     def send_maintenance_request_notification(self, manager_email: str, request_data: dict) -> bool:
         """Notify fleet manager of new maintenance request"""
         subject = f"New Maintenance Request: {request_data.get('vehicle_registration', 'N/A')}"
+        request_data = _escaped(request_data)
         html_content = f"""
         <html>
         <body style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
@@ -87,9 +93,11 @@ class EmailService:
         status_emoji = "✅" if status == "APPROVED" else "❌"
         status_color = "#22c55e" if status == "APPROVED" else "#dc2626"
         subject = f"Maintenance Request {status}: {request_data.get('vehicle_registration', 'N/A')}"
-        
+        request_data = _escaped(request_data)
+
         rejection_section = ""
         if rejection_reason:
+            rejection_reason = escape(rejection_reason, quote=True)
             rejection_section = f"""
             <tr style="border-bottom: 1px solid #e5e7eb;">
                 <td style="padding: 10px; font-weight: bold;">Rejection Reason:</td>
@@ -251,6 +259,8 @@ class EmailService:
     ) -> bool:
         """Send driver login invite with set-password link."""
         subject = "GTI Fleet Solutions - You're invited to set up your driver account"
+        driver_name = escape(str(driver_name), quote=True)
+        invite_link = escape(str(invite_link), quote=True)
         html_content = f"""
         <html>
         <body style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
@@ -287,6 +297,8 @@ class EmailService:
     def send_password_reset_email(self, email: str, reset_link: str, user_name: str) -> bool:
         """Send password reset email"""
         subject = "GTI Fleet Solutions - Password Reset Request"
+        user_name = escape(str(user_name), quote=True)
+        reset_link = escape(str(reset_link), quote=True)
         html_content = f"""
         <html>
         <body style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
@@ -325,6 +337,7 @@ class EmailService:
     def send_otp_email(self, email: str, user_name: str, otp_code: str) -> bool:
         """Send OTP verification email for Group Fleet Manager login"""
         subject = "GTI Fleet Solutions - Login Verification Code"
+        user_name = escape(str(user_name), quote=True)
         html_content = f"""
         <html>
         <body style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
@@ -361,6 +374,7 @@ class EmailService:
         """Alert about expiring document"""
         days_until_expiry = document_data.get('days_until_expiry', 0)
         subject = f"Document Expiring Soon: {document_data.get('document_type', 'N/A')}"
+        document_data = _escaped(document_data)
         html_content = f"""
         <html>
         <body style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
@@ -395,12 +409,14 @@ class EmailService:
     def send_daily_fleet_report(self, email: str, report_data: dict) -> bool:
         """Send daily fleet status report to Group Fleet Manager"""
         subject = f"GTI Fleet Daily Report - {report_data.get('date', 'Today')}"
-        
+        report_data = _escaped(report_data)
+
         # Build alerts section
         alerts_html = ""
         alerts = report_data.get('alerts', [])
         if alerts:
             for alert in alerts[:10]:
+                alert = _escaped(alert)
                 severity_color = '#dc2626' if alert.get('severity') == 'CRITICAL' else '#f59e0b' if alert.get('severity') == 'WARNING' else '#3b82f6'
                 alerts_html += f"""
                 <tr style="border-bottom: 1px solid #e5e7eb;">
@@ -482,8 +498,9 @@ class EmailService:
     def send_daily_compliance_reminder(self, email: str, data: dict) -> bool:
         """Remind a driver to complete Daily Logbook and/or Pre-Trip Checklist."""
         missing = data.get("missing") or ["Daily Logbook", "Pre-Trip Checklist"]
-        missing_html = "".join(f"<li>{item}</li>" for item in missing)
+        missing_html = "".join(f"<li>{escape(str(item))}</li>" for item in missing)
         subject = f"Reminder: Complete {', '.join(missing)}"
+        data = _escaped(data)
         login_url = data.get("login_url") or "https://fleet.gtiholding.com"
         html_content = f"""
         <html>

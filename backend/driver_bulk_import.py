@@ -6,10 +6,11 @@ import re
 from datetime import datetime
 from typing import Any, Dict, List, Optional, Tuple
 
-from openpyxl import Workbook, load_workbook
+from openpyxl import Workbook
 from openpyxl.styles import Font, PatternFill
 from openpyxl.utils import get_column_letter
 
+from upload_safety import safe_load_workbook
 from models.fleet import DriverCreate
 
 BULK_HEADERS = [
@@ -137,7 +138,7 @@ def parse_driver_bulk_upload(
     *,
     country: str,
 ) -> Tuple[List[DriverCreate], List[Dict[str, Any]]]:
-    wb = load_workbook(io.BytesIO(file_bytes), read_only=True, data_only=True)
+    wb = safe_load_workbook(file_bytes)
     ws = wb["Drivers"] if "Drivers" in wb.sheetnames else wb.active
     rows = list(ws.iter_rows(values_only=True))
     if not rows:

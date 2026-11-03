@@ -52,6 +52,7 @@ from auth_service import (
     get_password_hash,
     verify_password,
     create_access_token,
+    tokens_match,
 )
 from currency_utils import currency_converter
 from country_utils import normalize_country_code, country_filter_query
@@ -112,6 +113,7 @@ from maintenance_bulk_import import build_maintenance_template_workbook, parse_m
 from tire_bulk_import import build_tire_template_workbook, parse_tire_bulk_upload
 from inventory_bulk_import import build_inventory_template_workbook, parse_inventory_bulk_upload
 from expenditure_bulk_import import build_expenditure_template_workbook, parse_expenditure_bulk_upload
+from upload_safety import content_disposition, content_matches_type
 from export_utils import build_export_bytes, export_filename, export_mime, write_text_cell
 from otp_service import OtpSendLimitExceeded, issue_otp, verify_otp_code
 from security_middleware import JWTAuthMiddleware
@@ -688,7 +690,7 @@ async def vehicles_availability_snapshot(
     from availability_service import take_daily_snapshots
 
     cron_token = os.environ.get("REMINDER_CRON_TOKEN", "").strip()
-    is_cron = bool(cron_token and x_reminder_token and x_reminder_token == cron_token)
+    is_cron = tokens_match(cron_token, x_reminder_token)
     payload = getattr(request.state, "jwt_payload", None) or {}
     is_staff = payload.get("role") in (
         "GROUP_FLEET_MANAGER", "FLEET_MANAGER", "FLEET_OFFICER"
@@ -2726,9 +2728,11 @@ async def bulk_upload_documents(
         name = (upload.filename or "").strip()
         if not name:
             continue
-        content = await upload.read()
+        too_large = (upload.size or 0) > _DOCUMENT_MAX_BYTES
+        content = b"" if too_large else await upload.read()
         content_type = (upload.content_type or "").split(";")[0].strip().lower()
         entry = {
+            "too_large": too_large,
             "content": content,
             "content_type": content_type,
             "filename": name,
@@ -2777,7 +2781,15 @@ async def bulk_upload_documents(
             })
             continue
 
-        if len(file_entry["content"]) > _DOCUMENT_MAX_BYTES:
+        if not file_entry["too_large"] and not content_matches_type(file_entry["content"], content_type):
+            errors.append({
+                "row": row["row"],
+                "filename": row["filename"],
+                "message": "File contents do not match its type.",
+            })
+            continue
+
+        if file_entry["too_large"]:
             errors.append({
                 "row": row["row"],
                 "filename": row["filename"],
@@ -2899,6 +2911,8 @@ async def upload_document_file(
             status_code=400,
             detail=f"File too large (max {_DOCUMENT_MAX_BYTES // (1024 * 1024)} MB)",
         )
+    if not content_matches_type(content, content_type):
+        raise HTTPException(status_code=400, detail="File contents do not match its type.")
 
     old_key = document.get("s3_key")
     object_key, file_ref = upload_bytes(
@@ -2969,7 +2983,10 @@ async def get_document_file(
 
     media_type = document.get("content_type") or "application/octet-stream"
     filename = document.get("original_filename") or f"document-{document_id}"
-    headers = {"Content-Disposition": f'inline; filename="{filename}"'}
+    headers = {
+        "Content-Disposition": content_disposition(filename, media_type),
+        "X-Content-Type-Options": "nosniff",
+    }
     return Response(content=content, media_type=media_type, headers=headers)
 
 
@@ -2992,6 +3009,8 @@ async def process_document_ocr(
         image_bytes = await file.read()
         if len(image_bytes) > _DOCUMENT_MAX_BYTES:
             raise HTTPException(status_code=400, detail="File too large for OCR")
+        if not content_matches_type(image_bytes, content_type):
+            raise HTTPException(status_code=400, detail="File contents do not match its type.")
     elif document.get("s3_key"):
         image_bytes = read_bytes(document["s3_key"])
         if image_bytes is None:
@@ -3436,21 +3455,24 @@ async def get_dashboard_stats(country: Optional[str] = None, current_user: dict 
     total_vehicles = await db.vehicles.count_documents(country_filter)
     active_vehicles = await db.vehicles.count_documents({**country_filter, "status": "ACTIVE"})
     total_drivers = await db.drivers.count_documents(country_filter)
-    pending_maintenance = await db.maintenance_records.count_documents({**country_filter, "completed_date": None})
+    from report_helpers import (
+        compute_total_fleet_value_usd, scoped_vehicle_query, sum_field, vehicle_ids_for_country_filter,
+    )
+    # Fuel and maintenance records have no country field, so they are scoped through their vehicle.
+    vehicle_ids = await vehicle_ids_for_country_filter(db, country_filter)
+    pending_maintenance = await db.maintenance_records.count_documents(
+        scoped_vehicle_query({"completed_date": None}, vehicle_ids)
+    )
     pending_requests = await db.maintenance_requests.count_documents({**country_filter, "status": "PENDING"})
 
     from availability_service import get_availability_summary
-    from report_helpers import compute_total_fleet_value_usd
     availability = await get_availability_summary(db, country)
     total_fleet_value = await compute_total_fleet_value_usd(db, country_filter)
     
-    # Monthly fuel cost
-    fuel_txns = await db.fuel_transactions.find(country_filter, {"_id": 0, "cost_usd": 1}).to_list(1000)
-    total_fuel_cost = sum(f.get('cost_usd', 0) for f in fuel_txns)
-    
-    # Total maintenance cost
-    maintenance_records = await db.maintenance_records.find(country_filter, {"_id": 0, "cost": 1, "currency": 1, "cost_usd": 1}).to_list(1000)
-    total_maintenance_cost_usd = sum(m.get('cost_usd', 0) for m in maintenance_records)
+    total_fuel_cost = await sum_field(db.fuel_transactions, scoped_vehicle_query({}, vehicle_ids), "cost_usd")
+    total_maintenance_cost_usd = await sum_field(
+        db.maintenance_records, scoped_vehicle_query({}, vehicle_ids), "cost_usd"
+    )
     
     # Convert to GHS using current rate
     ghs_rate = currency_converter.get_rate(CurrencyEnum.USD, CurrencyEnum.GHS)
@@ -3567,33 +3589,26 @@ async def get_staff_dashboard(
     user_role = current_user.get('role')
     user_country = current_user.get('country')
     
-    # Normalize country for matching (handle different case formats)
-    def normalize_country(value):
-        if not value:
-            return None
-        try:
-            return normalize_country_code(value)
-        except ValueError:
-            return None
-    
     # Group Fleet Manager: optional filter from UI; others: locked to their country
-    if user_role == 'GROUP_FLEET_MANAGER':
-        normalized_country = normalize_country(country)
-        country_filter = country_filter_query(normalized_country) if normalized_country else {}
-    else:
-        normalized_country = normalize_country(user_country)
-        country_filter = country_filter_query(normalized_country) if normalized_country else {"country": {"$exists": False}}
-    
+    normalized_country = effective_country(current_user, country)
+    country_filter = country_filter_query(normalized_country) if normalized_country else {}
+
+    from report_helpers import (
+        compute_total_fleet_value_usd, scoped_vehicle_query, sum_field, vehicle_ids_for_country_filter,
+    )
+    # Fuel and maintenance records have no country field, so they are scoped through their vehicle.
+    vehicle_ids = await vehicle_ids_for_country_filter(db, country_filter)
+
     # Basic stats
     total_vehicles = await db.vehicles.count_documents(country_filter)
     active_vehicles = await db.vehicles.count_documents({**country_filter, "status": "ACTIVE"})
     total_drivers = await db.drivers.count_documents(country_filter)
-    pending_maintenance = await db.maintenance_records.count_documents({**country_filter, "completed_date": None})
+    pending_maintenance = await db.maintenance_records.count_documents(
+        scoped_vehicle_query({"completed_date": None}, vehicle_ids)
+    )
 
     from availability_service import get_availability_summary
-    availability = await get_availability_summary(
-        db, normalized_country if user_role == 'GROUP_FLEET_MANAGER' else (normalized_country or None)
-    )
+    availability = await get_availability_summary(db, normalized_country)
     request_filter = country_filter
     pending_requests = await db.maintenance_requests.find(
         {**request_filter, "status": "PENDING"},
@@ -3628,14 +3643,11 @@ async def get_staff_dashboard(
         ]
     
     # Financial totals
-    from report_helpers import compute_total_fleet_value_usd
     total_fleet_value = await compute_total_fleet_value_usd(db, country_filter)
-    
-    fuel_txns = await db.fuel_transactions.find(country_filter, {"_id": 0, "cost_usd": 1}).to_list(1000)
-    total_fuel_cost = sum(f.get('cost_usd', 0) for f in fuel_txns)
-    
-    maintenance_records = await db.maintenance_records.find(country_filter, {"_id": 0, "cost_usd": 1}).to_list(1000)
-    total_maintenance_cost_usd = sum(m.get('cost_usd', 0) for m in maintenance_records)
+    total_fuel_cost = await sum_field(db.fuel_transactions, scoped_vehicle_query({}, vehicle_ids), "cost_usd")
+    total_maintenance_cost_usd = await sum_field(
+        db.maintenance_records, scoped_vehicle_query({}, vehicle_ids), "cost_usd"
+    )
     
     ghs_rate = currency_converter.get_rate(CurrencyEnum.USD, CurrencyEnum.GHS)
     
@@ -3763,7 +3775,12 @@ async def get_dashboard_alerts(country: Optional[str] = None, current_user: dict
                 })
 
     # 2. Fuel Anomalies
-    fuel_txns = await db.fuel_transactions.find({**country_filter, "anomaly_detected": True}, {"_id": 0}).to_list(100)
+    from report_helpers import scoped_vehicle_query, vehicle_ids_for_country_filter
+    anomaly_vehicle_ids = await vehicle_ids_for_country_filter(db, country_filter)
+    fuel_txns = await db.fuel_transactions.find(
+        scoped_vehicle_query({"anomaly_detected": True}, anomaly_vehicle_ids),
+        {"_id": 0},
+    ).to_list(100)
     for txn in fuel_txns:
         vehicle = await db.vehicles.find_one({"id": txn.get('vehicle_id')}, {"_id": 0, "registration_number": 1})
         alerts.append({
@@ -4691,6 +4708,8 @@ async def upload_safety_evidence(
     content = await file.read()
     if len(content) > _DOCUMENT_MAX_BYTES:
         raise HTTPException(status_code=400, detail="File too large")
+    if not content_matches_type(content, ct):
+        raise HTTPException(status_code=400, detail="File contents do not match its type.")
 
     evidence_id = str(uuid.uuid4())
     object_key, file_ref = upload_bytes(
@@ -4760,6 +4779,8 @@ async def upload_damage_photo(
             status_code=400,
             detail=f"File too large (max {_DAMAGE_PHOTO_MAX_BYTES // (1024 * 1024)} MB)",
         )
+    if not content_matches_type(content, ct):
+        raise HTTPException(status_code=400, detail="File contents do not match its type.")
 
     photo_id = str(uuid.uuid4())
     photo_doc = {
@@ -4801,7 +4822,11 @@ async def get_damage_photo(photo_id: str, current_user: dict = Depends(get_curre
     await _assert_damage_photo_read(current_user, photo)
 
     content = base64.b64decode(photo["data"])
-    return Response(content=content, media_type=photo.get("content_type", "image/jpeg"))
+    return Response(
+        content=content,
+        media_type=photo.get("content_type", "image/jpeg"),
+        headers={"X-Content-Type-Options": "nosniff"},
+    )
 
 
 # ============= AUTHENTICATION ROUTES =============
@@ -4882,7 +4907,7 @@ async def bootstrap_group_fleet_manager(
     Requires BOOTSTRAP_TOKEN env var and matching X-Bootstrap-Token header.
     """
     expected = os.environ.get("BOOTSTRAP_TOKEN", "").strip()
-    if not expected or not x_bootstrap_token or x_bootstrap_token != expected:
+    if not tokens_match(expected, x_bootstrap_token):
         raise HTTPException(status_code=404, detail="Not found")
 
     existing_gfm = await db.users.find_one({"role": "GROUP_FLEET_MANAGER"})
@@ -6338,48 +6363,32 @@ async def get_fleet_tco(country: Optional[str] = None, period_days: int = 365, c
 @api_router.get("/reports/expense-breakdown")
 async def get_expense_breakdown(country: Optional[str] = None, period_days: int = 30, current_user: dict = Depends(_require_staff)):
     """Get expense breakdown by category"""
-    from report_helpers import maintenance_on_or_after, scoped_vehicle_query, vehicle_ids_for_country_filter
+    from report_helpers import (
+        maintenance_on_or_after, scoped_vehicle_query, sum_and_count, vehicle_ids_for_country_filter,
+    )
 
     start_date = (datetime.now(timezone.utc) - timedelta(days=period_days)).isoformat()
     country_filter = country_query(current_user, country)
     vehicle_ids = await vehicle_ids_for_country_filter(db, country_filter)
-    
-    # Get all expenditures
-    expenditures = await db.expenditures.find(
-        {**country_filter, "date": {"$gte": start_date}},
-        {"_id": 0}
-    ).to_list(1000)
-    
-    # Group by category
-    breakdown = {}
-    for exp in expenditures:
-        category = exp.get('category', 'OTHER')
-        if category not in breakdown:
-            breakdown[category] = {"count": 0, "total_usd": 0}
-        breakdown[category]['count'] += 1
-        breakdown[category]['total_usd'] += exp.get('amount_usd', 0)
-    
+
+    grouped = await db.expenditures.aggregate([
+        {"$match": {**country_filter, "date": {"$gte": start_date}}},
+        {"$group": {"_id": "$category", "total": {"$sum": "$amount_usd"}, "count": {"$sum": 1}}},
+    ]).to_list(None)
+    breakdown = {
+        (row["_id"] or "OTHER"): {"count": row["count"], "total_usd": row["total"] or 0}
+        for row in grouped
+    }
+
     # Add fuel (scoped by vehicle when country filter applies)
     fuel_query = scoped_vehicle_query({"date": {"$gte": start_date}}, vehicle_ids)
-    fuel_txns = await db.fuel_transactions.find(
-        fuel_query,
-        {"_id": 0, "cost_usd": 1}
-    ).to_list(1000)
-    breakdown['FUEL'] = {
-        "count": len(fuel_txns),
-        "total_usd": round(sum(f.get('cost_usd', 0) for f in fuel_txns), 2)
-    }
+    fuel_total, fuel_count = await sum_and_count(db.fuel_transactions, fuel_query, "cost_usd")
+    breakdown['FUEL'] = {"count": fuel_count, "total_usd": round(fuel_total, 2)}
     
     # Add maintenance (by scheduled_date, scoped by vehicle when country filter applies)
     maint_query = scoped_vehicle_query(maintenance_on_or_after(start_date), vehicle_ids)
-    maintenance = await db.maintenance_records.find(
-        maint_query,
-        {"_id": 0, "cost_usd": 1}
-    ).to_list(1000)
-    breakdown['MAINTENANCE'] = {
-        "count": len(maintenance),
-        "total_usd": round(sum(m.get('cost_usd', 0) for m in maintenance), 2)
-    }
+    maint_total, maint_count = await sum_and_count(db.maintenance_records, maint_query, "cost_usd")
+    breakdown['MAINTENANCE'] = {"count": maint_count, "total_usd": round(maint_total, 2)}
     
     # Round values
     for k, v in breakdown.items():
@@ -6495,7 +6504,7 @@ async def send_daily_report(current_user: dict = Depends(require_group_manager()
 async def send_weekly_report(current_user: dict = Depends(require_group_manager())):
     """Send weekly summary report to Group Fleet Manager"""
     from datetime import date, timedelta as td
-    from report_helpers import maintenance_on_or_after
+    from report_helpers import maintenance_on_or_after, sum_field
     
     # Calculate week dates
     today = date.today()
@@ -6509,12 +6518,9 @@ async def send_weekly_report(current_user: dict = Depends(require_group_manager(
     trips = await db.driver_logbook.count_documents({"date": {"$gte": start_date}})
     
     # Total distance
-    logbook_entries = await db.driver_logbook.find(
-        {"date": {"$gte": start_date}},
-        {"_id": 0, "distance_km": 1, "speed_limit_violations": 1}
-    ).to_list(1000)
-    total_distance = sum((e.get('distance_km') or 0) for e in logbook_entries)
-    speed_violations = sum(e.get('speed_limit_violations', 0) for e in logbook_entries)
+    week_query = {"date": {"$gte": start_date}}
+    total_distance = await sum_field(db.driver_logbook, week_query, "distance_km")
+    speed_violations = int(await sum_field(db.driver_logbook, week_query, "speed_limit_violations"))
     
     # Maintenance completed
     maintenance_completed = await db.maintenance_records.count_documents({
@@ -6525,18 +6531,12 @@ async def send_weekly_report(current_user: dict = Depends(require_group_manager(
     checklists = await db.pretrip_checklists.count_documents({"date": {"$gte": start_date}})
     
     # Costs
-    fuel_txns = await db.fuel_transactions.find(
-        {"date": {"$gte": start_date}},
-        {"_id": 0, "cost_usd": 1}
-    ).to_list(1000)
-    fuel_cost_usd = sum(f.get('cost_usd', 0) for f in fuel_txns)
+    fuel_cost_usd = await sum_field(db.fuel_transactions, week_query, "cost_usd")
     ghs_rate = 12.0
     
-    maintenance_records = await db.maintenance_records.find(
-        maintenance_on_or_after(start_date),
-        {"_id": 0, "cost_usd": 1}
-    ).to_list(1000)
-    maintenance_cost_usd = sum(m.get('cost_usd', 0) for m in maintenance_records)
+    maintenance_cost_usd = await sum_field(
+        db.maintenance_records, maintenance_on_or_after(start_date), "cost_usd"
+    )
     
     # Utilization
     utilization_data = await get_utilization_report(period_days=7, current_user=current_user)
@@ -6612,7 +6612,7 @@ async def trigger_driver_reminders(
     from driver_reminders import run_reminder_pass
 
     cron_token = os.environ.get("REMINDER_CRON_TOKEN", "").strip()
-    is_cron = bool(cron_token and x_reminder_token and x_reminder_token == cron_token)
+    is_cron = tokens_match(cron_token, x_reminder_token)
     is_manager = False
     payload = getattr(request.state, "jwt_payload", None)
     if payload and payload.get("role") in ("GROUP_FLEET_MANAGER", "FLEET_MANAGER"):
