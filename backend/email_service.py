@@ -10,6 +10,11 @@ from country_utils import country_display_name
 
 logger = logging.getLogger(__name__)
 
+def _escaped(data: dict) -> dict:
+    """Escape every text value before it goes into HTML. Records hold user-written text."""
+    return {k: escape(v, quote=True) if isinstance(v, str) else v for k, v in data.items()}
+
+
 class EmailService:
     def __init__(self):
         self.api_key = os.environ.get('RESEND_API_KEY')
@@ -45,6 +50,7 @@ class EmailService:
     def send_maintenance_request_notification(self, manager_email: str, request_data: dict) -> bool:
         """Notify fleet manager of new maintenance request"""
         subject = f"New Maintenance Request: {request_data.get('vehicle_registration', 'N/A')}"
+        request_data = _escaped(request_data)
         html_content = f"""
         <html>
         <body style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
@@ -87,9 +93,11 @@ class EmailService:
         status_emoji = "✅" if status == "APPROVED" else "❌"
         status_color = "#22c55e" if status == "APPROVED" else "#dc2626"
         subject = f"Maintenance Request {status}: {request_data.get('vehicle_registration', 'N/A')}"
-        
+        request_data = _escaped(request_data)
+
         rejection_section = ""
         if rejection_reason:
+            rejection_reason = escape(rejection_reason, quote=True)
             rejection_section = f"""
             <tr style="border-bottom: 1px solid #e5e7eb;">
                 <td style="padding: 10px; font-weight: bold;">Rejection Reason:</td>
@@ -138,6 +146,15 @@ class EmailService:
                 "message": "Your account has been created and is awaiting approval by an authorized fleet manager.",
                 "action": "You will receive another email when your account is approved.",
                 "show_login": False,
+            },
+            "REGISTRATION_ATTEMPT": {
+                "subject": "Someone tried to register with your GTI Fleet email",
+                "heading": "Registration attempt",
+                "color": "#d97706",
+                "icon": "⚠️",
+                "message": "Someone tried to create a new GTI Fleet account with this email address, but you already have an account. No changes were made.",
+                "action": "If this was you, sign in or use Forgot password. If it was not, you can ignore this email.",
+                "show_login": True,
             },
             "APPROVED": {
                 "subject": "Your GTI Fleet account has been approved",
@@ -251,6 +268,8 @@ class EmailService:
     ) -> bool:
         """Send driver login invite with set-password link."""
         subject = "GTI Fleet Solutions - You're invited to set up your driver account"
+        driver_name = escape(str(driver_name), quote=True)
+        invite_link = escape(str(invite_link), quote=True)
         html_content = f"""
         <html>
         <body style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
@@ -287,6 +306,8 @@ class EmailService:
     def send_password_reset_email(self, email: str, reset_link: str, user_name: str) -> bool:
         """Send password reset email"""
         subject = "GTI Fleet Solutions - Password Reset Request"
+        user_name = escape(str(user_name), quote=True)
+        reset_link = escape(str(reset_link), quote=True)
         html_content = f"""
         <html>
         <body style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
@@ -325,6 +346,7 @@ class EmailService:
     def send_otp_email(self, email: str, user_name: str, otp_code: str) -> bool:
         """Send OTP verification email for Group Fleet Manager login"""
         subject = "GTI Fleet Solutions - Login Verification Code"
+        user_name = escape(str(user_name), quote=True)
         html_content = f"""
         <html>
         <body style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
@@ -361,6 +383,7 @@ class EmailService:
         """Alert about expiring document"""
         days_until_expiry = document_data.get('days_until_expiry', 0)
         subject = f"Document Expiring Soon: {document_data.get('document_type', 'N/A')}"
+        document_data = _escaped(document_data)
         html_content = f"""
         <html>
         <body style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
@@ -395,12 +418,14 @@ class EmailService:
     def send_daily_fleet_report(self, email: str, report_data: dict) -> bool:
         """Send daily fleet status report to Group Fleet Manager"""
         subject = f"GTI Fleet Daily Report - {report_data.get('date', 'Today')}"
-        
+        report_data = _escaped(report_data)
+
         # Build alerts section
         alerts_html = ""
         alerts = report_data.get('alerts', [])
         if alerts:
             for alert in alerts[:10]:
+                alert = _escaped(alert)
                 severity_color = '#dc2626' if alert.get('severity') == 'CRITICAL' else '#f59e0b' if alert.get('severity') == 'WARNING' else '#3b82f6'
                 alerts_html += f"""
                 <tr style="border-bottom: 1px solid #e5e7eb;">
@@ -479,11 +504,48 @@ class EmailService:
         """
         return self.send_email(email, subject, html_content)
 
+    def send_weekly_summary_report(self, email: str, report_data: dict) -> bool:
+        """Send the weekly fleet summary to the Group Fleet Manager."""
+        subject = f"GTI Fleet Weekly Summary - {report_data.get('week_start', '')} to {report_data.get('week_end', '')}"
+        report_data = _escaped(report_data)
+        rows = [
+            ("Trips completed", report_data.get("trips_completed", 0)),
+            ("Distance driven (km)", round(report_data.get("distance_km", 0) or 0, 1)),
+            ("Maintenance jobs completed", report_data.get("maintenance_completed", 0)),
+            ("Fuel cost (GHS)", report_data.get("fuel_cost_ghs", 0)),
+            ("Maintenance cost (GHS)", report_data.get("maintenance_cost_ghs", 0)),
+            ("Total cost (GHS)", report_data.get("total_cost_ghs", 0)),
+            ("Average utilization (%)", report_data.get("avg_utilization", 0)),
+            ("Speed violations", report_data.get("speed_violations", 0)),
+            ("Pre-trip checklists completed", report_data.get("checklists_completed", 0)),
+            ("Average safety score", report_data.get("avg_safety_score", 0)),
+        ]
+        rows_html = "".join(
+            f'''<tr style="border-bottom: 1px solid #e5e7eb;"><td style="padding: 10px; font-weight: bold;">{label}</td><td style="padding: 10px;">{value}</td></tr>'''
+            for label, value in rows
+        )
+        html_content = f"""
+        <html>
+        <body style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
+            <div style="background: linear-gradient(135deg, #e3aa27, #c4912a); color: white; padding: 20px; border-radius: 8px 8px 0 0;">
+                <h2 style="margin: 0;">GTI Fleet Solutions - Weekly Summary</h2>
+                <p style="margin: 5px 0 0 0;">{report_data.get('week_start', '')} to {report_data.get('week_end', '')}</p>
+            </div>
+            <div style="padding: 20px; border: 1px solid #e5e7eb; border-top: none; border-radius: 0 0 8px 8px;">
+                <table style="width: 100%; border-collapse: collapse;">{rows_html}</table>
+                <p style="color: #6b7280; font-size: 13px;">Generated {report_data.get('generated_date', '')}.</p>
+            </div>
+        </body>
+        </html>
+        """
+        return self.send_email(email, subject, html_content)
+
     def send_daily_compliance_reminder(self, email: str, data: dict) -> bool:
         """Remind a driver to complete Daily Logbook and/or Pre-Trip Checklist."""
         missing = data.get("missing") or ["Daily Logbook", "Pre-Trip Checklist"]
-        missing_html = "".join(f"<li>{item}</li>" for item in missing)
+        missing_html = "".join(f"<li>{escape(str(item))}</li>" for item in missing)
         subject = f"Reminder: Complete {', '.join(missing)}"
+        data = _escaped(data)
         login_url = data.get("login_url") or "https://fleet.gtiholding.com"
         html_content = f"""
         <html>

@@ -1,0 +1,23 @@
+# Packages the backend imports directly. Change this file, then regenerate
+# requirements.txt: see "Updating dependencies" in LOCAL_DEV.md.
+bcrypt<4.1
+boto3
+defusedxml
+email-validator
+fastapi
+requests
+google-genai
+gunicorn
+motor
+openpyxl
+passlib
+pydantic
+PyJWT
+python-dateutil
+python-docx
+python-dotenv
+python-multipart
+reportlab
+resend
+slowapi
+uvicorn

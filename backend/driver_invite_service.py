@@ -1,6 +1,7 @@
 """Create, resend, delete, and accept driver login invites (48h TTL)."""
 from __future__ import annotations
 
+import re
 import secrets
 from datetime import datetime, timezone, timedelta
 from typing import Any, Dict, List, Optional
@@ -49,6 +50,29 @@ def _serialize_invite(invite: dict) -> dict:
     return out
 
 
+def _assert_can_invite_existing_user(user: dict, driver_id: str) -> bool:
+    """Refuse anything but a driver still onboarding. Returns True for a pending self-signup."""
+    in_progress = (
+        user.get("invite_pending")
+        and user.get("driver_id") == driver_id
+        and user.get("role") == UserRole.DRIVER.value
+    )
+    if in_progress:
+        return bool(user.get("pending_signup_before_invite"))
+    pending_signup = (
+        user.get("role") == UserRole.DRIVER.value
+        and user.get("is_active", True)
+        and not user.get("is_approved", False)
+        and not user.get("approved_at")
+        and not user.get("last_login")
+    )
+    if pending_signup:
+        return True
+    raise ValueError(
+        "This email already belongs to another account. Use a different email for this driver."
+    )
+
+
 async def list_driver_invites(db, country: Optional[str] = None) -> List[dict]:
     invites = await db.driver_invites.find({}, {"_id": 0}).sort("created_at", -1).to_list(500)
     if country:
@@ -90,19 +114,13 @@ async def create_or_refresh_invite(
     if not email or "@" not in email:
         raise ValueError("Driver must have a valid email before inviting")
 
-    # Already has an active linked login that has been used?
-    existing_user = await db.users.find_one({"email": email}, {"_id": 0})
-    if existing_user and existing_user.get("last_login") and existing_user.get("is_active", True):
-        raise ValueError("This email already belongs to an active login account")
-    if (
-        existing_user
-        and existing_user.get("is_active", True)
-        and existing_user.get("is_approved", False)
-        and not existing_user.get("invite_pending")
-        and existing_user.get("role") == UserRole.DRIVER.value
-    ):
-        # Active driver account that finished onboarding
-        raise ValueError("This driver already has an active login account")
+    existing_user = await db.users.find_one(
+        {"email": {"$regex": f"^{re.escape(email)}$", "$options": "i"}},
+        {"_id": 0},
+    )
+    was_pending_signup = (
+        _assert_can_invite_existing_user(existing_user, driver_id) if existing_user else False
+    )
 
     now = _utcnow()
     expires_at = now + timedelta(hours=INVITE_TTL_HOURS)
@@ -135,10 +153,13 @@ async def create_or_refresh_invite(
             {"id": user["id"]},
             {"$set": {
                 "driver_id": driver_id,
-                "role": UserRole.DRIVER.value,
+                "country": normalize_country_code(driver.get("country") or user.get("country") or "GH"),
                 "is_approved": True,
                 "is_active": False,
                 "invite_pending": True,
+                "pending_signup_before_invite": was_pending_signup,
+                "approved_by": actor.get("id"),
+                "approved_at": now.isoformat(),
             }},
         )
         user = await db.users.find_one({"id": user["id"]}, {"_id": 0})
@@ -185,6 +206,10 @@ async def resend_invite(db, invite_id: str, actor: dict) -> Dict[str, Any]:
     if invite.get("status") == "REVOKED":
         return await create_or_refresh_invite(db, invite["driver_id"], actor)
 
+    user = await db.users.find_one({"id": invite["user_id"]}, {"_id": 0, "invite_pending": 1})
+    if not user or not user.get("invite_pending"):
+        raise ValueError("This invite is no longer valid. Create a new one if it is still needed.")
+
     now = _utcnow()
     token = secrets.token_urlsafe(32)
     expires_at = now + timedelta(hours=INVITE_TTL_HOURS)
@@ -197,15 +222,6 @@ async def resend_invite(db, invite_id: str, actor: dict) -> Dict[str, Any]:
             "resent_at": now.isoformat(),
             "invited_by": actor.get("id"),
             "invited_by_name": actor.get("full_name"),
-        }},
-    )
-    await db.users.update_one(
-        {"id": invite["user_id"]},
-        {"$set": {
-            "invite_pending": True,
-            "is_approved": True,
-            "is_active": False,
-            "driver_id": invite["driver_id"],
         }},
     )
     driver = await db.drivers.find_one({"id": invite["driver_id"]}, {"_id": 0}) or {}
@@ -228,11 +244,27 @@ async def delete_invite(db, invite_id: str) -> dict:
 
     await db.driver_invites.delete_one({"id": invite_id})
 
+    # A revoked invite may sit alongside a newer live one, so only a live invite touches the account.
+    if invite.get("status") != "PENDING":
+        return {"status": "deleted", "id": invite_id}
+
     user = await db.users.find_one({"id": invite.get("user_id")}, {"_id": 0})
-    if user and not user.get("last_login") and (
-        user.get("invite_pending") or user.get("is_active") is False
-    ):
-        await db.users.delete_one({"id": user["id"]})
+    if user and user.get("invite_pending") and not user.get("last_login"):
+        if user.get("pending_signup_before_invite"):
+            await db.users.update_one(
+                {"id": user["id"]},
+                {"$set": {
+                    "is_active": True,
+                    "is_approved": False,
+                    "invite_pending": False,
+                    "pending_signup_before_invite": False,
+                    "driver_id": None,
+                    "approved_at": None,
+                    "approved_by": None,
+                }},
+            )
+        else:
+            await db.users.delete_one({"id": user["id"]})
 
     return {"status": "deleted", "id": invite_id}
 
@@ -268,10 +300,18 @@ async def accept_invite(db, token: str, new_password: str) -> dict:
         raise ValueError("This invite is no longer valid")
 
     user = await db.users.find_one({"id": invite["user_id"]}, {"_id": 0})
-    if not user:
-        raise ValueError("Invite account not found")
+    if not user or not user.get("invite_pending") or user.get("role") != UserRole.DRIVER.value:
+        raise ValueError("This invite is no longer valid")
 
     now = _utcnow()
+    # Claim the invite first so a link can only be used once, even with concurrent requests.
+    claimed = await db.driver_invites.find_one_and_update(
+        {"id": invite["id"], "status": "PENDING"},
+        {"$set": {"status": "ACCEPTED", "accepted_at": now.isoformat()}},
+    )
+    if not claimed:
+        raise ValueError("This invite is no longer valid")
+
     await db.users.update_one(
         {"id": user["id"]},
         {"$set": {
@@ -279,13 +319,11 @@ async def accept_invite(db, token: str, new_password: str) -> dict:
             "is_active": True,
             "is_approved": True,
             "invite_pending": False,
+            "pending_signup_before_invite": False,
+            "email_verified": True,
             "driver_id": invite["driver_id"],
             "token_version": int(user.get("token_version", 0)) + 1,
         }},
-    )
-    await db.driver_invites.update_one(
-        {"id": invite["id"]},
-        {"$set": {"status": "ACCEPTED", "accepted_at": now.isoformat()}},
     )
     # Invalidate any other pending invites for same driver
     await db.driver_invites.update_many(

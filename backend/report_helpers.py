@@ -1,7 +1,7 @@
 """Shared helpers for reports, TCO, and dashboard fleet value."""
 from __future__ import annotations
 
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 
 async def vehicle_ids_for_country_filter(db, country_filter: Optional[Dict[str, Any]]) -> Optional[List[str]]:
@@ -19,6 +19,22 @@ def scoped_vehicle_query(base: Dict[str, Any], vehicle_ids: Optional[List[str]])
     if not vehicle_ids:
         return {**base, "vehicle_id": "__none__"}
     return {**base, "vehicle_id": {"$in": vehicle_ids}}
+
+
+async def sum_and_count(collection, query: Dict[str, Any], field: str) -> Tuple[float, int]:
+    """Total a numeric field across every matching record. Null values count as zero."""
+    rows = await collection.aggregate([
+        {"$match": query},
+        {"$group": {"_id": None, "total": {"$sum": f"${field}"}, "count": {"$sum": 1}}},
+    ]).to_list(1)
+    if not rows:
+        return 0.0, 0
+    return float(rows[0]["total"] or 0), int(rows[0]["count"])
+
+
+async def sum_field(collection, query: Dict[str, Any], field: str) -> float:
+    total, _count = await sum_and_count(collection, query, field)
+    return total
 
 
 def maintenance_on_or_after(start_date: str) -> Dict[str, Any]:

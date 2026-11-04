@@ -18,16 +18,24 @@ export const AuthProvider = ({ children }) => {
   const [user, setUser] = useState(null);
   const [loading, setLoading] = useState(true);
   const [token, setToken] = useState(localStorage.getItem('token'));
+  const [serverUnavailable, setServerUnavailable] = useState(false);
 
   const fetchUser = useCallback(async () => {
+    setServerUnavailable(false);
     try {
       const response = await axios.get(`${API}/auth/me`);
       setUser(response.data);
-    } catch {
-      localStorage.removeItem('token');
-      delete axios.defaults.headers.common['Authorization'];
-      setToken(null);
-      setUser(null);
+    } catch (error) {
+      const status = error.response?.status;
+      if (status === 401 || status === 403) {
+        localStorage.removeItem('token');
+        delete axios.defaults.headers.common['Authorization'];
+        setToken(null);
+        setUser(null);
+      } else {
+        // An outage or server error says nothing about the session, so keep the token.
+        setServerUnavailable(true);
+      }
     } finally {
       setLoading(false);
     }
@@ -94,7 +102,13 @@ export const AuthProvider = ({ children }) => {
     return userData;
   };
 
+  const retrySession = () => {
+    setLoading(true);
+    fetchUser();
+  };
+
   const logout = () => {
+    setServerUnavailable(false);
     localStorage.removeItem('token');
     delete axios.defaults.headers.common['Authorization'];
     setToken(null);
@@ -118,6 +132,8 @@ export const AuthProvider = ({ children }) => {
     register,
     bootstrapAdmin,
     logout,
+    serverUnavailable,
+    retrySession,
     isGroupManager,
     isFleetManager,
     isFleetOfficer,

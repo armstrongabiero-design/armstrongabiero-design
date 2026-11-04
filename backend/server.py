@@ -3,6 +3,7 @@ import asyncio
 import base64
 import logging
 import os
+import re
 import uuid
 from datetime import datetime, timezone, timedelta
 from pathlib import Path
@@ -12,23 +13,52 @@ from dotenv import load_dotenv
 
 ROOT_DIR = Path(__file__).parent
 load_dotenv(ROOT_DIR / ".env")
-from fastapi import FastAPI, APIRouter, HTTPException, UploadFile, File, Form, Depends, Query, Body, Request, Header
-from fastapi.responses import Response
+from fastapi import (
+    APIRouter, BackgroundTasks, Body, Depends, FastAPI, File, Form, Header, HTTPException, Query, Request, UploadFile,
+)
+from fastapi.responses import JSONResponse, Response
 from slowapi import Limiter, _rate_limit_exceeded_handler
 from slowapi.errors import RateLimitExceeded
 from slowapi.middleware import SlowAPIMiddleware
 from slowapi.util import get_remote_address
 from starlette.middleware.cors import CORSMiddleware
 
-from auth_deps import get_current_user, get_current_user_validated, require_group_manager, require_manager
+from auth_deps import (
+    get_current_user,
+    get_current_user_validated,
+    require_fleet_staff,
+    require_group_manager,
+    require_manager,
+)
+from authz import (
+    assert_country,
+    assert_document_entity,
+    assert_driver_scope,
+    assert_own_driver,
+    assert_payload_scope,
+    assert_record_access,
+    assert_record_scope,
+    assert_vehicle_scope,
+    country_query,
+    driver_identities,
+    effective_country,
+    is_group_manager,
+    is_staff,
+    merge_scope,
+    own_driver_filter,
+    read_scope,
+    same_country,
+    vehicle_scope_query,
+)
 from auth_service import (
     assert_jwt_configuration,
     access_token_payload_from_user_record,
     get_password_hash,
     verify_password,
     create_access_token,
+    tokens_match,
 )
-from currency_utils import currency_converter
+from currency_utils import currency_converter, load_saved_rates, refresh_rates
 from country_utils import normalize_country_code, country_filter_query
 from ai_services import ai_service, formula_resale_value
 from email_service import email_service
@@ -87,7 +117,9 @@ from maintenance_bulk_import import build_maintenance_template_workbook, parse_m
 from tire_bulk_import import build_tire_template_workbook, parse_tire_bulk_upload
 from inventory_bulk_import import build_inventory_template_workbook, parse_inventory_bulk_upload
 from expenditure_bulk_import import build_expenditure_template_workbook, parse_expenditure_bulk_upload
-from export_utils import build_export_bytes, export_filename, export_mime
+from upload_safety import content_disposition, content_matches_type
+from export_utils import build_export_bytes, export_filename, export_mime, write_text_cell
+from otp_service import OtpSendLimitExceeded, issue_otp, verify_otp_code
 from security_middleware import JWTAuthMiddleware
 
 limiter = Limiter(key_func=get_remote_address)
@@ -99,6 +131,16 @@ def _require_staff(current_user: dict = Depends(get_current_user)) -> dict:
     if current_user.get("role") not in _STAFF_ROLES:
         raise HTTPException(status_code=403, detail="Staff access required")
     return current_user
+
+
+VEHICLE_BASIC_FIELDS = (
+    "id", "country", "registration_number", "make", "model", "year", "status", "odometer_reading",
+)
+
+
+def _vehicle_basic_view(vehicle: dict) -> dict:
+    """What drivers and users see: enough to pick a vehicle, with no cost or valuation data."""
+    return {field: vehicle.get(field) for field in VEHICLE_BASIC_FIELDS}
 
 
 def _mongo_update_payload(update_data: dict) -> dict:
@@ -129,8 +171,6 @@ def _normalize_email(email: str) -> str:
 
 async def _find_user_by_email(email: str) -> Optional[dict]:
     """Case-insensitive user lookup by email."""
-    import re
-
     normalized = _normalize_email(email)
     if not normalized:
         return None
@@ -198,8 +238,7 @@ def _pretrip_build_items_and_status(fields: dict) -> tuple:
 def _assert_can_edit_pretrip(current_user: dict, checklist: dict) -> None:
     if current_user.get("role") in _STAFF_ROLES:
         return
-    user_driver_id = current_user.get("driver_id") or current_user.get("id")
-    if checklist.get("driver_id") == user_driver_id:
+    if checklist.get("driver_id") in driver_identities(current_user):
         return
     raise HTTPException(status_code=403, detail="You do not have permission to edit this checklist")
 
@@ -231,6 +270,27 @@ async def lifespan(app: FastAPI):
             logging.getLogger(__name__).info("Cleared expiry on %s VRC document(s)", n)
     except Exception as exc:
         logging.getLogger(__name__).warning("VRC expiry migration skipped: %s", exc)
+
+    try:
+        # Backfills older accounts. Approval creates the profile for new ones.
+        from driver_profile_service import sync_driver_profiles_once_a_day
+        await sync_driver_profiles_once_a_day(db)
+    except Exception as exc:
+        logging.getLogger(__name__).warning("Driver profile sync skipped: %s", exc)
+
+    async def _exchange_rate_loop():
+        try:
+            await load_saved_rates(db)
+        except Exception as exc:
+            logging.getLogger(__name__).warning("Could not load saved exchange rates: %s", exc)
+        while True:
+            try:
+                await refresh_rates(db)
+            except Exception as exc:
+                logging.getLogger(__name__).warning("Exchange rate refresh failed: %s", exc)
+            await asyncio.sleep(3600)
+
+    rates_task = asyncio.create_task(_exchange_rate_loop())
 
     reminder_task = None
     if os.environ.get("DRIVER_REMINDERS_ENABLED", "true").lower() not in ("0", "false", "no"):
@@ -269,6 +329,11 @@ async def lifespan(app: FastAPI):
     snapshot_task = asyncio.create_task(_availability_snapshot_loop())
 
     yield
+    rates_task.cancel()
+    try:
+        await rates_task
+    except asyncio.CancelledError:
+        pass
     if reminder_task:
         reminder_task.cancel()
         try:
@@ -309,7 +374,10 @@ logger = logging.getLogger(__name__)
 
 # ============= COUNTRY ROUTES =============
 @api_router.post("/countries", response_model=Country)
-async def create_country(input: CountryCreate):
+async def create_country(
+    input: CountryCreate,
+    current_user: dict = Depends(require_group_manager()),
+):
     country = Country(**input.model_dump())
     doc = country.model_dump()
     doc['created_at'] = doc['created_at'].isoformat()
@@ -446,7 +514,8 @@ async def get_country(country_name: str):
 
 # ============= VEHICLE ROUTES =============
 @api_router.post("/vehicles", response_model=Vehicle)
-async def create_vehicle(input: VehicleCreate):
+async def create_vehicle(input: VehicleCreate, current_user: dict = Depends(_require_staff)):
+    await assert_payload_scope(current_user, input.model_dump())
     # Convert acquisition cost to USD
     acquisition_cost_usd = currency_converter.convert(
         input.acquisition_cost, input.acquisition_currency, CurrencyEnum.USD
@@ -508,6 +577,7 @@ async def bulk_upload_vehicles(
         country_code = normalize_country_code(country)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
+    assert_country(current_user, country_code)
 
     try:
         vehicle_inputs, parse_errors = parse_bulk_upload(content, country=country_code)
@@ -582,14 +652,18 @@ async def bulk_upload_vehicles(
 
 
 @api_router.get("/vehicles", response_model=List[Vehicle])
-async def get_vehicles(country: Optional[str] = None, status: Optional[str] = None):
-    query = {}
-    if country:
-        query['country'] = country
+async def get_vehicles(
+    country: Optional[str] = None,
+    status: Optional[str] = None,
+    current_user: dict = Depends(get_current_user),
+):
+    query = dict(country_query(current_user, country))
     if status:
         query['status'] = status
     
     vehicles = await db.vehicles.find(query, {"_id": 0}).to_list(1000)
+    if not is_staff(current_user):
+        return JSONResponse([_vehicle_basic_view(v) for v in vehicles])
     for v in vehicles:
         for date_field in ['acquisition_date', 'created_at', 'updated_at', 'availability_changed_at']:
             if isinstance(v.get(date_field), str):
@@ -600,30 +674,30 @@ async def get_vehicles(country: Optional[str] = None, status: Optional[str] = No
 @api_router.get("/vehicles/availability/summary")
 async def vehicles_availability_summary(
     country: Optional[str] = None,
-    current_user: dict = Depends(get_current_user),
+    current_user: dict = Depends(_require_staff),
 ):
     from availability_service import get_availability_summary
-    return await get_availability_summary(db, country)
+    return await get_availability_summary(db, effective_country(current_user, country))
 
 
 @api_router.get("/vehicles/availability/weekly")
 async def vehicles_availability_weekly(
     country: Optional[str] = None,
     weeks: int = Query(12, ge=1, le=52),
-    current_user: dict = Depends(get_current_user),
+    current_user: dict = Depends(_require_staff),
 ):
     from availability_service import get_weekly_series
-    return {"weeks": await get_weekly_series(db, country, weeks)}
+    return {"weeks": await get_weekly_series(db, effective_country(current_user, country), weeks)}
 
 
 @api_router.get("/vehicles/availability/monthly")
 async def vehicles_availability_monthly(
     country: Optional[str] = None,
     months: int = Query(12, ge=1, le=36),
-    current_user: dict = Depends(get_current_user),
+    current_user: dict = Depends(_require_staff),
 ):
     from availability_service import get_monthly_series
-    return {"months": await get_monthly_series(db, country, months)}
+    return {"months": await get_monthly_series(db, effective_country(current_user, country), months)}
 
 
 @api_router.get("/vehicles/availability/events")
@@ -631,10 +705,10 @@ async def vehicles_availability_events(
     country: Optional[str] = None,
     vehicle_id: Optional[str] = None,
     limit: int = Query(100, ge=1, le=500),
-    current_user: dict = Depends(get_current_user),
+    current_user: dict = Depends(_require_staff),
 ):
     from availability_service import list_availability_events
-    return await list_availability_events(db, country, vehicle_id, limit)
+    return await list_availability_events(db, effective_country(current_user, country), vehicle_id, limit)
 
 
 @api_router.post("/vehicles/availability/snapshot")
@@ -646,7 +720,7 @@ async def vehicles_availability_snapshot(
     from availability_service import take_daily_snapshots
 
     cron_token = os.environ.get("REMINDER_CRON_TOKEN", "").strip()
-    is_cron = bool(cron_token and x_reminder_token and x_reminder_token == cron_token)
+    is_cron = tokens_match(cron_token, x_reminder_token)
     payload = getattr(request.state, "jwt_payload", None) or {}
     is_staff = payload.get("role") in (
         "GROUP_FLEET_MANAGER", "FLEET_MANAGER", "FLEET_OFFICER"
@@ -667,6 +741,7 @@ async def update_vehicle_availability_endpoint(
     from models.availability import VehicleAvailabilityUpdate
     from models.enums import VehicleStatus as VS
 
+    await assert_vehicle_scope(current_user, vehicle_id)
     try:
         payload = VehicleAvailabilityUpdate(
             status=VS(body.get("status")),
@@ -684,10 +759,13 @@ async def update_vehicle_availability_endpoint(
 
 
 @api_router.get("/vehicles/{vehicle_id}", response_model=Vehicle)
-async def get_vehicle(vehicle_id: str):
+async def get_vehicle(vehicle_id: str, current_user: dict = Depends(get_current_user)):
     vehicle = await db.vehicles.find_one({"id": vehicle_id}, {"_id": 0})
     if not vehicle:
         raise HTTPException(status_code=404, detail="Vehicle not found")
+    assert_country(current_user, vehicle.get("country"))
+    if not is_staff(current_user):
+        return JSONResponse(_vehicle_basic_view(vehicle))
     for date_field in ['acquisition_date', 'created_at', 'updated_at', 'availability_changed_at']:
         if isinstance(vehicle.get(date_field), str):
             vehicle[date_field] = datetime.fromisoformat(vehicle[date_field])
@@ -703,8 +781,10 @@ async def update_vehicle(
     vehicle = await db.vehicles.find_one({"id": vehicle_id}, {"_id": 0})
     if not vehicle:
         raise HTTPException(status_code=404, detail="Vehicle not found")
+    assert_country(current_user, vehicle.get("country"))
 
     update_data = {k: v for k, v in input.model_dump().items() if v is not None}
+    await assert_payload_scope(current_user, update_data)
     if "acquisition_date" in update_data and isinstance(update_data["acquisition_date"], datetime):
         update_data["acquisition_date"] = update_data["acquisition_date"].isoformat()
 
@@ -737,6 +817,7 @@ async def delete_vehicle(
     vehicle = await db.vehicles.find_one({"id": vehicle_id}, {"_id": 0})
     if not vehicle:
         raise HTTPException(status_code=404, detail="Vehicle not found")
+    assert_country(current_user, vehicle.get("country"))
 
     await db.vehicles.delete_one({"id": vehicle_id})
     await write_audit_log(
@@ -757,7 +838,8 @@ async def delete_vehicle(
 
 # ============= DRIVER ROUTES =============
 @api_router.post("/drivers", response_model=Driver)
-async def create_driver(input: DriverCreate):
+async def create_driver(input: DriverCreate, current_user: dict = Depends(_require_staff)):
+    await assert_payload_scope(current_user, input.model_dump())
     driver = Driver(**input.model_dump())
     doc = driver.model_dump()
     doc['license_expiry'] = doc['license_expiry'].isoformat()
@@ -808,6 +890,7 @@ async def bulk_upload_drivers(
         country_code = normalize_country_code(country)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
+    assert_country(current_user, country_code)
 
     try:
         driver_inputs, parse_errors = parse_driver_bulk_upload(content, country=country_code)
@@ -875,17 +958,12 @@ async def bulk_upload_drivers(
 
 
 @api_router.get("/drivers", response_model=List[Driver])
-async def get_drivers(country: Optional[str] = None):
-    from driver_profile_service import sync_approved_driver_profiles
-    try:
-        await sync_approved_driver_profiles(db)
-    except Exception as exc:
-        logger.warning("Driver profile sync skipped: %s", exc)
+async def get_drivers(country: Optional[str] = None, current_user: dict = Depends(get_current_user)):
+    if is_staff(current_user):
+        query = dict(country_query(current_user, country))
+    else:
+        query = {"id": {"$in": driver_identities(current_user)}}
 
-    query = {}
-    if country:
-        query['country'] = country
-    
     drivers = await db.drivers.find(query, {"_id": 0}).to_list(1000)
     for d in drivers:
         for date_field in ['license_expiry', 'created_at', 'updated_at']:
@@ -900,14 +978,18 @@ async def list_driver_invites_endpoint(
     current_user: dict = Depends(_require_staff),
 ):
     from driver_invite_service import list_driver_invites
-    return await list_driver_invites(db, country)
+    return await list_driver_invites(db, effective_country(current_user, country))
 
 
 @api_router.get("/drivers/{driver_id}", response_model=Driver)
-async def get_driver(driver_id: str):
+async def get_driver(driver_id: str, current_user: dict = Depends(get_current_user)):
     driver = await db.drivers.find_one({"id": driver_id}, {"_id": 0})
     if not driver:
         raise HTTPException(status_code=404, detail="Driver not found")
+    if is_staff(current_user):
+        assert_country(current_user, driver.get("country"))
+    else:
+        assert_own_driver(current_user, driver_id)
     for date_field in ['license_expiry', 'created_at', 'updated_at']:
         if isinstance(driver.get(date_field), str):
             driver[date_field] = datetime.fromisoformat(driver[date_field])
@@ -923,8 +1005,10 @@ async def update_driver(
     driver = await db.drivers.find_one({"id": driver_id}, {"_id": 0})
     if not driver:
         raise HTTPException(status_code=404, detail="Driver not found")
+    assert_country(current_user, driver.get("country"))
 
     update_data = {k: v for k, v in input.model_dump().items() if v is not None}
+    await assert_payload_scope(current_user, update_data)
     if "license_expiry" in update_data and isinstance(update_data["license_expiry"], datetime):
         update_data["license_expiry"] = update_data["license_expiry"].isoformat()
     update_data["updated_at"] = datetime.now(timezone.utc).isoformat()
@@ -948,6 +1032,7 @@ async def delete_driver(
     driver = await db.drivers.find_one({"id": driver_id}, {"_id": 0})
     if not driver:
         raise HTTPException(status_code=404, detail="Driver not found")
+    assert_country(current_user, driver.get("country"))
 
     await db.drivers.delete_one({"id": driver_id})
     await write_audit_log(
@@ -964,6 +1049,26 @@ async def delete_driver(
         },
     )
     return {"message": "Driver deleted successfully"}
+
+
+async def _assert_invite_scope(current_user: dict, invite_id: str) -> dict:
+    invite = await db.driver_invites.find_one({"id": invite_id}, {"_id": 0, "token": 0})
+    if not invite:
+        raise HTTPException(status_code=400, detail="Invite not found")
+    await assert_driver_scope(current_user, invite.get("driver_id"))
+    return invite
+
+
+async def _audit_invite(action: str, current_user: dict, invite_id: str, driver_id, email) -> None:
+    await write_audit_log(
+        action=action,
+        entity_type="driver_invite",
+        entity_id=invite_id,
+        actor_id=current_user["id"],
+        actor_role=current_user.get("role", ""),
+        actor_email=current_user.get("email"),
+        details={"driver_id": driver_id, "email": email},
+    )
 
 
 def _send_driver_invite_email(result: dict) -> bool:
@@ -984,10 +1089,12 @@ async def invite_driver_endpoint(
     current_user: dict = Depends(_require_staff),
 ):
     from driver_invite_service import create_or_refresh_invite
+    await assert_driver_scope(current_user, driver_id)
     try:
         result = await create_or_refresh_invite(db, driver_id, current_user)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
+    await _audit_invite("invite_create", current_user, result["invite"]["id"], driver_id, result["email"])
     email_sent = _send_driver_invite_email(result)
     return {
         "status": "success",
@@ -1007,10 +1114,12 @@ async def resend_driver_invite_endpoint(
     current_user: dict = Depends(_require_staff),
 ):
     from driver_invite_service import resend_invite
+    await _assert_invite_scope(current_user, invite_id)
     try:
         result = await resend_invite(db, invite_id, current_user)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
+    await _audit_invite("invite_resend", current_user, invite_id, result["invite"].get("driver_id"), result["email"])
     email_sent = _send_driver_invite_email(result)
     return {
         "status": "success",
@@ -1030,10 +1139,13 @@ async def delete_driver_invite_endpoint(
     current_user: dict = Depends(_require_staff),
 ):
     from driver_invite_service import delete_invite
+    invite = await _assert_invite_scope(current_user, invite_id)
     try:
-        return await delete_invite(db, invite_id)
+        deleted = await delete_invite(db, invite_id)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
+    await _audit_invite("invite_delete", current_user, invite_id, invite.get("driver_id"), invite.get("email"))
+    return deleted
 
 
 @api_router.get("/auth/verify-invite/{token}")
@@ -1049,7 +1161,9 @@ async def accept_driver_invite(request: Request, body: dict = Body(...)):
     from models.invites import AcceptDriverInviteRequest
     try:
         payload = AcceptDriverInviteRequest(**body)
-        return await accept_invite(db, payload.token, payload.new_password)
+        accepted = await accept_invite(db, payload.token, payload.new_password)
+        await _audit_security_event("invite_accepted", request, email=accepted.get("email"))
+        return accepted
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
@@ -1071,7 +1185,8 @@ def _validate_etc_or_raise(work_status, etc_datetime) -> None:
 
 
 @api_router.post("/maintenance", response_model=MaintenanceRecord)
-async def create_maintenance(input: MaintenanceRecordCreate):
+async def create_maintenance(input: MaintenanceRecordCreate, current_user: dict = Depends(_require_staff)):
+    await assert_payload_scope(current_user, input.model_dump())
     cost_usd = currency_converter.convert(input.cost, input.currency, CurrencyEnum.USD)
     maintenance_data = input.model_dump()
     from maintenance_defaults import apply_maintenance_defaults, get_maintenance_defaults
@@ -1105,12 +1220,13 @@ async def get_maintenance_records(
     date_to: Optional[str] = None,
     search: Optional[str] = None,
     registration: Optional[str] = None,
+    current_user: dict = Depends(_require_staff),
 ):
     query: dict = {}
     if vehicle_id:
         query["vehicle_id"] = vehicle_id
     if registration:
-        reg = registration.strip()
+        reg = re.escape(registration.strip())
         vehicle_ids = [
             v["id"]
             for v in await db.vehicles.find(
@@ -1122,7 +1238,7 @@ async def get_maintenance_records(
     if maintenance_type:
         query["maintenance_type"] = maintenance_type
     if search:
-        query["description"] = {"$regex": search.strip(), "$options": "i"}
+        query["description"] = {"$regex": re.escape(search.strip()), "$options": "i"}
     if date_from or date_to:
         date_q: dict = {}
         if date_from:
@@ -1145,6 +1261,7 @@ async def get_maintenance_records(
     elif work_status:
         query["work_status"] = work_status
 
+    query = merge_scope(query, await vehicle_scope_query(current_user))
     records = await db.maintenance_records.find(query, {"_id": 0}).to_list(1000)
     for r in records:
         for field in ("scheduled_date", "completed_date", "next_due_date", "etc_datetime", "created_at"):
@@ -1191,7 +1308,7 @@ async def bulk_upload_maintenance(
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
-    vehicles = await db.vehicles.find({}, {"_id": 0, "id": 1, "registration_number": 1}).to_list(10000)
+    vehicles = await db.vehicles.find(country_query(current_user), {"_id": 0, "id": 1, "registration_number": 1}).to_list(10000)
     vehicles_by_reg = {(v.get("registration_number") or "").upper(): v for v in vehicles}
 
     created: List[dict] = []
@@ -1280,10 +1397,12 @@ async def update_maintenance(
     existing = await db.maintenance_records.find_one({"id": record_id}, {"_id": 0})
     if not existing:
         raise HTTPException(status_code=404, detail="Maintenance record not found")
+    await assert_record_scope(current_user, existing)
 
     update_data = input.model_dump(exclude_none=True)
     if not update_data:
         raise HTTPException(status_code=400, detail="No fields to update")
+    await assert_payload_scope(current_user, update_data)
 
     merged_status = update_data.get("work_status", existing.get("work_status"))
     merged_etc = update_data.get("etc_datetime", existing.get("etc_datetime"))
@@ -1328,6 +1447,7 @@ async def delete_maintenance(
     existing = await db.maintenance_records.find_one({"id": record_id}, {"_id": 0})
     if not existing:
         raise HTTPException(status_code=404, detail="Maintenance record not found")
+    await assert_record_scope(current_user, existing)
 
     await db.maintenance_records.delete_one({"id": record_id})
     await write_audit_log(
@@ -1348,10 +1468,11 @@ async def delete_maintenance(
 
 
 @api_router.post("/maintenance/predict/{vehicle_id}")
-async def predict_maintenance(vehicle_id: str):
+async def predict_maintenance(vehicle_id: str, current_user: dict = Depends(_require_staff)):
     vehicle = await db.vehicles.find_one({"id": vehicle_id}, {"_id": 0})
     if not vehicle:
         raise HTTPException(status_code=404, detail="Vehicle not found")
+    assert_country(current_user, vehicle.get("country"))
     
     # Get last maintenance
     last_maintenance = await db.maintenance_records.find_one(
@@ -1394,6 +1515,7 @@ async def create_workshop_job(
     input: WorkshopJobCreate,
     current_user: dict = Depends(_require_staff),
 ):
+    await assert_payload_scope(current_user, input.model_dump())
     cost_usd = currency_converter.convert(input.cost, input.currency, CurrencyEnum.USD)
     job_data = input.model_dump()
     job_data["cost_usd"] = cost_usd
@@ -1420,6 +1542,7 @@ async def get_workshop_jobs(
     status: Optional[str] = None,
     work_status: Optional[str] = None,
     country: Optional[str] = None,
+    current_user: dict = Depends(_require_staff),
 ):
     query = {}
     if vehicle_id:
@@ -1429,6 +1552,7 @@ async def get_workshop_jobs(
     elif status:
         query["$or"] = [{"work_status": status}, {"status": status}]
 
+    query = merge_scope(query, await vehicle_scope_query(current_user, country))
     jobs = await db.workshop_jobs.find(query, {"_id": 0}).to_list(1000)
     for j in jobs:
         for field in ("start_date", "estimated_completion", "actual_completion", "etc_datetime", "created_at"):
@@ -1454,10 +1578,12 @@ async def update_workshop_job(
     existing = await db.workshop_jobs.find_one({"id": job_id}, {"_id": 0})
     if not existing:
         raise HTTPException(status_code=404, detail="Workshop job not found")
+    await assert_record_scope(current_user, existing)
 
     update_data = input.model_dump(exclude_none=True)
     if not update_data:
         raise HTTPException(status_code=400, detail="No fields to update")
+    await assert_payload_scope(current_user, update_data)
 
     merged_status = update_data.get("work_status", existing.get("work_status"))
     merged_etc = update_data.get("etc_datetime", existing.get("etc_datetime"))
@@ -1492,9 +1618,11 @@ async def delete_workshop_job(
     job_id: str,
     current_user: dict = Depends(_require_staff),
 ):
+    assert_can_hard_delete(current_user, "workshop_job")
     existing = await db.workshop_jobs.find_one({"id": job_id}, {"_id": 0})
     if not existing:
         raise HTTPException(status_code=404, detail="Workshop job not found")
+    await assert_record_scope(current_user, existing)
     await db.workshop_jobs.delete_one({"id": job_id})
     await write_audit_log(
         action="hard_delete",
@@ -1515,9 +1643,7 @@ async def list_master_workshops(
     active_only: bool = False,
     current_user: dict = Depends(_require_staff),
 ):
-    query: dict = {}
-    if country:
-        query["country"] = normalize_country_code(country)
+    query: dict = dict(country_query(current_user, country))
     if active_only:
         query["active"] = True
     items = await db.master_workshops.find(query, {"_id": 0}).sort("name", 1).to_list(1000)
@@ -1532,6 +1658,7 @@ async def create_master_workshop(
     input: WorkshopMasterCreate,
     current_user: dict = Depends(_require_staff),
 ):
+    await assert_payload_scope(current_user, input.model_dump())
     workshop = WorkshopMaster(**input.model_dump())
     doc = workshop.model_dump()
     if hasattr(doc.get("workshop_type"), "value"):
@@ -1559,9 +1686,11 @@ async def update_master_workshop(
     existing = await db.master_workshops.find_one({"id": workshop_id}, {"_id": 0})
     if not existing:
         raise HTTPException(status_code=404, detail="Workshop not found")
+    await assert_record_scope(current_user, existing)
     update_data = input.model_dump(exclude_none=True)
     if not update_data:
         raise HTTPException(status_code=400, detail="No fields to update")
+    await assert_payload_scope(current_user, update_data)
     if hasattr(update_data.get("workshop_type"), "value"):
         update_data["workshop_type"] = update_data["workshop_type"].value
     await db.master_workshops.update_one({"id": workshop_id}, {"$set": update_data})
@@ -1576,9 +1705,11 @@ async def delete_master_workshop(
     workshop_id: str,
     current_user: dict = Depends(_require_staff),
 ):
+    assert_can_hard_delete(current_user, "master_workshop")
     existing = await db.master_workshops.find_one({"id": workshop_id}, {"_id": 0})
     if not existing:
         raise HTTPException(status_code=404, detail="Workshop not found")
+    await assert_record_scope(current_user, existing)
     await db.master_workshops.delete_one({"id": workshop_id})
     await write_audit_log(
         action="hard_delete",
@@ -1605,9 +1736,7 @@ async def list_vehicle_masters(
     country: Optional[str] = None,
     current_user: dict = Depends(_require_staff),
 ):
-    query: dict = {}
-    if country:
-        query["country"] = normalize_country_code(country)
+    query: dict = dict(country_query(current_user, country))
     items = await db.vehicle_masters.find(query, {"_id": 0}).sort("registration_number", 1).to_list(5000)
     return [_parse_vehicle_master_dates(i) for i in items]
 
@@ -1617,6 +1746,8 @@ async def create_vehicle_master(
     input: VehicleMasterCreate,
     current_user: dict = Depends(_require_staff),
 ):
+    if not is_group_manager(current_user):
+        assert_country(current_user, input.country)
     record = VehicleMaster(**input.model_dump())
     doc = record.model_dump()
     if doc.get("country"):
@@ -1624,7 +1755,7 @@ async def create_vehicle_master(
     doc["created_at"] = doc["created_at"].isoformat()
     doc["updated_at"] = doc["updated_at"].isoformat()
     await db.vehicle_masters.insert_one(doc)
-    await sync_master_to_vehicles(db, doc)
+    await sync_master_to_vehicles(db, doc, country_query(current_user))
     await write_audit_log(
         action="create",
         entity_type="vehicle_master",
@@ -1646,13 +1777,15 @@ async def update_vehicle_master(
     existing = await db.vehicle_masters.find_one({"id": record_id}, {"_id": 0})
     if not existing:
         raise HTTPException(status_code=404, detail="Vehicle master record not found")
+    await assert_record_scope(current_user, existing)
     update_data = _mongo_update_payload({k: v for k, v in input.model_dump().items() if v is not None})
+    await assert_payload_scope(current_user, update_data)
     if "country" in update_data and update_data["country"]:
         update_data["country"] = normalize_country_code(update_data["country"])
     update_data["updated_at"] = datetime.now(timezone.utc).isoformat()
     await db.vehicle_masters.update_one({"id": record_id}, {"$set": update_data})
     updated = await db.vehicle_masters.find_one({"id": record_id}, {"_id": 0})
-    await sync_master_to_vehicles(db, updated)
+    await sync_master_to_vehicles(db, updated, country_query(current_user))
     return VehicleMaster(**_parse_vehicle_master_dates(updated))
 
 
@@ -1690,19 +1823,23 @@ async def bulk_upload_vehicle_masters(
     errors = list(parse_errors)
     for row in rows:
         try:
+            if not is_group_manager(current_user):
+                row["country"] = row.get("country") or current_user.get("country")
+                assert_country(current_user, row["country"])
             reg = (row.get("registration_number") or "").strip()
             existing = None
             if reg:
                 existing = await db.vehicle_masters.find_one(
-                    {"registration_number": {"$regex": f"^{reg}$", "$options": "i"}},
+                    {"registration_number": {"$regex": f"^{re.escape(reg)}$", "$options": "i"}},
                     {"_id": 0},
                 )
             if existing:
+                await assert_record_scope(current_user, existing)
                 upd = {k: v for k, v in row.items() if k != "row"}
                 upd["updated_at"] = datetime.now(timezone.utc).isoformat()
                 await db.vehicle_masters.update_one({"id": existing["id"]}, {"$set": upd})
                 merged = {**existing, **upd}
-                await sync_master_to_vehicles(db, merged)
+                await sync_master_to_vehicles(db, merged, country_query(current_user))
                 updated += 1
             else:
                 record = VehicleMaster(**{k: v for k, v in row.items() if k != "row"})
@@ -1710,8 +1847,10 @@ async def bulk_upload_vehicle_masters(
                 doc["created_at"] = doc["created_at"].isoformat()
                 doc["updated_at"] = doc["updated_at"].isoformat()
                 await db.vehicle_masters.insert_one(doc)
-                await sync_master_to_vehicles(db, doc)
+                await sync_master_to_vehicles(db, doc, country_query(current_user))
                 created += 1
+        except HTTPException as exc:
+            errors.append({"row": row.get("row"), "message": str(exc.detail)})
         except Exception as exc:
             errors.append({"row": row.get("row"), "message": str(exc)})
 
@@ -1726,7 +1865,8 @@ async def delete_vehicle_master(
     existing = await db.vehicle_masters.find_one({"id": record_id}, {"_id": 0})
     if not existing:
         raise HTTPException(status_code=404, detail="Vehicle master record not found")
-    await assert_can_hard_delete(current_user, "vehicle_master")
+    assert_can_hard_delete(current_user, "vehicle_master")
+    await assert_record_scope(current_user, existing)
     await db.vehicle_masters.delete_one({"id": record_id})
     await write_audit_log(
         action="hard_delete",
@@ -1759,7 +1899,7 @@ async def export_master_data(
     sheets: List[Tuple[str, List[str], List[List[object]]]] = []
 
     if "workshops" in selected:
-        items = await db.master_workshops.find({}, {"_id": 0}).sort("name", 1).to_list(5000)
+        items = await db.master_workshops.find(country_query(current_user), {"_id": 0}).sort("name", 1).to_list(5000)
         headers = ["Name", "Type", "Country", "Address", "Phone", "Active"]
         rows = [
             [
@@ -1775,7 +1915,7 @@ async def export_master_data(
         sheets.append(("Workshops", headers, rows))
 
     if "vehicles" in selected or "vehicle_master" in selected:
-        items = await db.vehicle_masters.find({}, {"_id": 0}).to_list(5000)
+        items = await db.vehicle_masters.find(country_query(current_user), {"_id": 0}).to_list(5000)
         headers = [label for _, label in VEHICLE_MASTER_COLUMNS]
         rows = []
         for i in items:
@@ -1835,7 +1975,7 @@ async def export_master_data(
                 cell.font = header_font
             for r_idx, row in enumerate(rows, start=2):
                 for c_idx, value in enumerate(row, start=1):
-                    ws.cell(row=r_idx, column=c_idx, value="" if value is None else str(value))
+                    write_text_cell(ws, r_idx, c_idx, value)
             for col in range(1, len(headers) + 1):
                 ws.column_dimensions[get_column_letter(col)].width = 16
         buf = _io.BytesIO()
@@ -1865,7 +2005,8 @@ async def export_master_data(
 
 # ============= INVENTORY ROUTES =============
 @api_router.post("/inventory", response_model=InventoryItem)
-async def create_inventory_item(input: InventoryItemCreate):
+async def create_inventory_item(input: InventoryItemCreate, current_user: dict = Depends(_require_staff)):
+    await assert_payload_scope(current_user, input.model_dump())
     unit_cost_usd = currency_converter.convert(input.unit_cost, input.currency, CurrencyEnum.USD)
     
     item_data = input.model_dump()
@@ -1935,8 +2076,12 @@ async def bulk_upload_inventory(
 
     for row in rows:
         try:
+            assert_country(current_user, row["country"])
             unit_cost_usd = currency_converter.convert(row["unit_cost"], row["currency"], CurrencyEnum.USD)
-            existing = await db.inventory_items.find_one({"sku": row["sku"]}, {"_id": 0})
+            # The same part can be stocked in several countries, each with its own record.
+            existing = await db.inventory_items.find_one(
+                {"sku": row["sku"], **country_filter_query(row["country"])}, {"_id": 0}
+            )
             now_iso = datetime.now(timezone.utc).isoformat()
             if existing:
                 await db.inventory_items.update_one(
@@ -1975,6 +2120,8 @@ async def bulk_upload_inventory(
                 doc["updated_at"] = doc["updated_at"].isoformat()
                 await db.inventory_items.insert_one(doc)
                 created += 1
+        except HTTPException as exc:
+            errors.append({"row": row["row"], "sku": row.get("sku"), "message": str(exc.detail)})
         except Exception as exc:
             errors.append({"row": row["row"], "sku": row.get("sku"), "message": str(exc)})
 
@@ -1987,11 +2134,13 @@ async def bulk_upload_inventory(
 
 
 @api_router.get("/inventory", response_model=List[InventoryItem])
-async def get_inventory_items(country: Optional[str] = None, low_stock: bool = False):
-    query = {}
-    if country:
-        query['country'] = country
-    
+async def get_inventory_items(
+    country: Optional[str] = None,
+    low_stock: bool = False,
+    current_user: dict = Depends(_require_staff),
+):
+    query = dict(country_query(current_user, country))
+
     items = await db.inventory_items.find(query, {"_id": 0}).to_list(1000)
     
     for item in items:
@@ -2019,6 +2168,8 @@ async def update_inventory_item(
     existing = await db.inventory_items.find_one({"id": item_id}, {"_id": 0})
     if not existing:
         raise HTTPException(status_code=404, detail="Inventory item not found")
+    await assert_record_scope(current_user, existing)
+    await assert_payload_scope(current_user, update_data)
 
     if "unit_cost" in update_data or "currency" in update_data:
         cost = update_data.get("unit_cost", existing.get("unit_cost"))
@@ -2040,6 +2191,7 @@ async def delete_inventory_item(
     item = await db.inventory_items.find_one({"id": item_id}, {"_id": 0})
     if not item:
         raise HTTPException(status_code=404, detail="Inventory item not found")
+    await assert_record_scope(current_user, item)
 
     await db.inventory_items.delete_one({"id": item_id})
     await write_audit_log(
@@ -2055,13 +2207,14 @@ async def delete_inventory_item(
 
 
 @api_router.post("/inventory/transactions", response_model=InventoryTransaction)
-async def create_inventory_transaction(input: InventoryTransactionCreate):
+async def create_inventory_transaction(input: InventoryTransactionCreate, current_user: dict = Depends(_require_staff)):
     transaction = InventoryTransaction(**input.model_dump())
     
     # Update item quantity
     item = await db.inventory_items.find_one({"id": input.item_id}, {"_id": 0})
     if not item:
         raise HTTPException(status_code=404, detail="Inventory item not found")
+    await assert_record_scope(current_user, item)
     
     quantity_change = input.quantity if input.transaction_type in ["PURCHASE", "ADJUSTMENT"] else -input.quantity
     new_quantity = item['quantity'] + quantity_change
@@ -2082,11 +2235,14 @@ async def create_inventory_transaction(input: InventoryTransactionCreate):
 
 
 @api_router.get("/inventory/transactions", response_model=List[InventoryTransaction])
-async def get_inventory_transactions(item_id: Optional[str] = None):
+async def get_inventory_transactions(item_id: Optional[str] = None, current_user: dict = Depends(_require_staff)):
     query = {}
     if item_id:
         query['item_id'] = item_id
-    
+    if not is_group_manager(current_user):
+        items = await db.inventory_items.find(country_query(current_user), {"_id": 0, "id": 1}).to_list(10000)
+        query = merge_scope(query, {"item_id": {"$in": [i["id"] for i in items]}})
+
     transactions = await db.inventory_transactions.find(query, {"_id": 0}).to_list(1000)
     for t in transactions:
         if isinstance(t.get('created_at'), str):
@@ -2097,6 +2253,7 @@ async def get_inventory_transactions(item_id: Optional[str] = None):
 # ============= FUEL ROUTES =============
 @api_router.post("/fuel", response_model=FuelTransaction)
 async def create_fuel_transaction(input: FuelTransactionCreate, current_user: dict = Depends(get_current_user)):
+    await assert_payload_scope(current_user, input.model_dump())
     cost_usd = currency_converter.convert(input.cost, input.currency, CurrencyEnum.USD)
     
     # Get previous fuel transaction to calculate efficiency
@@ -2148,13 +2305,18 @@ async def create_fuel_transaction(input: FuelTransactionCreate, current_user: di
 
 
 @api_router.get("/fuel", response_model=List[FuelTransaction])
-async def get_fuel_transactions(vehicle_id: Optional[str] = None, anomalies_only: bool = False):
+async def get_fuel_transactions(
+    vehicle_id: Optional[str] = None,
+    anomalies_only: bool = False,
+    current_user: dict = Depends(get_current_user),
+):
     query = {}
     if vehicle_id:
         query['vehicle_id'] = vehicle_id
     if anomalies_only:
         query['anomaly_detected'] = True
     
+    query = merge_scope(query, await read_scope(current_user))
     transactions = await db.fuel_transactions.find(query, {"_id": 0}).to_list(1000)
     for t in transactions:
         if isinstance(t.get('date'), str):
@@ -2177,6 +2339,8 @@ async def update_fuel_transaction(
     existing = await db.fuel_transactions.find_one({"id": transaction_id}, {"_id": 0})
     if not existing:
         raise HTTPException(status_code=404, detail="Fuel transaction not found")
+    await assert_record_scope(current_user, existing)
+    await assert_payload_scope(current_user, update_data)
 
     vehicle_id = update_data.get("vehicle_id", existing.get("vehicle_id"))
     odometer = update_data.get("odometer_reading", existing.get("odometer_reading"))
@@ -2214,6 +2378,7 @@ async def delete_fuel_transaction(
     txn = await db.fuel_transactions.find_one({"id": transaction_id}, {"_id": 0})
     if not txn:
         raise HTTPException(status_code=404, detail="Fuel transaction not found")
+    await assert_record_scope(current_user, txn)
 
     await db.fuel_transactions.delete_one({"id": transaction_id})
     await write_audit_log(
@@ -2230,7 +2395,8 @@ async def delete_fuel_transaction(
 
 # ============= EXPENDITURE ROUTES =============
 @api_router.post("/expenditures", response_model=Expenditure)
-async def create_expenditure(input: ExpenditureCreate):
+async def create_expenditure(input: ExpenditureCreate, current_user: dict = Depends(_require_staff)):
+    await assert_payload_scope(current_user, input.model_dump())
     amount_usd = currency_converter.convert(input.amount, input.currency, CurrencyEnum.USD)
     
     expenditure_data = input.model_dump()
@@ -2294,9 +2460,9 @@ async def bulk_upload_expenditures(
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
-    vehicles = await db.vehicles.find({}, {"_id": 0, "id": 1, "registration_number": 1}).to_list(10000)
+    vehicles = await db.vehicles.find(country_query(current_user), {"_id": 0, "id": 1, "registration_number": 1, "country": 1}).to_list(10000)
     vehicles_by_reg = {(v.get("registration_number") or "").upper(): v for v in vehicles}
-    drivers = await db.drivers.find({}, {"_id": 0, "id": 1, "license_number": 1}).to_list(10000)
+    drivers = await db.drivers.find(country_query(current_user), {"_id": 0, "id": 1, "license_number": 1, "country": 1}).to_list(10000)
     drivers_by_license = {(d.get("license_number") or "").upper(): d for d in drivers}
 
     created = 0
@@ -2304,16 +2470,17 @@ async def bulk_upload_expenditures(
 
     for row in rows:
         try:
+            assert_country(current_user, row["country"])
             vehicle_id = None
             driver_id = None
             if row.get("registration_number"):
                 vehicle = vehicles_by_reg.get(row["registration_number"].upper())
-                if not vehicle:
+                if not vehicle or not same_country(vehicle.get("country"), row["country"]):
                     raise ValueError(f"No vehicle found with registration {row['registration_number']}")
                 vehicle_id = vehicle["id"]
             if row.get("license_number"):
                 driver = drivers_by_license.get(row["license_number"].upper())
-                if not driver:
+                if not driver or not same_country(driver.get("country"), row["country"]):
                     raise ValueError(f"No driver found with license {row['license_number']}")
                 driver_id = driver["id"]
 
@@ -2334,6 +2501,8 @@ async def bulk_upload_expenditures(
             doc["created_at"] = doc["created_at"].isoformat()
             await db.expenditures.insert_one(doc)
             created += 1
+        except HTTPException as exc:
+            errors.append({"row": row["row"], "message": str(exc.detail)})
         except Exception as exc:
             errors.append({"row": row["row"], "message": str(exc)})
 
@@ -2345,10 +2514,12 @@ async def bulk_upload_expenditures(
 
 
 @api_router.get("/expenditures", response_model=List[Expenditure])
-async def get_expenditures(country: Optional[str] = None, category: Optional[str] = None):
-    query = {}
-    if country:
-        query['country'] = country
+async def get_expenditures(
+    country: Optional[str] = None,
+    category: Optional[str] = None,
+    current_user: dict = Depends(_require_staff),
+):
+    query = dict(country_query(current_user, country))
     if category:
         query['category'] = category
     
@@ -2374,6 +2545,8 @@ async def update_expenditure(
     existing = await db.expenditures.find_one({"id": expenditure_id}, {"_id": 0})
     if not existing:
         raise HTTPException(status_code=404, detail="Expenditure not found")
+    await assert_record_scope(current_user, existing)
+    await assert_payload_scope(current_user, update_data)
 
     if "amount" in update_data or "currency" in update_data:
         amount = update_data.get("amount", existing.get("amount"))
@@ -2394,6 +2567,7 @@ async def delete_expenditure(
     expenditure = await db.expenditures.find_one({"id": expenditure_id}, {"_id": 0})
     if not expenditure:
         raise HTTPException(status_code=404, detail="Expenditure not found")
+    await assert_record_scope(current_user, expenditure)
 
     await db.expenditures.delete_one({"id": expenditure_id})
     await write_audit_log(
@@ -2428,6 +2602,13 @@ _ALLOWED_DOCUMENT_CONTENT_TYPES = frozenset(
         "application/vnd.oasis.opendocument.spreadsheet",
     }
 )
+
+
+async def _assert_document_read(current_user: dict, document: dict) -> None:
+    if is_staff(current_user):
+        await assert_record_scope(current_user, document)
+    elif document.get("entity_id") not in driver_identities(current_user):
+        raise HTTPException(status_code=403, detail="This record is outside your access scope")
 
 
 def _parse_ocr_date(value) -> Optional[str]:
@@ -2469,7 +2650,9 @@ def _document_ocr_updates(ocr_result: dict) -> dict:
 
 
 @api_router.post("/documents", response_model=Document)
-async def create_document(input: DocumentCreate):
+async def create_document(input: DocumentCreate, current_user: dict = Depends(_require_staff)):
+    await assert_payload_scope(current_user, input.model_dump())
+    await assert_document_entity(input.model_dump())
     doc_type = input.document_type.value if hasattr(input.document_type, "value") else str(input.document_type)
     if doc_type != "VEHICLE_REGISTRATION" and not input.expiry_date:
         raise HTTPException(status_code=400, detail="Expiry date is required for this document type")
@@ -2492,8 +2675,17 @@ async def create_document(input: DocumentCreate):
 
 
 @api_router.get("/documents", response_model=List[Document])
-async def get_documents(entity_id: Optional[str] = None, document_type: Optional[str] = None):
+async def get_documents(
+    entity_id: Optional[str] = None,
+    document_type: Optional[str] = None,
+    current_user: dict = Depends(get_current_user),
+):
     query = {}
+    if is_staff(current_user):
+        query.update(country_query(current_user))
+    else:
+        query["entity_id"] = {"$in": driver_identities(current_user)}
+        entity_id = None
     if entity_id:
         query['entity_id'] = entity_id
     if document_type:
@@ -2542,6 +2734,7 @@ async def bulk_upload_documents(
         country_code = normalize_country_code(country)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
+    assert_country(current_user, country_code)
 
     meta_name = (metadata.filename or "").lower()
     if not meta_name.endswith(".xlsx"):
@@ -2564,9 +2757,11 @@ async def bulk_upload_documents(
         name = (upload.filename or "").strip()
         if not name:
             continue
-        content = await upload.read()
+        too_large = (upload.size or 0) > _DOCUMENT_MAX_BYTES
+        content = b"" if too_large else await upload.read()
         content_type = (upload.content_type or "").split(";")[0].strip().lower()
         entry = {
+            "too_large": too_large,
             "content": content,
             "content_type": content_type,
             "filename": name,
@@ -2574,8 +2769,8 @@ async def bulk_upload_documents(
         file_map[name] = entry
         file_map.setdefault(name.lower(), entry)
 
-    vehicles = await db.vehicles.find({}, {"_id": 0, "id": 1, "registration_number": 1}).to_list(10000)
-    drivers = await db.drivers.find({}, {"_id": 0, "id": 1, "license_number": 1}).to_list(10000)
+    vehicles = await db.vehicles.find(country_query(current_user, country_code), {"_id": 0, "id": 1, "registration_number": 1}).to_list(10000)
+    drivers = await db.drivers.find(country_query(current_user, country_code), {"_id": 0, "id": 1, "license_number": 1}).to_list(10000)
     vehicles_by_reg = {(v.get("registration_number") or "").upper(): v for v in vehicles}
     drivers_by_license = {(d.get("license_number") or "").upper(): d for d in drivers}
 
@@ -2615,7 +2810,15 @@ async def bulk_upload_documents(
             })
             continue
 
-        if len(file_entry["content"]) > _DOCUMENT_MAX_BYTES:
+        if not file_entry["too_large"] and not content_matches_type(file_entry["content"], content_type):
+            errors.append({
+                "row": row["row"],
+                "filename": row["filename"],
+                "message": "File contents do not match its type.",
+            })
+            continue
+
+        if file_entry["too_large"]:
             errors.append({
                 "row": row["row"],
                 "filename": row["filename"],
@@ -2722,6 +2925,7 @@ async def upload_document_file(
     document = await db.documents.find_one({"id": document_id}, {"_id": 0})
     if not document:
         raise HTTPException(status_code=404, detail="Document not found")
+    await assert_record_scope(current_user, document)
 
     content_type = (file.content_type or "").split(";")[0].strip().lower()
     if content_type not in _ALLOWED_DOCUMENT_CONTENT_TYPES:
@@ -2736,6 +2940,8 @@ async def upload_document_file(
             status_code=400,
             detail=f"File too large (max {_DOCUMENT_MAX_BYTES // (1024 * 1024)} MB)",
         )
+    if not content_matches_type(content, content_type):
+        raise HTTPException(status_code=400, detail="File contents do not match its type.")
 
     old_key = document.get("s3_key")
     object_key, file_ref = upload_bytes(
@@ -2774,6 +2980,7 @@ async def get_document_download_url(
     document = await db.documents.find_one({"id": document_id}, {"_id": 0})
     if not document:
         raise HTTPException(status_code=404, detail="Document not found")
+    await _assert_document_read(current_user, document)
     if not document.get("s3_key"):
         raise HTTPException(status_code=404, detail="No file uploaded for this document")
 
@@ -2797,6 +3004,7 @@ async def get_document_file(
     document = await db.documents.find_one({"id": document_id}, {"_id": 0})
     if not document or not document.get("s3_key"):
         raise HTTPException(status_code=404, detail="Document file not found")
+    await _assert_document_read(current_user, document)
 
     content = read_bytes(document["s3_key"])
     if content is None:
@@ -2804,7 +3012,10 @@ async def get_document_file(
 
     media_type = document.get("content_type") or "application/octet-stream"
     filename = document.get("original_filename") or f"document-{document_id}"
-    headers = {"Content-Disposition": f'inline; filename="{filename}"'}
+    headers = {
+        "Content-Disposition": content_disposition(filename, media_type),
+        "X-Content-Type-Options": "nosniff",
+    }
     return Response(content=content, media_type=media_type, headers=headers)
 
 
@@ -2817,6 +3028,7 @@ async def process_document_ocr(
     document = await db.documents.find_one({"id": document_id}, {"_id": 0})
     if not document:
         raise HTTPException(status_code=404, detail="Document not found")
+    await assert_record_scope(current_user, document)
 
     image_bytes = None
     if file and file.filename:
@@ -2826,6 +3038,8 @@ async def process_document_ocr(
         image_bytes = await file.read()
         if len(image_bytes) > _DOCUMENT_MAX_BYTES:
             raise HTTPException(status_code=400, detail="File too large for OCR")
+        if not content_matches_type(image_bytes, content_type):
+            raise HTTPException(status_code=400, detail="File contents do not match its type.")
     elif document.get("s3_key"):
         image_bytes = read_bytes(document["s3_key"])
         if image_bytes is None:
@@ -2855,10 +3069,15 @@ async def update_document(
     document = await db.documents.find_one({"id": document_id}, {"_id": 0})
     if not document:
         raise HTTPException(status_code=404, detail="Document not found")
+    await assert_record_scope(current_user, document)
 
     update_data = _mongo_update_payload({k: v for k, v in input.model_dump().items() if v is not None})
+    await assert_payload_scope(current_user, update_data)
     if not update_data:
         raise HTTPException(status_code=400, detail="No fields to update")
+    # Only when the link changes, so older records can still have dates corrected.
+    if {"country", "entity_id", "entity_type"} & update_data.keys():
+        await assert_document_entity({**document, **update_data})
 
     await db.documents.update_one({"id": document_id}, {"$set": update_data})
     updated = await db.documents.find_one({"id": document_id}, {"_id": 0})
@@ -2877,6 +3096,7 @@ async def delete_document(
     document = await db.documents.find_one({"id": document_id}, {"_id": 0})
     if not document:
         raise HTTPException(status_code=404, detail="Document not found")
+    await assert_record_scope(current_user, document)
 
     if document.get("s3_key"):
         delete_object(document["s3_key"])
@@ -2899,7 +3119,8 @@ async def delete_document(
 
 # ============= ASSET ROUTES =============
 @api_router.post("/assets", response_model=Asset)
-async def create_asset(input: AssetCreate):
+async def create_asset(input: AssetCreate, current_user: dict = Depends(_require_staff)):
+    await assert_payload_scope(current_user, input.model_dump())
     acquisition_cost_usd = currency_converter.convert(
         input.acquisition_cost, input.currency, CurrencyEnum.USD
     )
@@ -2923,11 +3144,12 @@ async def create_asset(input: AssetCreate):
 
 
 @api_router.get("/assets", response_model=List[Asset])
-async def get_assets(vehicle_id: Optional[str] = None):
+async def get_assets(vehicle_id: Optional[str] = None, current_user: dict = Depends(_require_staff)):
     query = {}
     if vehicle_id:
         query['vehicle_id'] = vehicle_id
     
+    query = merge_scope(query, await vehicle_scope_query(current_user))
     assets = await db.assets.find(query, {"_id": 0}).to_list(1000)
     for a in assets:
         if isinstance(a.get('acquisition_date'), str):
@@ -2942,10 +3164,11 @@ async def get_assets(vehicle_id: Optional[str] = None):
 
 
 @api_router.post("/assets/{asset_id}/predict-resale")
-async def predict_asset_resale(asset_id: str):
+async def predict_asset_resale(asset_id: str, current_user: dict = Depends(_require_staff)):
     asset = await db.assets.find_one({"id": asset_id}, {"_id": 0})
     if not asset:
         raise HTTPException(status_code=404, detail="Asset not found")
+    await assert_record_scope(current_user, asset)
 
     vehicle = await db.vehicles.find_one({"id": asset['vehicle_id']}, {"_id": 0})
     if not vehicle:
@@ -3026,6 +3249,8 @@ async def update_asset(
     existing = await db.assets.find_one({"id": asset_id}, {"_id": 0})
     if not existing:
         raise HTTPException(status_code=404, detail="Asset not found")
+    await assert_record_scope(current_user, existing)
+    await assert_payload_scope(current_user, update_data)
 
     if "acquisition_cost" in update_data or "currency" in update_data:
         cost = update_data.get("acquisition_cost", existing.get("acquisition_cost"))
@@ -3056,6 +3281,7 @@ async def delete_asset(
     asset = await db.assets.find_one({"id": asset_id}, {"_id": 0})
     if not asset:
         raise HTTPException(status_code=404, detail="Asset not found")
+    await assert_record_scope(current_user, asset)
 
     await db.assets.delete_one({"id": asset_id})
     await write_audit_log(
@@ -3072,7 +3298,8 @@ async def delete_asset(
 
 # ============= SAFETY ROUTES =============
 @api_router.post("/safety/incidents", response_model=SafetyIncident)
-async def create_safety_incident(input: SafetyIncidentCreate):
+async def create_safety_incident(input: SafetyIncidentCreate, current_user: dict = Depends(_require_staff)):
+    await assert_payload_scope(current_user, input.model_dump())
     cost_usd = None
     if input.cost and input.currency:
         cost_usd = currency_converter.convert(input.cost, input.currency, CurrencyEnum.USD)
@@ -3107,13 +3334,18 @@ async def create_safety_incident(input: SafetyIncidentCreate):
 
 
 @api_router.get("/safety/incidents", response_model=List[SafetyIncident])
-async def get_safety_incidents(driver_id: Optional[str] = None, vehicle_id: Optional[str] = None):
+async def get_safety_incidents(
+    driver_id: Optional[str] = None,
+    vehicle_id: Optional[str] = None,
+    current_user: dict = Depends(get_current_user),
+):
     query = {}
     if driver_id:
         query['driver_id'] = driver_id
     if vehicle_id:
         query['vehicle_id'] = vehicle_id
     
+    query = merge_scope(query, await read_scope(current_user))
     incidents = await db.safety_incidents.find(query, {"_id": 0}).to_list(1000)
     for i in incidents:
         if isinstance(i.get('incident_date'), str):
@@ -3136,6 +3368,8 @@ async def update_safety_incident(
     existing = await db.safety_incidents.find_one({"id": incident_id}, {"_id": 0})
     if not existing:
         raise HTTPException(status_code=404, detail="Safety incident not found")
+    await assert_record_scope(current_user, existing)
+    await assert_payload_scope(current_user, update_data)
 
     if "cost" in update_data or "currency" in update_data:
         cost = update_data.get("cost", existing.get("cost"))
@@ -3159,6 +3393,7 @@ async def delete_safety_incident(
     incident = await db.safety_incidents.find_one({"id": incident_id}, {"_id": 0})
     if not incident:
         raise HTTPException(status_code=404, detail="Safety incident not found")
+    await assert_record_scope(current_user, incident)
 
     await db.safety_incidents.delete_one({"id": incident_id})
     await write_audit_log(
@@ -3173,25 +3408,27 @@ async def delete_safety_incident(
     return {"message": "Safety incident deleted successfully"}
 
 
+def _tire_cost_usd(tire: dict) -> float:
+    try:
+        currency = CurrencyEnum(tire.get("currency"))
+    except ValueError:
+        currency = CurrencyEnum.GHS  # Older records have no currency and were always treated as GHS.
+    return currency_converter.convert(tire.get("purchase_cost") or 0, currency, CurrencyEnum.USD)
+
+
 # ============= EXCHANGE RATE ROUTES =============
 @api_router.get("/exchange-rates/current")
 async def get_current_rates():
-    rates = {}
-    for currency in [CurrencyEnum.GHS, CurrencyEnum.LRD, CurrencyEnum.STN]:
-        rate = currency_converter.get_rate(currency, CurrencyEnum.USD)
-        rates[currency.value] = rate
-        
-        # Store in database
-        exchange_rate = ExchangeRate(
-            from_currency=currency,
-            to_currency=CurrencyEnum.USD,
-            rate=rate
-        )
-        doc = exchange_rate.model_dump()
-        doc['date'] = doc['date'].isoformat()
-        await db.exchange_rates.insert_one(doc)
-    
-    return {"rates": rates, "base": "USD", "timestamp": datetime.utcnow().isoformat()}
+    rates = {
+        currency.value: currency_converter.get_rate(currency, CurrencyEnum.USD)
+        for currency in [CurrencyEnum.GHS, CurrencyEnum.LRD, CurrencyEnum.STN]
+    }
+    return {
+        "rates": rates,
+        "base": "USD",
+        "timestamp": datetime.utcnow().isoformat(),
+        "sources": currency_converter.status(),
+    }
 
 
 @api_router.get("/exchange-rates/history")
@@ -3244,28 +3481,32 @@ def get_country_filter(user_country: Optional[str]) -> dict:
 
 
 @api_router.get("/dashboard/stats")
-async def get_dashboard_stats(country: Optional[str] = None):
+async def get_dashboard_stats(country: Optional[str] = None, current_user: dict = Depends(_require_staff)):
     """Get dashboard statistics with optional country filter"""
+    country = effective_country(current_user, country)
     country_filter = country_filter_query(country) if country else {}
     
     total_vehicles = await db.vehicles.count_documents(country_filter)
     active_vehicles = await db.vehicles.count_documents({**country_filter, "status": "ACTIVE"})
     total_drivers = await db.drivers.count_documents(country_filter)
-    pending_maintenance = await db.maintenance_records.count_documents({**country_filter, "completed_date": None})
+    from report_helpers import (
+        compute_total_fleet_value_usd, scoped_vehicle_query, sum_field, vehicle_ids_for_country_filter,
+    )
+    # Fuel and maintenance records have no country field, so they are scoped through their vehicle.
+    vehicle_ids = await vehicle_ids_for_country_filter(db, country_filter)
+    pending_maintenance = await db.maintenance_records.count_documents(
+        scoped_vehicle_query({"completed_date": None}, vehicle_ids)
+    )
     pending_requests = await db.maintenance_requests.count_documents({**country_filter, "status": "PENDING"})
 
     from availability_service import get_availability_summary
-    from report_helpers import compute_total_fleet_value_usd
     availability = await get_availability_summary(db, country)
     total_fleet_value = await compute_total_fleet_value_usd(db, country_filter)
     
-    # Monthly fuel cost
-    fuel_txns = await db.fuel_transactions.find(country_filter, {"_id": 0, "cost_usd": 1}).to_list(1000)
-    total_fuel_cost = sum(f.get('cost_usd', 0) for f in fuel_txns)
-    
-    # Total maintenance cost
-    maintenance_records = await db.maintenance_records.find(country_filter, {"_id": 0, "cost": 1, "currency": 1, "cost_usd": 1}).to_list(1000)
-    total_maintenance_cost_usd = sum(m.get('cost_usd', 0) for m in maintenance_records)
+    total_fuel_cost = await sum_field(db.fuel_transactions, scoped_vehicle_query({}, vehicle_ids), "cost_usd")
+    total_maintenance_cost_usd = await sum_field(
+        db.maintenance_records, scoped_vehicle_query({}, vehicle_ids), "cost_usd"
+    )
     
     # Convert to GHS using current rate
     ghs_rate = currency_converter.get_rate(CurrencyEnum.USD, CurrencyEnum.GHS)
@@ -3313,8 +3554,8 @@ async def get_personal_dashboard(current_user: dict = Depends(get_current_user))
     ).to_list(100)
     
     total_trips = len(logbook_entries)
-    total_distance = sum(e.get('distance_km', 0) for e in logbook_entries)
-    total_fuel = sum(e.get('fuel_used_liters', 0) for e in logbook_entries)
+    total_distance = sum((e.get('distance_km') or 0) for e in logbook_entries)
+    total_fuel = sum((e.get('fuel_used_liters') or 0) for e in logbook_entries)
     
     # Get user's maintenance requests
     my_requests = await db.maintenance_requests.find(
@@ -3376,39 +3617,32 @@ async def get_personal_dashboard(current_user: dict = Depends(get_current_user))
 @api_router.get("/dashboard/staff")
 async def get_staff_dashboard(
     country: Optional[str] = None,
-    current_user: dict = Depends(get_current_user),
+    current_user: dict = Depends(_require_staff),
 ):
     """Get dashboard stats for Fleet Managers and Fleet Officers (country-specific)"""
     user_role = current_user.get('role')
     user_country = current_user.get('country')
     
-    # Normalize country for matching (handle different case formats)
-    def normalize_country(value):
-        if not value:
-            return None
-        try:
-            return normalize_country_code(value)
-        except ValueError:
-            return None
-    
     # Group Fleet Manager: optional filter from UI; others: locked to their country
-    if user_role == 'GROUP_FLEET_MANAGER':
-        normalized_country = normalize_country(country)
-        country_filter = country_filter_query(normalized_country) if normalized_country else {}
-    else:
-        normalized_country = normalize_country(user_country)
-        country_filter = country_filter_query(normalized_country) if normalized_country else {"country": {"$exists": False}}
-    
+    normalized_country = effective_country(current_user, country)
+    country_filter = country_filter_query(normalized_country) if normalized_country else {}
+
+    from report_helpers import (
+        compute_total_fleet_value_usd, scoped_vehicle_query, sum_field, vehicle_ids_for_country_filter,
+    )
+    # Fuel and maintenance records have no country field, so they are scoped through their vehicle.
+    vehicle_ids = await vehicle_ids_for_country_filter(db, country_filter)
+
     # Basic stats
     total_vehicles = await db.vehicles.count_documents(country_filter)
     active_vehicles = await db.vehicles.count_documents({**country_filter, "status": "ACTIVE"})
     total_drivers = await db.drivers.count_documents(country_filter)
-    pending_maintenance = await db.maintenance_records.count_documents({**country_filter, "completed_date": None})
+    pending_maintenance = await db.maintenance_records.count_documents(
+        scoped_vehicle_query({"completed_date": None}, vehicle_ids)
+    )
 
     from availability_service import get_availability_summary
-    availability = await get_availability_summary(
-        db, normalized_country if user_role == 'GROUP_FLEET_MANAGER' else (normalized_country or None)
-    )
+    availability = await get_availability_summary(db, normalized_country)
     request_filter = country_filter
     pending_requests = await db.maintenance_requests.find(
         {**request_filter, "status": "PENDING"},
@@ -3443,14 +3677,11 @@ async def get_staff_dashboard(
         ]
     
     # Financial totals
-    from report_helpers import compute_total_fleet_value_usd
     total_fleet_value = await compute_total_fleet_value_usd(db, country_filter)
-    
-    fuel_txns = await db.fuel_transactions.find(country_filter, {"_id": 0, "cost_usd": 1}).to_list(1000)
-    total_fuel_cost = sum(f.get('cost_usd', 0) for f in fuel_txns)
-    
-    maintenance_records = await db.maintenance_records.find(country_filter, {"_id": 0, "cost_usd": 1}).to_list(1000)
-    total_maintenance_cost_usd = sum(m.get('cost_usd', 0) for m in maintenance_records)
+    total_fuel_cost = await sum_field(db.fuel_transactions, scoped_vehicle_query({}, vehicle_ids), "cost_usd")
+    total_maintenance_cost_usd = await sum_field(
+        db.maintenance_records, scoped_vehicle_query({}, vehicle_ids), "cost_usd"
+    )
     
     ghs_rate = currency_converter.get_rate(CurrencyEnum.USD, CurrencyEnum.GHS)
     
@@ -3495,8 +3726,9 @@ async def get_staff_dashboard(
 
 
 @api_router.get("/dashboard/alerts")
-async def get_dashboard_alerts(country: Optional[str] = None):
+async def get_dashboard_alerts(country: Optional[str] = None, current_user: dict = Depends(_require_staff)):
     """Get all active alerts for the dashboard"""
+    country = effective_country(current_user, country)
     country_filter = country_filter_query(country) if country else {}
     alerts = []
     now = datetime.now(timezone.utc)
@@ -3577,7 +3809,12 @@ async def get_dashboard_alerts(country: Optional[str] = None):
                 })
 
     # 2. Fuel Anomalies
-    fuel_txns = await db.fuel_transactions.find({**country_filter, "anomaly_detected": True}, {"_id": 0}).to_list(100)
+    from report_helpers import scoped_vehicle_query, vehicle_ids_for_country_filter
+    anomaly_vehicle_ids = await vehicle_ids_for_country_filter(db, country_filter)
+    fuel_txns = await db.fuel_transactions.find(
+        scoped_vehicle_query({"anomaly_detected": True}, anomaly_vehicle_ids),
+        {"_id": 0},
+    ).to_list(100)
     for txn in fuel_txns:
         vehicle = await db.vehicles.find_one({"id": txn.get('vehicle_id')}, {"_id": 0, "registration_number": 1})
         alerts.append({
@@ -3759,8 +3996,9 @@ async def get_dashboard_alerts(country: Optional[str] = None):
 
 
 @api_router.get("/dashboard/compliance")
-async def get_compliance_status(country: Optional[str] = None):
+async def get_compliance_status(country: Optional[str] = None, current_user: dict = Depends(_require_staff)):
     """Stricter compliance checklist: required docs present; expiry rules when dates exist."""
+    country = effective_country(current_user, country)
     country_filter = country_filter_query(country) if country else {}
     now = datetime.now(timezone.utc)
 
@@ -3919,14 +4157,10 @@ async def get_compliance_status(country: Optional[str] = None):
 # ============= FLEET MANAGER ROUTES =============
 @api_router.post("/fleet-managers", response_model=FleetManager)
 async def create_fleet_manager(
-    input: FleetManagerCreate, current_user: dict = Depends(get_current_user_validated)
+    input: FleetManagerCreate, current_user: dict = Depends(require_manager())
 ):
     """Create a new fleet manager - only Group Fleet Manager and Fleet Manager can create"""
-    user_role = current_user.get('role')
-    
-    # Only Group Fleet Manager and Fleet Manager can create Fleet Managers
-    if user_role not in ['GROUP_FLEET_MANAGER', 'FLEET_MANAGER']:
-        raise HTTPException(status_code=403, detail="Only Group Fleet Manager or Fleet Manager can add Fleet Managers")
+    await assert_payload_scope(current_user, input.model_dump())
     
     manager = FleetManager(**input.model_dump())
     doc = manager.model_dump()
@@ -3936,8 +4170,11 @@ async def create_fleet_manager(
 
 
 @api_router.get("/fleet-managers", response_model=List[FleetManager])
-async def get_fleet_managers():
-    managers = await db.fleet_managers.find({}, {"_id": 0}).to_list(100)
+async def get_fleet_managers(current_user: dict = Depends(get_current_user)):
+    # The requests page loads this for every role, so non-staff get an empty list, not an error.
+    if not is_staff(current_user):
+        return []
+    managers = await db.fleet_managers.find(country_query(current_user), {"_id": 0}).to_list(100)
     for m in managers:
         if isinstance(m.get('created_at'), str):
             m['created_at'] = datetime.fromisoformat(m['created_at'])
@@ -3945,9 +4182,18 @@ async def get_fleet_managers():
 
 
 # ============= MAINTENANCE REQUEST ROUTES =============
+def _assert_not_self_completing(work_status) -> None:
+    """Marking work complete also closes the request, which would skip manager approval."""
+    if _normalize_work_status(work_status) == WorkStatus.WORK_COMPLETED.value:
+        raise HTTPException(status_code=403, detail="Only fleet staff can mark a request as completed")
+
+
 @api_router.post("/maintenance-requests", response_model=MaintenanceRequest)
 async def create_maintenance_request(input: MaintenanceRequestCreate, current_user: dict = Depends(get_current_user)):
+    await assert_payload_scope(current_user, input.model_dump())
     data = input.model_dump()
+    if not is_staff(current_user):
+        _assert_not_self_completing(data.get("work_status"))
     _validate_etc_or_raise(data.get("work_status"), data.get("etc_datetime"))
     if _normalize_work_status(data.get("work_status")) == WorkStatus.WORK_COMPLETED.value:
         data["status"] = RequestStatus.COMPLETED
@@ -4011,15 +4257,19 @@ async def create_maintenance_request(input: MaintenanceRequestCreate, current_us
 
 
 @api_router.get("/maintenance-requests", response_model=List[MaintenanceRequest])
-async def get_maintenance_requests(status: Optional[str] = None, driver_id: Optional[str] = None, country: Optional[str] = None):
+async def get_maintenance_requests(
+    status: Optional[str] = None,
+    driver_id: Optional[str] = None,
+    country: Optional[str] = None,
+    current_user: dict = Depends(get_current_user),
+):
     query = {}
     if status:
         query['status'] = status
-    if driver_id:
+    if driver_id and is_staff(current_user):
         query['driver_id'] = driver_id
-    if country:
-        query['country'] = country
-    
+    query = merge_scope(query, await read_scope(current_user, country))
+
     requests = await db.maintenance_requests.find(query, {"_id": 0}).to_list(1000)
     for r in requests:
         for field in ['created_at', 'updated_at', 'approved_at', 'rejected_at', 'completed_at']:
@@ -4029,10 +4279,11 @@ async def get_maintenance_requests(status: Optional[str] = None, driver_id: Opti
 
 
 @api_router.get("/maintenance-requests/{request_id}", response_model=MaintenanceRequest)
-async def get_maintenance_request(request_id: str):
+async def get_maintenance_request(request_id: str, current_user: dict = Depends(get_current_user)):
     request = await db.maintenance_requests.find_one({"id": request_id}, {"_id": 0})
     if not request:
         raise HTTPException(status_code=404, detail="Request not found")
+    await assert_record_access(current_user, request)
     for field in ['created_at', 'updated_at', 'approved_at', 'rejected_at', 'completed_at']:
         if isinstance(request.get(field), str):
             request[field] = datetime.fromisoformat(request[field])
@@ -4059,13 +4310,13 @@ async def update_maintenance_request(
         if not incoming.issubset(allowed):
             raise HTTPException(status_code=400, detail="Only work status can be updated on non-pending requests")
 
-    role = current_user.get("role")
-    user_id = current_user.get("id")
-    driver_id = current_user.get("driver_id")
-    is_staff = role in _STAFF_ROLES
-    is_owner = request.get("driver_id") in (user_id, driver_id)
-    if not is_staff and not is_owner:
+    if is_staff(current_user):
+        await assert_record_scope(current_user, request)
+    elif request.get("driver_id") not in driver_identities(current_user):
         raise HTTPException(status_code=403, detail="You cannot edit this request")
+    else:
+        _assert_not_self_completing(input.work_status)
+    await assert_payload_scope(current_user, input.model_dump(exclude_none=True))
 
     update_data = _mongo_update_payload({k: v for k, v in input.model_dump().items() if v is not None})
     if not update_data:
@@ -4100,6 +4351,7 @@ async def delete_maintenance_request(
     request = await db.maintenance_requests.find_one({"id": request_id}, {"_id": 0})
     if not request:
         raise HTTPException(status_code=404, detail="Request not found")
+    await assert_record_scope(current_user, request)
 
     await db.maintenance_requests.delete_one({"id": request_id})
     await write_audit_log(
@@ -4122,12 +4374,13 @@ async def delete_maintenance_request(
 async def approve_maintenance_request(
     request_id: str,
     approval: MaintenanceRequestApproval,
-    current_user: dict = Depends(get_current_user_validated),
+    current_user: dict = Depends(require_fleet_staff()),
 ):
     """Approve or reject a maintenance request - auto-fills approving manager"""
     request = await db.maintenance_requests.find_one({"id": request_id}, {"_id": 0})
     if not request:
         raise HTTPException(status_code=404, detail="Request not found")
+    await assert_record_scope(current_user, request)
     
     if request['status'] != 'PENDING':
         raise HTTPException(status_code=400, detail="Request is not pending")
@@ -4186,6 +4439,7 @@ async def approve_maintenance_request(
 # ============= PRE-TRIP CHECKLIST ROUTES =============
 @api_router.post("/pre-trip-checklists", response_model=PreTripChecklist)
 async def create_pretrip_checklist(input: PreTripChecklistCreate, current_user: dict = Depends(get_current_user)):
+    await assert_payload_scope(current_user, input.model_dump())
     # Check if checklist already exists for today
     today = datetime.now(timezone.utc).date()
     existing = await db.pretrip_checklists.find_one({
@@ -4233,9 +4487,10 @@ async def get_pretrip_checklists(
     date_from: Optional[str] = None,
     date_to: Optional[str] = None,
     limit: int = Query(100, ge=1, le=500),
+    current_user: dict = Depends(get_current_user),
 ):
     query = {}
-    if driver_id:
+    if driver_id and is_staff(current_user):
         query['driver_id'] = driver_id
     if vehicle_id:
         query['vehicle_id'] = vehicle_id
@@ -4250,6 +4505,7 @@ async def get_pretrip_checklists(
     if date_filter:
         query["date"] = date_filter
 
+    query = merge_scope(query, await read_scope(current_user))
     checklists = await db.pretrip_checklists.find(query, {"_id": 0}).sort("date", -1).to_list(limit)
     from driver_profile_service import resolve_driver_display_names
     name_map = await resolve_driver_display_names(db, [c.get("driver_id") for c in checklists])
@@ -4278,16 +4534,9 @@ async def export_pretrip_checklists(
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
-    role = current_user.get("role")
-    is_staff = role in _STAFF_ROLES
-    own_driver_id = current_user.get("driver_id") or current_user.get("id")
-    effective_driver_id = driver_id
-    if not is_staff:
-        effective_driver_id = own_driver_id
-
     query = {}
-    if effective_driver_id:
-        query["driver_id"] = effective_driver_id
+    if driver_id and is_staff(current_user):
+        query["driver_id"] = driver_id
     if vehicle_id:
         query["vehicle_id"] = vehicle_id
     if overall_status:
@@ -4301,6 +4550,7 @@ async def export_pretrip_checklists(
     if date_filter:
         query["date"] = date_filter
 
+    query = merge_scope(query, await read_scope(current_user))
     checklists = await db.pretrip_checklists.find(query, {"_id": 0}).sort("date", -1).to_list(limit)
     drivers = await db.drivers.find({}, {"_id": 0, "id": 1, "first_name": 1, "last_name": 1}).to_list(10000)
     users = await db.users.find(
@@ -4357,10 +4607,13 @@ async def update_pretrip_checklist(
         raise HTTPException(status_code=404, detail="Checklist not found")
 
     _assert_can_edit_pretrip(current_user, existing)
+    if is_staff(current_user):
+        await assert_record_scope(current_user, existing)
 
     update_data = input.model_dump(exclude_none=True)
     if not update_data:
         raise HTTPException(status_code=400, detail="No fields to update")
+    await assert_payload_scope(current_user, update_data)
 
     merged = _pretrip_doc_to_fields(existing)
     merged.update(update_data)
@@ -4389,6 +4642,7 @@ async def delete_pretrip_checklist(
     checklist = await db.pretrip_checklists.find_one({"id": checklist_id}, {"_id": 0})
     if not checklist:
         raise HTTPException(status_code=404, detail="Checklist not found")
+    await assert_record_scope(current_user, checklist)
 
     await db.pretrip_checklists.delete_one({"id": checklist_id})
     await write_audit_log(
@@ -4424,6 +4678,7 @@ async def update_pretrip_issue_resolution(
     checklist = await db.pretrip_checklists.find_one({"id": checklist_id}, {"_id": 0})
     if not checklist:
         raise HTTPException(status_code=404, detail="Checklist not found")
+    await assert_record_scope(current_user, checklist)
 
     items = checklist.get("checklist_items") or []
     found = False
@@ -4478,6 +4733,7 @@ async def upload_safety_evidence(
     incident = await db.safety_incidents.find_one({"id": incident_id}, {"_id": 0})
     if not incident:
         raise HTTPException(status_code=404, detail="Safety incident not found")
+    await assert_record_scope(current_user, incident)
 
     ct = (file.content_type or "").split(";")[0].strip().lower()
     if ct not in _ALLOWED_EVIDENCE_TYPES:
@@ -4486,6 +4742,8 @@ async def upload_safety_evidence(
     content = await file.read()
     if len(content) > _DOCUMENT_MAX_BYTES:
         raise HTTPException(status_code=400, detail="File too large")
+    if not content_matches_type(content, ct):
+        raise HTTPException(status_code=400, detail="File contents do not match its type.")
 
     evidence_id = str(uuid.uuid4())
     object_key, file_ref = upload_bytes(
@@ -4510,9 +4768,35 @@ async def upload_safety_evidence(
     return entry
 
 
+@api_router.get("/safety/incidents/{incident_id}/evidence/{evidence_id}/file")
+async def get_safety_evidence_file(
+    incident_id: str,
+    evidence_id: str,
+    current_user: dict = Depends(get_current_user),
+):
+    incident = await db.safety_incidents.find_one({"id": incident_id}, {"_id": 0})
+    if not incident:
+        raise HTTPException(status_code=404, detail="Safety incident not found")
+    await assert_record_access(current_user, incident)
+    entry = next((f for f in incident.get("evidence_files") or [] if f.get("id") == evidence_id), None)
+    content = read_bytes(entry["s3_key"]) if entry and entry.get("s3_key") else None
+    if content is None:
+        raise HTTPException(status_code=404, detail="Evidence file not found")
+    media_type = entry.get("content_type") or "application/octet-stream"
+    return Response(
+        content=content,
+        media_type=media_type,
+        headers={
+            "Content-Disposition": content_disposition(entry.get("filename") or "evidence", media_type),
+            "X-Content-Type-Options": "nosniff",
+        },
+    )
+
+
 @api_router.get("/pre-trip-checklists/today/{driver_id}/{vehicle_id}")
-async def check_today_checklist(driver_id: str, vehicle_id: str):
+async def check_today_checklist(driver_id: str, vehicle_id: str, current_user: dict = Depends(get_current_user)):
     """Check if driver has completed today's checklist for the vehicle"""
+    await assert_payload_scope(current_user, {"driver_id": driver_id, "vehicle_id": vehicle_id})
     today = datetime.now(timezone.utc).date()
     start_of_day = datetime(today.year, today.month, today.day, tzinfo=timezone.utc)
     
@@ -4554,6 +4838,8 @@ async def upload_damage_photo(
             status_code=400,
             detail=f"File too large (max {_DAMAGE_PHOTO_MAX_BYTES // (1024 * 1024)} MB)",
         )
+    if not content_matches_type(content, ct):
+        raise HTTPException(status_code=400, detail="File contents do not match its type.")
 
     photo_id = str(uuid.uuid4())
     photo_doc = {
@@ -4573,15 +4859,33 @@ async def upload_damage_photo(
     }
 
 
+async def _assert_damage_photo_read(current_user: dict, photo: dict) -> None:
+    """The uploader may always view a photo; others need access to a checklist that uses it."""
+    if is_group_manager(current_user) or photo.get("uploaded_by") == current_user.get("id"):
+        return
+    checklist = await db.pretrip_checklists.find_one(
+        {"damage_photos": f"/api/damage-photos/{photo['id']}"},
+        {"_id": 0, "driver_id": 1, "vehicle_id": 1},
+    )
+    if not checklist:
+        raise HTTPException(status_code=403, detail="This record is outside your access scope")
+    await assert_record_access(current_user, checklist)
+
+
 @api_router.get("/damage-photos/{photo_id}")
 async def get_damage_photo(photo_id: str, current_user: dict = Depends(get_current_user)):
     """Get a damage photo by ID (authenticated)."""
     photo = await db.damage_photos.find_one({"id": photo_id}, {"_id": 0})
     if not photo:
         raise HTTPException(status_code=404, detail="Photo not found")
+    await _assert_damage_photo_read(current_user, photo)
 
     content = base64.b64decode(photo["data"])
-    return Response(content=content, media_type=photo.get("content_type", "image/jpeg"))
+    return Response(
+        content=content,
+        media_type=photo.get("content_type", "image/jpeg"),
+        headers={"X-Content-Type-Options": "nosniff"},
+    )
 
 
 # ============= AUTHENTICATION ROUTES =============
@@ -4603,22 +4907,83 @@ def _send_account_status_email(user: dict, status: str) -> bool:
     )
 
 
+# Built at startup so no request pays for hashing it, which would itself be measurable.
+_DUMMY_PASSWORD_HASH = get_password_hash(uuid.uuid4().hex)
+
+
+def _password_matches(user: Optional[dict], password: str) -> bool:
+    """Check a password, spending the same time whether or not the account exists."""
+    if user:
+        return verify_password(password, user["hashed_password"])
+    verify_password(password, _DUMMY_PASSWORD_HASH)
+    return False
+
+
+async def _audit_security_event(
+    action: str,
+    request: Request,
+    *,
+    email: Optional[str] = None,
+    user: Optional[dict] = None,
+    target: Optional[dict] = None,
+    **details,
+) -> None:
+    """Record a sign-in or account event. A failure here must never block the user.
+
+    `user` is someone who proved who they are. `target` is an account an unproven caller
+    acted on, which stays anonymous so a victim is never recorded as the attacker.
+    """
+    try:
+        await write_audit_log(
+            action=action,
+            entity_type="auth",
+            entity_id=(user or target or {}).get("id") or "-",
+            actor_id=(user or {}).get("id") or "anonymous",
+            actor_role=(user or {}).get("role") or "anonymous",
+            actor_email=str(email or (user or target or {}).get("email") or "")[:254] or None,
+            details={"ip": request.client.host if request.client else None, **details},
+        )
+    except Exception:
+        logger.exception("Could not write audit entry for %s", action)
+
+
+def _registration_response(user_id: str, email: str, input: UserSelfRegister, country) -> dict:
+    return {
+        "status": "pending_approval",
+        "message": "Registration successful. An authorized manager must approve your account before you can log in.",
+        "user": {
+            "id": user_id,
+            "email": email,
+            "full_name": input.full_name,
+            "role": input.role.value if hasattr(input.role, "value") else input.role,
+            "country": country,
+            "is_approved": False,
+        },
+    }
+
+
 @api_router.post("/auth/register", status_code=201)
 @limiter.limit("10/minute")
-async def register_user(request: Request, input: UserSelfRegister):
-    """Public self-registration (USER, DRIVER, FLEET_MANAGER, FLEET_OFFICER). No JWT until a manager approves."""
+async def register_user(request: Request, input: UserSelfRegister, background_tasks: BackgroundTasks):
+    """Public self-registration (USER, DRIVER, FLEET_MANAGER, FLEET_OFFICER). No JWT until a manager approves.
+
+    The reply is the same whether or not the email is taken, so this cannot reveal who has an
+    account. The owner of an existing account gets an email instead.
+    """
     email = _normalize_email(input.email)
+    hashed_password = get_password_hash(input.password)
     existing = await _find_user_by_email(email)
     if existing:
-        raise HTTPException(status_code=400, detail="Email already registered")
+        await _audit_security_event("register_duplicate", request, email=email)
+        background_tasks.add_task(_send_account_status_email, existing, "REGISTRATION_ATTEMPT")
+        return _registration_response(str(uuid.uuid4()), email, input, input.country)
 
     user = User(
         email=email,
-        hashed_password=get_password_hash(input.password),
+        hashed_password=hashed_password,
         full_name=input.full_name,
         role=input.role,
         country=input.country,
-        driver_id=input.driver_id,
         is_approved=False,
     )
 
@@ -4635,20 +5000,10 @@ async def register_user(request: Request, input: UserSelfRegister):
         doc["last_login"] = doc["last_login"].isoformat()
 
     await db.users.insert_one(doc)
-    _send_account_status_email(doc, "PENDING_APPROVAL")
+    await _audit_security_event("register", request, email=email, requested_role=doc.get("role"))
+    background_tasks.add_task(_send_account_status_email, doc, "PENDING_APPROVAL")
 
-    return {
-        "status": "pending_approval",
-        "message": "Registration successful. An authorized manager must approve your account before you can log in.",
-        "user": {
-            "id": user.id,
-            "email": user.email,
-            "full_name": user.full_name,
-            "role": user.role.value if hasattr(user.role, "value") else user.role,
-            "country": doc.get("country"),
-            "is_approved": False,
-        },
-    }
+    return _registration_response(user.id, user.email, input, doc.get("country"))
 
 
 @api_router.post("/auth/bootstrap", response_model=Token)
@@ -4663,7 +5018,7 @@ async def bootstrap_group_fleet_manager(
     Requires BOOTSTRAP_TOKEN env var and matching X-Bootstrap-Token header.
     """
     expected = os.environ.get("BOOTSTRAP_TOKEN", "").strip()
-    if not expected or not x_bootstrap_token or x_bootstrap_token != expected:
+    if not tokens_match(expected, x_bootstrap_token):
         raise HTTPException(status_code=404, detail="Not found")
 
     existing_gfm = await db.users.find_one({"role": "GROUP_FLEET_MANAGER"})
@@ -4688,6 +5043,7 @@ async def bootstrap_group_fleet_manager(
     doc = user.model_dump()
     doc["created_at"] = doc["created_at"].isoformat()
     await db.users.insert_one(doc)
+    await _audit_security_event("bootstrap_group_manager", request, email=input.email)
 
     access_token = create_access_token(
         data=access_token_payload_from_user_record(user.model_dump())
@@ -4711,10 +5067,8 @@ async def bootstrap_group_fleet_manager(
 async def login(request: Request, input: UserLogin):
     """Login and get access token"""
     user = await _find_user_by_email(input.email)
-    if not user:
-        raise HTTPException(status_code=401, detail="Invalid email or password")
-    
-    if not verify_password(input.password, user['hashed_password']):
+    if not _password_matches(user, input.password):
+        await _audit_security_event("login_failed", request, email=input.email, target=user)
         raise HTTPException(status_code=401, detail="Invalid email or password")
     
     if user.get("invite_pending") and not user.get("is_active", True):
@@ -4746,6 +5100,7 @@ async def login(request: Request, input: UserLogin):
         {"id": user['id']},
         {"$set": {"last_login": datetime.now(timezone.utc).isoformat()}}
     )
+    await _audit_security_event("login_succeeded", request, user=user)
     
     access_token = create_access_token(
         data=access_token_payload_from_user_record(user)
@@ -4771,36 +5126,33 @@ async def login(request: Request, input: UserLogin):
 async def send_otp(request: Request, input: UserLogin):
     """Send OTP to Group Fleet Manager email for verification"""
     user = await _find_user_by_email(input.email)
-    if not user:
-        raise HTTPException(status_code=401, detail="Invalid email or password")
-    
-    if not verify_password(input.password, user['hashed_password']):
+    if not _password_matches(user, input.password):
+        await _audit_security_event("login_failed", request, email=input.email, target=user)
         raise HTTPException(status_code=401, detail="Invalid email or password")
     
     if user['role'] != 'GROUP_FLEET_MANAGER':
         raise HTTPException(status_code=400, detail="OTP verification only required for Group Fleet Manager")
-    
-    # Generate 6-digit OTP
-    import random
-    otp_code = ''.join([str(random.randint(0, 9)) for _ in range(6)])
-    
-    # Store OTP with expiry (5 minutes) using the canonical stored email
-    otp_email = user["email"]
-    otp_expiry = datetime.now(timezone.utc) + timedelta(minutes=5)
-    await db.otp_codes.update_one(
-        {"email": otp_email},
-        {"$set": {
-            "email": otp_email,
-            "otp": otp_code,
-            "expires_at": otp_expiry.isoformat(),
-            "created_at": datetime.now(timezone.utc).isoformat()
-        }},
-        upsert=True
-    )
-    
-    # Send OTP via email
+
+    if not user.get('is_active', True):
+        raise HTTPException(status_code=403, detail="Account is deactivated")
+
+    try:
+        otp_code = await issue_otp(db, user["email"])
+    except OtpSendLimitExceeded:
+        await _audit_security_event("otp_send_limit_reached", request, user=user)
+        raise HTTPException(
+            status_code=429,
+            detail="Too many verification codes requested. Please try again in 15 minutes.",
+        )
+
+    if otp_code is None:
+        return {"message": "A code was sent recently. Please check your email.", "email": user['email']}
+
+    if not _IS_PRODUCTION and os.environ.get("DEV_LOG_OTP", "").lower() == "true":
+        logger.warning("DEV_LOG_OTP: login code for %s is %s", user["email"], otp_code)
+
     email_service.send_otp_email(user['email'], user['full_name'], otp_code)
-    
+
     return {"message": "OTP sent to your email", "email": user['email']}
 
 
@@ -4808,29 +5160,20 @@ async def send_otp(request: Request, input: UserLogin):
 @limiter.limit("30/minute")
 async def verify_otp(request: Request, email: str = Body(...), otp: str = Body(...)):
     """Verify OTP and complete Group Fleet Manager login"""
+    invalid = HTTPException(
+        status_code=400,
+        detail="Invalid or expired code. Please check it or request a new one.",
+    )
+    # One response for every failure, so this route cannot be used to discover accounts.
     user = await _find_user_by_email(email)
-    if not user:
-        raise HTTPException(status_code=401, detail="User not found")
+    if not user or not await verify_otp_code(db, user["email"], otp):
+        await _audit_security_event("otp_failed", request, email=email, target=user)
+        raise invalid
+    if not user.get("is_active", True):
+        await _audit_security_event("otp_failed", request, target=user, reason="deactivated")
+        raise invalid
+    await _audit_security_event("login_succeeded", request, user=user, otp=True)
 
-    otp_email = user["email"]
-    # Find OTP record
-    otp_record = await db.otp_codes.find_one({"email": otp_email}, {"_id": 0})
-    if not otp_record:
-        raise HTTPException(status_code=400, detail="No OTP found. Please request a new one.")
-    
-    # Check expiry
-    expiry = datetime.fromisoformat(otp_record['expires_at'])
-    if datetime.now(timezone.utc) > expiry:
-        await db.otp_codes.delete_one({"email": otp_email})
-        raise HTTPException(status_code=400, detail="OTP has expired. Please request a new one.")
-    
-    # Verify OTP
-    if otp_record['otp'] != otp:
-        raise HTTPException(status_code=400, detail="Invalid OTP")
-    
-    # Delete used OTP
-    await db.otp_codes.delete_one({"email": otp_email})
-    
     # Update last login
     await db.users.update_one(
         {"id": user['id']},
@@ -4876,6 +5219,14 @@ async def get_all_users(current_user: dict = Depends(require_group_manager())):
     return users
 
 
+async def _prepare_signup_or_conflict(user: dict) -> dict:
+    from driver_profile_service import DriverLinkConflict, prepare_signup_for_approval
+    try:
+        return await prepare_signup_for_approval(db, user)
+    except DriverLinkConflict as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+
 @api_router.put("/auth/users/{user_id}/approve")
 async def approve_user(user_id: str, current_user: dict = Depends(get_current_user_validated)):
     """Approve a user based on role hierarchy and country"""
@@ -4909,7 +5260,9 @@ async def approve_user(user_id: str, current_user: dict = Depends(get_current_us
             status_code=403, 
             detail=f"You don't have permission to approve {user_role.replace('_', ' ').title()} accounts"
         )
-    
+
+    user_to_approve = await _prepare_signup_or_conflict(user_to_approve)
+
     result = await db.users.update_one(
         {"id": user_id},
         {"$set": {
@@ -4974,6 +5327,19 @@ async def update_user(user_id: str, input: UserUpdate, current_user: dict = Depe
     if not existing:
         raise HTTPException(status_code=404, detail="User not found")
 
+    if update_data.get("is_approved") and not existing.get("is_approved", False):
+        existing = await _prepare_signup_or_conflict(existing)
+        update_data["approved_by"] = current_user.get("id")
+        update_data["approved_at"] = datetime.now(timezone.utc).isoformat()
+
+    if update_data.get("is_active") is False and existing.get("invite_pending"):
+        # Deactivating someone mid-invite must not leave a link that reactivates them.
+        update_data["invite_pending"] = False
+        await db.driver_invites.update_many(
+            {"user_id": user_id, "status": "PENDING"},
+            {"$set": {"status": "REVOKED"}},
+        )
+
     result = await db.users.update_one({"id": user_id}, {"$set": update_data})
     updated_user = {**existing, **update_data}
 
@@ -5018,9 +5384,10 @@ async def update_user(user_id: str, input: UserUpdate, current_user: dict = Depe
 
 @api_router.post("/auth/forgot-password")
 @limiter.limit("5/minute")
-async def forgot_password(request: Request, input: ForgotPasswordRequest):
+async def forgot_password(request: Request, input: ForgotPasswordRequest, background_tasks: BackgroundTasks):
     """Request a password reset token"""
-    user = await db.users.find_one({"email": input.email}, {"_id": 0})
+    user = await _find_user_by_email(input.email)
+    await _audit_security_event("password_reset_requested", request, email=input.email, target=user)
     
     # Always return success to prevent email enumeration
     if not user:
@@ -5035,17 +5402,24 @@ async def forgot_password(request: Request, input: ForgotPasswordRequest):
     token_doc = PasswordResetToken(
         user_id=user['id'],
         token=reset_token,
-        email=input.email,
+        email=user['email'],
         expires_at=expires_at
     )
     doc = token_doc.model_dump()
     doc['expires_at'] = doc['expires_at'].isoformat()
     doc['created_at'] = doc['created_at'].isoformat()
+    # Only the newest link should work.
+    await db.password_reset_tokens.update_many(
+        {"user_id": user['id'], "used": False},
+        {"$set": {"used": True}},
+    )
     await db.password_reset_tokens.insert_one(doc)
     
-    # Send email with reset link (if Resend is configured)
+    # Sent after the reply, so the response time does not reveal whether the account exists.
     reset_link = f"{os.environ.get('FRONTEND_URL', 'http://localhost:3000')}/reset-password?token={reset_token}"
-    email_service.send_password_reset_email(input.email, reset_link, user.get('full_name', 'User'))
+    background_tasks.add_task(
+        email_service.send_password_reset_email, user['email'], reset_link, user.get('full_name', 'User')
+    )
     
     return {"status": "success", "message": "If an account with that email exists, a reset link will be sent."}
 
@@ -5090,6 +5464,7 @@ async def reset_password(request: Request, input: ResetPasswordRequest):
         {"token": input.token},
         {"$set": {"used": True}}
     )
+    await _audit_security_event("password_reset_completed", request, target={"id": token_doc['user_id']})
     
     return {"status": "success", "message": "Password reset successfully"}
 
@@ -5118,8 +5493,9 @@ async def verify_reset_token(token: str):
 
 # ============= TIRE MANAGEMENT ROUTES =============
 @api_router.post("/tires", response_model=Tire)
-async def create_tire(input: TireCreate):
+async def create_tire(input: TireCreate, current_user: dict = Depends(_require_staff)):
     """Create a new tire"""
+    await assert_payload_scope(current_user, input.model_dump())
     tire = Tire(**input.model_dump())
     doc = tire.model_dump()
     
@@ -5132,11 +5508,14 @@ async def create_tire(input: TireCreate):
 
 
 @api_router.get("/tires")
-async def get_tires(country: Optional[str] = None, vehicle_id: Optional[str] = None, status: Optional[str] = None):
+async def get_tires(
+    country: Optional[str] = None,
+    vehicle_id: Optional[str] = None,
+    status: Optional[str] = None,
+    current_user: dict = Depends(_require_staff),
+):
     """Get all tires with optional filters"""
-    query = {}
-    if country:
-        query['country'] = country
+    query = dict(country_query(current_user, country))
     if vehicle_id:
         query['vehicle_id'] = vehicle_id
     if status:
@@ -5199,7 +5578,7 @@ async def bulk_upload_tires(
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
-    vehicles = await db.vehicles.find({}, {"_id": 0, "id": 1, "registration_number": 1}).to_list(10000)
+    vehicles = await db.vehicles.find(country_query(current_user), {"_id": 0, "id": 1, "registration_number": 1, "country": 1}).to_list(10000)
     vehicles_by_reg = {(v.get("registration_number") or "").upper(): v for v in vehicles}
 
     existing_tires = await db.tires.find({}, {"_id": 0}).to_list(20000)
@@ -5214,7 +5593,7 @@ async def bulk_upload_tires(
         vehicle_id = None
         if registration:
             vehicle = vehicles_by_reg.get(registration.upper())
-            if not vehicle:
+            if not vehicle or not same_country(vehicle.get("country"), row["country"]):
                 errors.append({
                     "row": row["row"],
                     "serial_number": row["serial_number"],
@@ -5227,7 +5606,11 @@ async def bulk_upload_tires(
         existing = tires_by_serial.get(serial_key)
 
         try:
+            assert_country(current_user, row["country"])
             if existing:
+                # A serial identifies one physical tire: an import never moves it between countries.
+                if not same_country(existing.get("country"), row["country"]):
+                    raise HTTPException(status_code=409, detail="This serial number is already registered in another country")
                 update_data = {
                     "brand": row["brand"],
                     "model": row["model"],
@@ -5283,12 +5666,18 @@ async def bulk_upload_tires(
                     if doc.get(field):
                         doc[field] = doc[field].isoformat()
                 await db.tires.insert_one(doc)
-                tires_by_serial[serial_key] = {"id": tire.id, "serial_number": tire.serial_number}
+                tires_by_serial[serial_key] = {"id": tire.id, "serial_number": tire.serial_number, "country": row["country"]}
                 created.append({
                     "id": tire.id,
                     "serial_number": tire.serial_number,
                     "action": "created",
                 })
+        except HTTPException as exc:
+            errors.append({
+                "row": row["row"],
+                "serial_number": row["serial_number"],
+                "message": str(exc.detail),
+            })
         except Exception as exc:
             errors.append({
                 "row": row["row"],
@@ -5321,11 +5710,12 @@ async def bulk_upload_tires(
 
 
 @api_router.get("/tires/{tire_id}")
-async def get_tire(tire_id: str):
+async def get_tire(tire_id: str, current_user: dict = Depends(_require_staff)):
     """Get a single tire"""
     tire = await db.tires.find_one({"id": tire_id}, {"_id": 0})
     if not tire:
         raise HTTPException(status_code=404, detail="Tire not found")
+    await assert_record_scope(current_user, tire)
     return tire
 
 
@@ -5339,6 +5729,11 @@ async def update_tire(
     update_data = input.model_dump(exclude_none=True)
     if not update_data:
         raise HTTPException(status_code=400, detail="No fields to update")
+    existing = await db.tires.find_one({"id": tire_id}, {"_id": 0})
+    if not existing:
+        raise HTTPException(status_code=404, detail="Tire not found")
+    await assert_record_scope(current_user, existing)
+    await assert_payload_scope(current_user, update_data)
     update_data["updated_at"] = datetime.now(timezone.utc).isoformat()
     update_data = _mongo_update_payload(update_data)
     result = await db.tires.update_one({"id": tire_id}, {"$set": update_data})
@@ -5356,6 +5751,7 @@ async def delete_tire(
     tire = await db.tires.find_one({"id": tire_id}, {"_id": 0})
     if not tire:
         raise HTTPException(status_code=404, detail="Tire not found")
+    await assert_record_scope(current_user, tire)
 
     await db.tires.delete_one({"id": tire_id})
     await write_audit_log(
@@ -5371,8 +5767,13 @@ async def delete_tire(
 
 
 @api_router.post("/tires/rotations", response_model=TireRotation)
-async def record_tire_rotation(input: TireRotationCreate):
+async def record_tire_rotation(input: TireRotationCreate, current_user: dict = Depends(_require_staff)):
     """Record a tire rotation"""
+    await assert_vehicle_scope(current_user, input.vehicle_id)
+    for rot in input.rotations:
+        tire = await db.tires.find_one({"id": rot.get("tire_id")}, {"_id": 0})
+        if tire:
+            await assert_record_scope(current_user, tire)
     rotation = TireRotation(**input.model_dump())
     doc = rotation.model_dump()
     
@@ -5399,12 +5800,13 @@ async def record_tire_rotation(input: TireRotationCreate):
 
 
 @api_router.get("/tires/rotations/history")
-async def get_tire_rotation_history(vehicle_id: Optional[str] = None):
+async def get_tire_rotation_history(vehicle_id: Optional[str] = None, current_user: dict = Depends(_require_staff)):
     """Get tire rotation history"""
     query = {}
     if vehicle_id:
         query['vehicle_id'] = vehicle_id
     
+    query = merge_scope(query, await vehicle_scope_query(current_user))
     rotations = await db.tire_rotations.find(query, {"_id": 0}).sort("rotation_date", -1).to_list(100)
     return rotations
 
@@ -5413,6 +5815,7 @@ async def get_tire_rotation_history(vehicle_id: Optional[str] = None):
 @api_router.post("/logbook", response_model=LogbookEntry)
 async def create_logbook_entry(input: LogbookEntryCreate, current_user: dict = Depends(get_current_user)):
     """Create a new logbook entry"""
+    await assert_payload_scope(current_user, input.model_dump())
     entry_data = input.model_dump()
     
     # Get country from driver if not provided
@@ -5492,8 +5895,8 @@ async def bulk_upload_logbook(
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
-    drivers = await db.drivers.find({}, {"_id": 0, "id": 1, "license_number": 1, "country": 1}).to_list(10000)
-    vehicles = await db.vehicles.find({}, {"_id": 0, "id": 1, "registration_number": 1}).to_list(10000)
+    drivers = await db.drivers.find(country_query(current_user), {"_id": 0, "id": 1, "license_number": 1, "country": 1}).to_list(10000)
+    vehicles = await db.vehicles.find(country_query(current_user), {"_id": 0, "id": 1, "registration_number": 1}).to_list(10000)
     drivers_by_license = {(d.get("license_number") or "").upper(): d for d in drivers}
     vehicles_by_reg = {(v.get("registration_number") or "").upper(): v for v in vehicles}
 
@@ -5608,16 +6011,15 @@ async def get_logbook_entries(
     vehicle_id: Optional[str] = None,
     country: Optional[str] = None,
     start_date: Optional[str] = None,
-    end_date: Optional[str] = None
+    end_date: Optional[str] = None,
+    current_user: dict = Depends(get_current_user),
 ):
     """Get logbook entries with filters"""
     query = {}
-    if driver_id:
+    if driver_id and is_staff(current_user):
         query['driver_id'] = driver_id
     if vehicle_id:
         query['vehicle_id'] = vehicle_id
-    if country:
-        query['country'] = country
     if start_date:
         query['date'] = {"$gte": start_date}
     if end_date:
@@ -5626,6 +6028,7 @@ async def get_logbook_entries(
         else:
             query['date'] = {"$lte": end_date}
     
+    query = merge_scope(query, await read_scope(current_user, country))
     entries = await db.driver_logbook.find(query, {"_id": 0}).sort("date", -1).to_list(1000)
     for e in entries:
         for field in ['date', 'start_time', 'end_time', 'created_at']:
@@ -5650,20 +6053,11 @@ async def export_logbook_entries(
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
-    role = current_user.get("role")
-    is_staff = role in _STAFF_ROLES
-    own_driver_id = current_user.get("driver_id") or current_user.get("id")
-    effective_driver_id = driver_id
-    if not is_staff:
-        effective_driver_id = own_driver_id
-
     query = {}
-    if effective_driver_id:
-        query["driver_id"] = effective_driver_id
+    if driver_id and is_staff(current_user):
+        query["driver_id"] = driver_id
     if vehicle_id:
         query["vehicle_id"] = vehicle_id
-    if country:
-        query["country"] = country
     if start_date:
         query["date"] = {"$gte": start_date}
     if end_date:
@@ -5672,6 +6066,7 @@ async def export_logbook_entries(
         else:
             query["date"] = {"$lte": end_date}
 
+    query = merge_scope(query, await read_scope(current_user, country))
     entries = await db.driver_logbook.find(query, {"_id": 0}).sort("date", -1).to_list(1000)
     drivers = await db.drivers.find({}, {"_id": 0, "id": 1, "first_name": 1, "last_name": 1}).to_list(10000)
     users = await db.users.find(
@@ -5738,13 +6133,8 @@ async def update_logbook_entry(
     if not entry:
         raise HTTPException(status_code=404, detail="Logbook entry not found")
 
-    role = current_user.get("role")
-    user_id = current_user.get("id")
-    driver_id = current_user.get("driver_id")
-    is_staff = role in _STAFF_ROLES
-    is_owner = entry.get("driver_id") in (user_id, driver_id)
-    if not is_staff and not is_owner:
-        raise HTTPException(status_code=403, detail="You cannot edit this logbook entry")
+    await assert_record_access(current_user, entry)
+    await assert_payload_scope(current_user, input.model_dump(exclude_none=True))
 
     update_data = _mongo_update_payload({k: v for k, v in input.model_dump().items() if v is not None})
     if not update_data:
@@ -5772,6 +6162,7 @@ async def delete_logbook_entry(
     entry = await db.driver_logbook.find_one({"id": entry_id}, {"_id": 0})
     if not entry:
         raise HTTPException(status_code=404, detail="Logbook entry not found")
+    await assert_record_scope(current_user, entry)
 
     await db.driver_logbook.delete_one({"id": entry_id})
     await write_audit_log(
@@ -5791,19 +6182,25 @@ async def delete_logbook_entry(
 
 
 @api_router.get("/logbook/summary/{driver_id}")
-async def get_driver_logbook_summary(driver_id: str, period_days: int = 30):
+async def get_driver_logbook_summary(driver_id: str, period_days: int = 30, current_user: dict = Depends(get_current_user)):
     """Get driver logbook summary"""
     start_date = (datetime.now(timezone.utc) - timedelta(days=period_days)).isoformat()
+    if is_staff(current_user):
+        await assert_driver_scope(current_user, driver_id)
+        driver_filter = {"driver_id": driver_id}
+    else:
+        assert_own_driver(current_user, driver_id)
+        driver_filter = own_driver_filter(current_user)
     
     entries = await db.driver_logbook.find(
-        {"driver_id": driver_id, "date": {"$gte": start_date}},
+        {**driver_filter, "date": {"$gte": start_date}},
         {"_id": 0}
     ).to_list(1000)
     
-    total_distance = sum(e.get('distance_km', 0) for e in entries)
+    total_distance = sum((e.get('distance_km') or 0) for e in entries)
     total_trips = len(entries)
     total_violations = sum(e.get('speed_limit_violations', 0) for e in entries)
-    total_fuel = sum(e.get('fuel_used_liters', 0) for e in entries)
+    total_fuel = sum((e.get('fuel_used_liters') or 0) for e in entries)
     
     return {
         "driver_id": driver_id,
@@ -5820,8 +6217,9 @@ async def get_driver_logbook_summary(driver_id: str, period_days: int = 30):
 
 # ============= VENDOR MANAGEMENT ROUTES =============
 @api_router.post("/vendors", response_model=Vendor)
-async def create_vendor(input: VendorCreate):
+async def create_vendor(input: VendorCreate, current_user: dict = Depends(_require_staff)):
     """Create a new vendor"""
+    await assert_payload_scope(current_user, input.model_dump())
     vendor = Vendor(**input.model_dump())
     doc = vendor.model_dump()
     
@@ -5834,11 +6232,13 @@ async def create_vendor(input: VendorCreate):
 
 
 @api_router.get("/vendors")
-async def get_vendors(country: Optional[str] = None, category: Optional[str] = None):
+async def get_vendors(
+    country: Optional[str] = None,
+    category: Optional[str] = None,
+    current_user: dict = Depends(_require_staff),
+):
     """Get all vendors with optional filters"""
-    query = {}
-    if country:
-        query['country'] = country
+    query = dict(country_query(current_user, country))
     if category:
         query['category'] = category
     
@@ -5851,11 +6251,12 @@ async def get_vendors(country: Optional[str] = None, category: Optional[str] = N
 
 
 @api_router.get("/vendors/{vendor_id}")
-async def get_vendor(vendor_id: str):
+async def get_vendor(vendor_id: str, current_user: dict = Depends(_require_staff)):
     """Get a single vendor"""
     vendor = await db.vendors.find_one({"id": vendor_id}, {"_id": 0})
     if not vendor:
         raise HTTPException(status_code=404, detail="Vendor not found")
+    await assert_record_scope(current_user, vendor)
     return vendor
 
 
@@ -5869,6 +6270,11 @@ async def update_vendor(
     update_data = input.model_dump(exclude_none=True)
     if not update_data:
         raise HTTPException(status_code=400, detail="No fields to update")
+    existing = await db.vendors.find_one({"id": vendor_id}, {"_id": 0})
+    if not existing:
+        raise HTTPException(status_code=404, detail="Vendor not found")
+    await assert_record_scope(current_user, existing)
+    await assert_payload_scope(current_user, update_data)
     update_data["updated_at"] = datetime.now(timezone.utc).isoformat()
     update_data = _mongo_update_payload(update_data)
     result = await db.vendors.update_one({"id": vendor_id}, {"$set": update_data})
@@ -5886,6 +6292,7 @@ async def delete_vendor(
     vendor = await db.vendors.find_one({"id": vendor_id}, {"_id": 0})
     if not vendor:
         raise HTTPException(status_code=404, detail="Vendor not found")
+    await assert_record_scope(current_user, vendor)
 
     await db.vendors.delete_one({"id": vendor_id})
     await write_audit_log(
@@ -5902,8 +6309,9 @@ async def delete_vendor(
 
 # ============= VEHICLE LOCATION ROUTES =============
 @api_router.post("/vehicle-locations", response_model=VehicleLocation)
-async def create_vehicle_location(input: VehicleLocationCreate):
+async def create_vehicle_location(input: VehicleLocationCreate, current_user: dict = Depends(_require_staff)):
     """Update vehicle location (GPS or Manual)"""
+    await assert_payload_scope(current_user, input.model_dump())
     data = input.model_dump()
     data["country"] = normalize_country_code(data.get("country"))
     location = VehicleLocation(**data)
@@ -5933,12 +6341,10 @@ async def create_vehicle_location(input: VehicleLocationCreate):
 
 
 @api_router.get("/vehicle-locations")
-async def get_vehicle_locations(country: Optional[str] = None):
+async def get_vehicle_locations(country: Optional[str] = None, current_user: dict = Depends(_require_staff)):
     """Get latest location for all vehicles"""
-    query = {}
-    if country:
-        query['country'] = country
-    
+    query = dict(country_query(current_user, country))
+
     # Get vehicles with their last locations
     vehicles = await db.vehicles.find(query, {"_id": 0}).to_list(1000)
     locations = []
@@ -5960,8 +6366,9 @@ async def get_vehicle_locations(country: Optional[str] = None):
 
 
 @api_router.get("/vehicle-locations/{vehicle_id}/history")
-async def get_vehicle_location_history(vehicle_id: str, hours: int = 24):
+async def get_vehicle_location_history(vehicle_id: str, hours: int = 24, current_user: dict = Depends(_require_staff)):
     """Get location history for a vehicle"""
+    await assert_vehicle_scope(current_user, vehicle_id)
     since = (datetime.now(timezone.utc) - timedelta(hours=hours)).isoformat()
     
     locations = await db.vehicle_locations.find(
@@ -5974,8 +6381,9 @@ async def get_vehicle_location_history(vehicle_id: str, hours: int = 24):
 
 # ============= TCO (TOTAL COST OF OWNERSHIP) ROUTES =============
 @api_router.get("/tco/vehicle/{vehicle_id}")
-async def get_vehicle_tco(vehicle_id: str, period_days: int = 365):
+async def get_vehicle_tco(vehicle_id: str, period_days: int = 365, current_user: dict = Depends(_require_staff)):
     """Calculate TCO for a specific vehicle"""
+    await assert_vehicle_scope(current_user, vehicle_id)
     start_date = (datetime.now(timezone.utc) - timedelta(days=period_days)).isoformat()
     
     vehicle = await db.vehicles.find_one({"id": vehicle_id}, {"_id": 0})
@@ -6003,14 +6411,14 @@ async def get_vehicle_tco(vehicle_id: str, period_days: int = 365):
         {"vehicle_id": vehicle_id},
         {"_id": 0, "purchase_cost": 1, "currency": 1}
     ).to_list(100)
-    tire_cost = sum(t.get('purchase_cost', 0) * 0.065 for t in tires)  # Convert to USD approx
+    tire_cost = sum(_tire_cost_usd(t) for t in tires)
     
     # Distance from logbook
     logbook = await db.driver_logbook.find(
         {"vehicle_id": vehicle_id, "date": {"$gte": start_date}},
         {"_id": 0, "distance_km": 1}
     ).to_list(1000)
-    total_distance = sum(e.get('distance_km', 0) for e in logbook)
+    total_distance = sum((e.get('distance_km') or 0) for e in logbook)
     
     # Calculate totals
     total_cost = fuel_cost + maintenance_cost + tire_cost
@@ -6041,9 +6449,9 @@ async def get_vehicle_tco(vehicle_id: str, period_days: int = 365):
 
 
 @api_router.get("/tco/fleet")
-async def get_fleet_tco(country: Optional[str] = None, period_days: int = 365):
+async def get_fleet_tco(country: Optional[str] = None, period_days: int = 365, current_user: dict = Depends(_require_staff)):
     """Calculate TCO for entire fleet"""
-    country_filter = country_filter_query(country) if country else {}
+    country_filter = country_query(current_user, country)
     vehicles = await db.vehicles.find(country_filter, {"_id": 0, "id": 1}).to_list(1000)
     
     fleet_tco = {
@@ -6056,7 +6464,7 @@ async def get_fleet_tco(country: Optional[str] = None, period_days: int = 365):
     
     for vehicle in vehicles:
         try:
-            tco = await get_vehicle_tco(vehicle['id'], period_days)
+            tco = await get_vehicle_tco(vehicle['id'], period_days, current_user=current_user)
             fleet_tco['fuel'] += tco['costs']['fuel']
             fleet_tco['maintenance'] += tco['costs']['maintenance']
             fleet_tco['tires'] += tco['costs']['tires']
@@ -6077,50 +6485,34 @@ async def get_fleet_tco(country: Optional[str] = None, period_days: int = 365):
 
 
 @api_router.get("/reports/expense-breakdown")
-async def get_expense_breakdown(country: Optional[str] = None, period_days: int = 30):
+async def get_expense_breakdown(country: Optional[str] = None, period_days: int = 30, current_user: dict = Depends(_require_staff)):
     """Get expense breakdown by category"""
-    from report_helpers import maintenance_on_or_after, scoped_vehicle_query, vehicle_ids_for_country_filter
+    from report_helpers import (
+        maintenance_on_or_after, scoped_vehicle_query, sum_and_count, vehicle_ids_for_country_filter,
+    )
 
     start_date = (datetime.now(timezone.utc) - timedelta(days=period_days)).isoformat()
-    country_filter = country_filter_query(country) if country else {}
+    country_filter = country_query(current_user, country)
     vehicle_ids = await vehicle_ids_for_country_filter(db, country_filter)
-    
-    # Get all expenditures
-    expenditures = await db.expenditures.find(
-        {**country_filter, "date": {"$gte": start_date}},
-        {"_id": 0}
-    ).to_list(1000)
-    
-    # Group by category
-    breakdown = {}
-    for exp in expenditures:
-        category = exp.get('category', 'OTHER')
-        if category not in breakdown:
-            breakdown[category] = {"count": 0, "total_usd": 0}
-        breakdown[category]['count'] += 1
-        breakdown[category]['total_usd'] += exp.get('amount_usd', 0)
-    
+
+    grouped = await db.expenditures.aggregate([
+        {"$match": {**country_filter, "date": {"$gte": start_date}}},
+        {"$group": {"_id": "$category", "total": {"$sum": "$amount_usd"}, "count": {"$sum": 1}}},
+    ]).to_list(None)
+    breakdown = {
+        (row["_id"] or "OTHER"): {"count": row["count"], "total_usd": row["total"] or 0}
+        for row in grouped
+    }
+
     # Add fuel (scoped by vehicle when country filter applies)
     fuel_query = scoped_vehicle_query({"date": {"$gte": start_date}}, vehicle_ids)
-    fuel_txns = await db.fuel_transactions.find(
-        fuel_query,
-        {"_id": 0, "cost_usd": 1}
-    ).to_list(1000)
-    breakdown['FUEL'] = {
-        "count": len(fuel_txns),
-        "total_usd": round(sum(f.get('cost_usd', 0) for f in fuel_txns), 2)
-    }
+    fuel_total, fuel_count = await sum_and_count(db.fuel_transactions, fuel_query, "cost_usd")
+    breakdown['FUEL'] = {"count": fuel_count, "total_usd": round(fuel_total, 2)}
     
     # Add maintenance (by scheduled_date, scoped by vehicle when country filter applies)
     maint_query = scoped_vehicle_query(maintenance_on_or_after(start_date), vehicle_ids)
-    maintenance = await db.maintenance_records.find(
-        maint_query,
-        {"_id": 0, "cost_usd": 1}
-    ).to_list(1000)
-    breakdown['MAINTENANCE'] = {
-        "count": len(maintenance),
-        "total_usd": round(sum(m.get('cost_usd', 0) for m in maintenance), 2)
-    }
+    maint_total, maint_count = await sum_and_count(db.maintenance_records, maint_query, "cost_usd")
+    breakdown['MAINTENANCE'] = {"count": maint_count, "total_usd": round(maint_total, 2)}
     
     # Round values
     for k, v in breakdown.items():
@@ -6137,10 +6529,10 @@ async def get_expense_breakdown(country: Optional[str] = None, period_days: int 
 
 
 @api_router.get("/reports/utilization")
-async def get_utilization_report(country: Optional[str] = None, period_days: int = 30):
+async def get_utilization_report(country: Optional[str] = None, period_days: int = 30, current_user: dict = Depends(_require_staff)):
     """Get fleet utilization report"""
     start_date = (datetime.now(timezone.utc) - timedelta(days=period_days)).isoformat()
-    country_filter = country_filter_query(country) if country else {}
+    country_filter = country_query(current_user, country)
     
     vehicles = await db.vehicles.find(country_filter, {"_id": 0}).to_list(1000)
     utilization_data = []
@@ -6151,8 +6543,8 @@ async def get_utilization_report(country: Optional[str] = None, period_days: int
             {"_id": 0}
         ).to_list(1000)
         
-        total_distance = sum(e.get('distance_km', 0) for e in logbook)
-        total_hours = sum(e.get('total_hours', 0) for e in logbook)
+        total_distance = sum((e.get('distance_km') or 0) for e in logbook)
+        total_hours = sum((e.get('total_hours') or 0) for e in logbook)
         trip_count = len(logbook)
         
         # Calculate utilization rate (assuming 8 hours/day max usage)
@@ -6192,13 +6584,13 @@ async def send_daily_report(current_user: dict = Depends(require_group_manager()
     from datetime import date
     
     # Get dashboard stats
-    stats = await get_dashboard_stats()
+    stats = await get_dashboard_stats(current_user=current_user)
     
     # Get alerts
-    alerts_data = await get_dashboard_alerts()
+    alerts_data = await get_dashboard_alerts(current_user=current_user)
     
     # Get compliance
-    compliance_data = await get_compliance_status()
+    compliance_data = await get_compliance_status(current_user=current_user)
     
     # Get pending users
     pending_users = await db.users.count_documents({"is_approved": False})
@@ -6236,7 +6628,7 @@ async def send_daily_report(current_user: dict = Depends(require_group_manager()
 async def send_weekly_report(current_user: dict = Depends(require_group_manager())):
     """Send weekly summary report to Group Fleet Manager"""
     from datetime import date, timedelta as td
-    from report_helpers import maintenance_on_or_after
+    from report_helpers import maintenance_on_or_after, sum_field
     
     # Calculate week dates
     today = date.today()
@@ -6250,12 +6642,9 @@ async def send_weekly_report(current_user: dict = Depends(require_group_manager(
     trips = await db.driver_logbook.count_documents({"date": {"$gte": start_date}})
     
     # Total distance
-    logbook_entries = await db.driver_logbook.find(
-        {"date": {"$gte": start_date}},
-        {"_id": 0, "distance_km": 1, "speed_limit_violations": 1}
-    ).to_list(1000)
-    total_distance = sum(e.get('distance_km', 0) for e in logbook_entries)
-    speed_violations = sum(e.get('speed_limit_violations', 0) for e in logbook_entries)
+    week_query = {"date": {"$gte": start_date}}
+    total_distance = await sum_field(db.driver_logbook, week_query, "distance_km")
+    speed_violations = int(await sum_field(db.driver_logbook, week_query, "speed_limit_violations"))
     
     # Maintenance completed
     maintenance_completed = await db.maintenance_records.count_documents({
@@ -6266,21 +6655,15 @@ async def send_weekly_report(current_user: dict = Depends(require_group_manager(
     checklists = await db.pretrip_checklists.count_documents({"date": {"$gte": start_date}})
     
     # Costs
-    fuel_txns = await db.fuel_transactions.find(
-        {"date": {"$gte": start_date}},
-        {"_id": 0, "cost_usd": 1}
-    ).to_list(1000)
-    fuel_cost_usd = sum(f.get('cost_usd', 0) for f in fuel_txns)
-    ghs_rate = 12.0
+    fuel_cost_usd = await sum_field(db.fuel_transactions, week_query, "cost_usd")
+    ghs_rate = currency_converter.get_rate(CurrencyEnum.USD, CurrencyEnum.GHS)
     
-    maintenance_records = await db.maintenance_records.find(
-        maintenance_on_or_after(start_date),
-        {"_id": 0, "cost_usd": 1}
-    ).to_list(1000)
-    maintenance_cost_usd = sum(m.get('cost_usd', 0) for m in maintenance_records)
+    maintenance_cost_usd = await sum_field(
+        db.maintenance_records, maintenance_on_or_after(start_date), "cost_usd"
+    )
     
     # Utilization
-    utilization_data = await get_utilization_report(period_days=7)
+    utilization_data = await get_utilization_report(period_days=7, current_user=current_user)
     
     # Driver safety scores
     drivers = await db.drivers.find({}, {"_id": 0, "safety_score": 1}).to_list(1000)
@@ -6353,7 +6736,7 @@ async def trigger_driver_reminders(
     from driver_reminders import run_reminder_pass
 
     cron_token = os.environ.get("REMINDER_CRON_TOKEN", "").strip()
-    is_cron = bool(cron_token and x_reminder_token and x_reminder_token == cron_token)
+    is_cron = tokens_match(cron_token, x_reminder_token)
     is_manager = False
     payload = getattr(request.state, "jwt_payload", None)
     if payload and payload.get("role") in ("GROUP_FLEET_MANAGER", "FLEET_MANAGER"):

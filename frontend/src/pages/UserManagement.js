@@ -41,7 +41,8 @@ const UserManagement = () => {
       }
       fetchUsers();
     } catch (error) {
-      toast.error('Failed to approve user');
+      const detail = error.response?.data?.detail;
+      toast.error(typeof detail === 'string' ? detail : 'Failed to approve user');
     }
   };
 

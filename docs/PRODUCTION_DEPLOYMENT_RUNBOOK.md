@@ -825,7 +825,7 @@ python3.11 -m venv .venv
 source .venv/bin/activate
 python --version
 pip install --upgrade pip wheel
-pip install -r requirements.txt gunicorn
+pip install -r requirements.txt
 ```
 
 ### E5. Backend `.env`
@@ -985,6 +985,7 @@ server {
     add_header X-Frame-Options "SAMEORIGIN" always;
     add_header X-Content-Type-Options "nosniff" always;
     add_header Referrer-Policy "strict-origin-when-cross-origin" always;
+    add_header Content-Security-Policy-Report-Only "default-src 'self'; base-uri 'self'; object-src 'none'; frame-ancestors 'self'; img-src 'self' data: blob:; font-src 'self' data:; style-src 'self' 'unsafe-inline'; script-src 'self'; connect-src 'self'; frame-src 'self' blob:; media-src 'self' blob:; form-action 'self'" always;
 
     location /api/ {
         proxy_pass http://fleet_api;
@@ -997,8 +998,9 @@ server {
         client_max_body_size 25m;
     }
 
-    location ~ ^/api/auth/(login|register|forgot-password|reset-password) {
+    location ~ ^/api/auth/(login|register|forgot-password|reset-password|send-otp|verify-otp|accept-invite) {
         limit_req zone=auth_limit burst=5 nodelay;
+        limit_req_status 429;
         proxy_pass http://fleet_api;
         proxy_http_version 1.1;
         proxy_set_header Host $host;
@@ -1081,6 +1083,7 @@ server {
     add_header X-Frame-Options "SAMEORIGIN" always;
     add_header X-Content-Type-Options "nosniff" always;
     add_header Referrer-Policy "strict-origin-when-cross-origin" always;
+    add_header Content-Security-Policy-Report-Only "default-src 'self'; base-uri 'self'; object-src 'none'; frame-ancestors 'self'; img-src 'self' data: blob:; font-src 'self' data:; style-src 'self' 'unsafe-inline'; script-src 'self'; connect-src 'self'; frame-src 'self' blob:; media-src 'self' blob:; form-action 'self'" always;
 
     location /api/ {
         proxy_pass http://fleet_api;
@@ -1093,8 +1096,9 @@ server {
         client_max_body_size 25m;
     }
 
-    location ~ ^/api/auth/(login|register|forgot-password|reset-password) {
+    location ~ ^/api/auth/(login|register|forgot-password|reset-password|send-otp|verify-otp|accept-invite) {
         limit_req zone=auth_limit burst=5 nodelay;
+        limit_req_status 429;
         proxy_pass http://fleet_api;
         proxy_http_version 1.1;
         proxy_set_header Host $host;
@@ -1111,6 +1115,24 @@ EOF
 
 sudo nginx -t && sudo systemctl reload nginx
 ```
+
+**Security headers:** the Content Security Policy ships as `Content-Security-Policy-Report-Only`, which logs violations to the browser console and blocks nothing. To enforce it:
+
+1. Sign in as each role, open every page and a PDF, Word, Excel and image preview, with the console open.
+2. If `S3_BUCKET_NAME` is set, add the bucket origin to `connect-src`. Add `https://view.officeapps.live.com` to `frame-src` only if Office previews through Microsoft are wanted: they send a presigned file URL to Microsoft.
+3. When the console is free of `Content-Security-Policy` messages, rename the header to `Content-Security-Policy`.
+
+Once HTTPS has run cleanly for a week, add this to the 443 server block, starting at `max-age=300` if you want a shorter trial. Do not add `includeSubDomains` or `preload` unless every subdomain is HTTPS-ready:
+
+```nginx
+add_header Strict-Transport-Security "max-age=31536000" always;
+```
+
+A `location` with its own `add_header` stops inheriting these headers, so repeat them there. Check with `curl -sI https://fleet.gtiholding.com/login`. The health route is `/health` on `127.0.0.1:8000`; it is not proxied by Nginx.
+
+**Frontend build:** `xlsx` installs from SheetJS, not npm, so the host running `npm ci` needs outbound HTTPS to `cdn.sheetjs.com`. The lock file pins its checksum.
+
+**Exchange rates:** the API refreshes rates hourly in the background, so `.21` needs outbound HTTPS to `theratesapi.com`. Check with `curl -sS --max-time 10 'https://theratesapi.com/api/latest/?base=USD&symbols=GHS,LRD,STN'`. If it cannot connect, the app keeps working on its last saved rates, or on the fixed table in `backend/currency_utils.py` if none are saved, and logs `Could not refresh exchange rates`. `GET /api/exchange-rates/current` shows which is in use.
 
 **Phase 2 checklist** (on `.21`):
 
@@ -1181,7 +1203,7 @@ Purpose: Nightly compressed dumps with retention.
 Importance: Recovery point objective for production data.
 
 ```cron
-15 2 * * * mongodump --uri="mongodb://mongoAdmin:Jrfleets%2F0772%21GTI@192.168.135.23:27017/?replicaSet=rs0&authSource=admin" --out=/var/backups/mongodb/$(date +\%F) --gzip && find /var/backups/mongodb -mindepth 1 -maxdepth 1 -type d -mtime +14 -exec rm -rf {} \;
+15 2 * * * mongodump --uri="mongodb://mongoAdmin:REPLACE_URL_ENCODED_ADMIN_PASSWORD@192.168.135.23:27017/?replicaSet=rs0&authSource=admin" --out=/var/backups/mongodb/$(date +\%F) --gzip && find /var/backups/mongodb -mindepth 1 -maxdepth 1 -type d -mtime +14 -exec rm -rf {} \;
 ```
 
 ### F2. Log rotation
@@ -1234,7 +1256,7 @@ sudo systemctl reload nginx
 | `Authentication failed` on `rs.initiate` for one peer                   | Key md5 mismatch **or** peer has no `security.keyFile` | Match md5 on all hosts; verify **B4** + restart                                  |
 | Log: **without a --keyFile parameter** on `.23`                         | `mongod.conf` missing `keyFile`                        | Re-apply **B4** on that host, `configCheck`, restart                             |
 | `sudo: a terminal is required` over SSH                                 | Remote `sudo` without TTY                              | `**ssh -t`** or run `install` in interactive SSH                                 |
-| `!GTI@…: event not found` in bash                                       | `!` in password with double quotes                     | Single-quote URI, URL-encode, or `--password` prompt                             |
+| `!…: event not found` in bash                                       | `!` in password with double quotes                     | Single-quote URI, URL-encode, or `--password` prompt                             |
 | `mongoAdmin` works, `fleetapp` `createUser` **requires authentication** | Normal after first user when auth enabled              | Create `**fleetapp` logged in as `mongoAdmin`** (D2b)                            |
 | Auth fails for both users after D3                                      | `fleetapp` never created, or wrong password            | Temporarily set `authorization: disabled`, fix users, re-enable D3               |
 | CORS errors in browser                                                  | `CORS_ORIGINS` ≠ browser origin                        | Match `http://192.168.135.21` or `https://fleet.gtiholding.com` exactly (E5) |

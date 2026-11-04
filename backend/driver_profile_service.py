@@ -5,7 +5,42 @@ import re
 from datetime import datetime, timezone, timedelta
 from typing import Any, Dict, List, Optional
 
+from pymongo.errors import DuplicateKeyError
+
 from country_utils import normalize_country_code
+
+
+class DriverLinkConflict(Exception):
+    """A signup's email matches a driver profile, so its ownership must be proven first."""
+
+
+async def prepare_signup_for_approval(db, user: dict) -> dict:
+    """Stop an unverified first-time signup from taking over an existing driver identity.
+
+    Signup emails are not verified, so a match only proves someone typed the address.
+    The invite flow proves ownership, because the link goes to that address.
+    Returns the user with any claimed driver link removed.
+    """
+    if user.get("approved_at") or user.get("email_verified"):
+        return user  # Approved before, or proven through an invite: the link is trusted.
+
+    if user.get("driver_id") and user["driver_id"] != user["id"]:
+        await db.users.update_one({"id": user["id"]}, {"$set": {"driver_id": None}})
+        user = {**user, "driver_id": None}
+
+    role = getattr(user.get("role"), "value", user.get("role"))
+    email = (user.get("email") or "").strip()
+    if role == "DRIVER" and email:
+        match = await db.drivers.find_one(
+            {"email": {"$regex": f"^{re.escape(email)}$", "$options": "i"}},
+            {"_id": 0, "id": 1},
+        )
+        if match and match["id"] != user["id"]:
+            raise DriverLinkConflict(
+                "A driver profile already uses this email. Send that driver an invite instead, "
+                "which confirms they own the address."
+            )
+    return user
 
 
 def _split_name(full_name: Optional[str]) -> tuple:
@@ -43,6 +78,12 @@ async def ensure_driver_profile_for_user(db, user: dict) -> Optional[dict]:
             {"_id": 0},
         )
         if by_email:
+            claimed = await db.users.find_one(
+                {"driver_id": by_email["id"], "id": {"$ne": user["id"]}},
+                {"_id": 0, "id": 1},
+            )
+            if claimed:
+                return None  # Already another account's profile: never share it.
             await db.users.update_one(
                 {"id": user["id"]},
                 {"$set": {"driver_id": by_email["id"]}},
@@ -106,6 +147,16 @@ async def sync_approved_driver_profiles(db) -> int:
         elif profile and before is None:
             touched += 1
     return touched
+
+
+async def sync_driver_profiles_once_a_day(db) -> None:
+    """Run the backfill in one worker only: the fixed _id lets a single caller win each day."""
+    today = datetime.now(timezone.utc).date().isoformat()
+    try:
+        await db.job_claims.insert_one({"_id": f"driver_profile_sync:{today}"})
+    except DuplicateKeyError:
+        return
+    await sync_approved_driver_profiles(db)
 
 
 async def resolve_driver_display_names(db, driver_ids: List[str]) -> Dict[str, str]:

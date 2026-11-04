@@ -1,10 +1,12 @@
 """Sync vehicle master records to operational vehicles collection."""
 from __future__ import annotations
 
+import re
 from datetime import datetime, timezone
 from typing import Any, Dict, Optional
 import uuid
 
+from country_utils import country_filter_query, normalize_country_code
 from models.vehicle_master import VEHICLE_MASTER_COLUMNS
 
 # Master field -> Vehicle field
@@ -118,8 +120,15 @@ def master_payload_from_vehicle(vehicle: Dict[str, Any]) -> Dict[str, Any]:
     return payload
 
 
-async def sync_master_to_vehicles(db, master: Dict[str, Any]) -> int:
-    """Push master fields to linked vehicle and any vehicle with same registration/VIN."""
+def _exact(value: str) -> Dict[str, str]:
+    return {"$regex": f"^{re.escape(value)}$", "$options": "i"}
+
+
+async def sync_master_to_vehicles(db, master: Dict[str, Any], scope: Dict[str, Any]) -> int:
+    """Push master fields to linked vehicle and any vehicle with same registration/VIN.
+
+    `scope` is the acting user's country filter: a sync never reaches vehicles outside it.
+    """
     updates = vehicle_update_from_master(master)
     if not updates:
         return 0
@@ -127,19 +136,21 @@ async def sync_master_to_vehicles(db, master: Dict[str, Any]) -> int:
     touched = 0
     target_ids = set()
     if master.get("linked_vehicle_id"):
-        target_ids.add(master["linked_vehicle_id"])
+        linked = await db.vehicles.find_one({**scope, "id": master["linked_vehicle_id"]}, {"_id": 0, "id": 1})
+        if linked:
+            target_ids.add(linked["id"])
 
     reg = (master.get("registration_number") or "").strip().upper()
     vin = (master.get("chassis_vin") or "").strip().upper()
     if reg:
         for v in await db.vehicles.find(
-            {"registration_number": {"$regex": f"^{reg}$", "$options": "i"}},
+            {**scope, "registration_number": _exact(reg)},
             {"_id": 0, "id": 1},
         ).to_list(50):
             target_ids.add(v["id"])
     if vin:
         for v in await db.vehicles.find(
-            {"vin": {"$regex": f"^{vin}$", "$options": "i"}},
+            {**scope, "vin": _exact(vin)},
             {"_id": 0, "id": 1},
         ).to_list(50):
             target_ids.add(v["id"])
@@ -165,8 +176,11 @@ async def upsert_master_from_vehicle(db, vehicle: Dict[str, Any]) -> Optional[st
         )
     if not existing and payload.get("registration_number"):
         reg = payload["registration_number"].strip()
+        same_country = (
+            country_filter_query(normalize_country_code(payload["country"])) if payload.get("country") else {}
+        )
         existing = await db.vehicle_masters.find_one(
-            {"registration_number": {"$regex": f"^{reg}$", "$options": "i"}},
+            {**same_country, "registration_number": _exact(reg)},
             {"_id": 0},
         )
 

@@ -110,7 +110,7 @@ There is **no** Nginx / MongoDB / app listener yet.
 - **Backend**: FastAPI, entry **`server:app`** (`backend/server.py`), env from **`backend/.env`** (see **`backend/.env.example`**). Requires **`MONGO_URL`**, **`JWT_SECRET_KEY`**, **`DB_NAME`**, production **`ENVIRONMENT`**, **`CORS_ORIGINS`**, **`FRONTEND_URL`**, optional **Resend** (`RESEND_API_KEY`, `SENDER_EMAIL`).
 - **Frontend**: React (Craco), **`REACT_APP_BACKEND_URL`** baked at **build time** — must match the **browser-visible** API URL (same-origin via Nginx `/api` proxy is recommended).
 - **Production public URL**: **`https://fleet.gtiholding.com`** — set **`CORS_ORIGINS`**, **`FRONTEND_URL`**, and **`REACT_APP_BACKEND_URL`** to that origin (no trailing slash). See **`docs/PRODUCTION_DOMAIN.md`**.
-- **Database**: MongoDB (Motor/PyMongo). **Python 3.9.25** on servers is acceptable if dependencies support it; if not, use **`python3.11`/`python3.12` modules** or **pyenv**—document the chosen path in the runbook.
+- **Database**: MongoDB (Motor/PyMongo). The system **Python 3.9.25** is too old: the locked backend packages need **3.10 or newer**. Use **`python3.11`** for the venv, as the runbook does.
 
 ---
 
@@ -144,3 +144,5 @@ When changing the stack, update **this file** and the runbook together.
 |------|--------|
 | 2026-05-10 | Initial `CLAUDE.md` from live inventory (CentOS Stream 9 @ 192.168.135.21, identical cluster); greenfield app/Mongo/Nginx. |
 | 2026-05-10 | `PRODUCTION_DEPLOYMENT_RUNBOOK.md` aligned to CentOS Stream 9 (`dnf`, firewalld, SELinux). |
+| 2026-11-03 | Backend dependencies locked from `requirements.in`; `gunicorn` now included. JWTs use PyJWT. CI added in `.github/workflows/ci.yml`. |
+| 2026-11-04 | `forex-python` removed. The API host needs outbound HTTPS to `theratesapi.com` for live exchange rates, refreshed hourly in the background. |

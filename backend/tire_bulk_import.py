@@ -6,10 +6,11 @@ import re
 from datetime import datetime
 from typing import Any, Dict, List, Optional, Tuple
 
-from openpyxl import Workbook, load_workbook
+from openpyxl import Workbook
 from openpyxl.styles import Font, PatternFill
 from openpyxl.utils import get_column_letter
 
+from upload_safety import SAMPLE_ROW_MESSAGE, is_sample_row, safe_load_workbook
 from country_utils import normalize_country_code
 from models.enums import CurrencyEnum, TirePosition, TireStatus
 
@@ -221,7 +222,7 @@ def parse_tire_bulk_upload(
     *,
     default_country: Optional[str] = None,
 ) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
-    wb = load_workbook(io.BytesIO(file_bytes), read_only=True, data_only=True)
+    wb = safe_load_workbook(file_bytes)
     ws = wb["Tires"] if "Tires" in wb.sheetnames else wb.active
     rows = list(ws.iter_rows(values_only=True))
     if not rows:
@@ -262,6 +263,9 @@ def parse_tire_bulk_upload(
     seen_serials: set[str] = set()
 
     for row_idx, row in enumerate(rows[1:], start=2):
+        if is_sample_row(row, SAMPLE_ROW):
+            errors.append({"row": row_idx, "message": SAMPLE_ROW_MESSAGE})
+            continue
         if _should_skip_row(row, column_map):
             continue
 

@@ -6,10 +6,11 @@ import re
 from datetime import datetime
 from typing import Any, Dict, List, Optional, Tuple
 
-from openpyxl import Workbook, load_workbook
+from openpyxl import Workbook
 from openpyxl.styles import Font, PatternFill
 from openpyxl.utils import get_column_letter
 
+from upload_safety import SAMPLE_ROW_MESSAGE, is_sample_row, safe_load_workbook
 from country_utils import normalize_country_code
 from models.enums import CurrencyEnum
 
@@ -139,7 +140,7 @@ def parse_expenditure_bulk_upload(
     file_bytes: bytes,
     default_country: Optional[str] = None,
 ) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
-    wb = load_workbook(io.BytesIO(file_bytes), read_only=True, data_only=True)
+    wb = safe_load_workbook(file_bytes)
     ws = None
     for name in wb.sheetnames:
         if name.strip().lower() in ("expenditures", "expenses", "expenditure", "sheet1"):
@@ -172,6 +173,9 @@ def parse_expenditure_bulk_upload(
     errors: List[Dict[str, Any]] = []
 
     for excel_row_idx, values in enumerate(rows_iter, start=2):
+        if is_sample_row(values, SAMPLE_ROW):
+            errors.append({"row": excel_row_idx, "message": SAMPLE_ROW_MESSAGE})
+            continue
         if not values or all(v is None or (isinstance(v, str) and not str(v).strip()) for v in values):
             continue
 

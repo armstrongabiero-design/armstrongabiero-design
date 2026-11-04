@@ -5,10 +5,11 @@ from datetime import datetime
 from io import BytesIO
 from typing import Any, Dict, List, Tuple
 
-from openpyxl import Workbook, load_workbook
+from openpyxl import Workbook
 from openpyxl.styles import Font, PatternFill
 from openpyxl.utils import get_column_letter
 
+from upload_safety import safe_load_workbook
 from models.vehicle_master import VEHICLE_MASTER_COLUMNS
 
 HEADER_ROW = 1
@@ -63,7 +64,7 @@ def _cell(row: tuple, idx: int) -> Any:
 
 
 def parse_vehicle_master_bulk_upload(content: bytes) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
-    wb = load_workbook(BytesIO(content), read_only=True, data_only=True)
+    wb = safe_load_workbook(content)
     ws = wb.active
     rows_iter = ws.iter_rows(values_only=True)
     try:

@@ -102,7 +102,7 @@ pytest
 | `MONGO_URL environment variable is required` | Create `backend/.env` from `.env.example` or export `MONGO_URL`. |
 | CORS errors in the browser | `CORS_ORIGINS` must include your frontend origin (e.g. `http://localhost:3000`). In development, defaults often suffice if unset. |
 | `JWT_SECRET_KEY` warnings | Use a strong secret in `.env`; production requires a non-placeholder secret. |
-| Cannot log in as GFM | Group Fleet Manager flow may require OTP email; configure **Resend** or use non-GFM test paths. |
+| Cannot log in as GFM | Group Fleet Manager login needs an emailed code. Configure **Resend**, or for local development set `DEV_LOG_OTP=true` to print the code to the API log. |
 
 ## Production deployment
 

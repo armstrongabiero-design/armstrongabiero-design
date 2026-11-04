@@ -57,7 +57,7 @@ const ProtectedRoute = ({ children }) => {
 // Main App Layout
 const AppLayout = () => {
   const [sidebarOpen, setSidebarOpen] = useState(true);
-  const { isAuthenticated, user, loading, logout } = useAuth();
+  const { isAuthenticated, user, loading, logout, serverUnavailable, retrySession } = useAuth();
   const location = window.location.pathname;
 
   // Show loading while checking auth
@@ -65,6 +65,23 @@ const AppLayout = () => {
     return (
       <div className="flex items-center justify-center h-screen bg-slate-50">
         <div className="text-lg text-slate-600">Loading...</div>
+      </div>
+    );
+  }
+
+  if (serverUnavailable) {
+    return (
+      <div className="flex items-center justify-center h-screen bg-slate-50 p-4">
+        <div className="bg-white rounded-2xl shadow p-8 max-w-md text-center" role="alert">
+          <h2 className="text-2xl font-bold text-slate-800 mb-2">Can't reach the server</h2>
+          <p className="text-slate-600 mb-6">
+            You are still signed in. Check your connection and try again.
+          </p>
+          <div className="flex gap-3 justify-center">
+            <Button onClick={retrySession}>Try again</Button>
+            <Button variant="outline" onClick={logout}>Sign out</Button>
+          </div>
+        </div>
       </div>
     );
   }

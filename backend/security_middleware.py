@@ -1,14 +1,17 @@
 """API authentication middleware: require Bearer JWT for /api except allowlisted public routes."""
 from __future__ import annotations
 
+import logging
 import os
+from typing import Optional
 
-from jose import JWTError
+from jwt import PyJWTError as JWTError
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.requests import Request
 from starlette.responses import JSONResponse
 
-from auth_service import decode_token_raw
+from audit_service import write_audit_log
+from auth_service import decode_token_raw, tokens_match
 from database import db
 
 # (method, path) exact match after normalizing trailing slash on path
@@ -30,6 +33,40 @@ _PUBLIC_PREFIXES = (
     ("GET", "/api/auth/verify-reset-token/"),
     ("GET", "/api/auth/verify-invite/"),
 )
+
+
+# Routes a scheduled job may call with X-Reminder-Token instead of a user login.
+_CRON_ROUTES = frozenset({
+    ("POST", "/api/reminders/run"),
+    ("POST", "/api/vehicles/availability/snapshot"),
+})
+_WRITE_METHODS = frozenset({"POST", "PUT", "PATCH", "DELETE"})
+
+logger = logging.getLogger(__name__)
+
+
+async def _audit_write(request: Request, response, payload: Optional[dict]) -> None:
+    """Record one entry per successful write. A failure here must never affect the request."""
+    if request.method not in _WRITE_METHODS or not 200 <= response.status_code < 300:
+        return
+    try:
+        route = request.scope.get("route")
+        params = request.scope.get("path_params") or {}
+        await write_audit_log(
+            action="api_write",
+            entity_type=getattr(route, "path", request.url.path),
+            entity_id=",".join(str(v) for k, v in params.items() if "token" not in k) or "-",
+            actor_id=(payload or {}).get("sub") or "cron",
+            actor_role=(payload or {}).get("role") or "system",
+            actor_email=(payload or {}).get("email"),
+            details={
+                "method": request.method,
+                "status": response.status_code,
+                "ip": request.client.host if request.client else None,
+            },
+        )
+    except Exception:
+        logger.exception("Could not write audit entry for %s %s", request.method, request.url.path)
 
 
 def _normalize_path(path: str) -> str:
@@ -58,14 +95,15 @@ class JWTAuthMiddleware(BaseHTTPMiddleware):
         if is_public_api_route(request.method, path):
             return await call_next(request)
 
-        # Cron/internal reminder runner may authenticate via shared token
-        norm = _normalize_path(path)
-        if request.method == "POST" and norm == "/api/reminders/run":
+        # Scheduled jobs may authenticate via a shared token
+        if (request.method, _normalize_path(path)) in _CRON_ROUTES:
             cron_token = os.environ.get("REMINDER_CRON_TOKEN", "").strip()
             header_token = request.headers.get("X-Reminder-Token", "")
-            if cron_token and header_token and header_token == cron_token:
+            if tokens_match(cron_token, header_token):
                 request.state.jwt_payload = None
-                return await call_next(request)
+                response = await call_next(request)
+                await _audit_write(request, response, None)
+                return response
 
         auth = request.headers.get("Authorization")
         if not auth or not auth.startswith("Bearer "):
@@ -98,7 +136,17 @@ class JWTAuthMiddleware(BaseHTTPMiddleware):
             )
         user = await db.users.find_one(
             {"id": user_id},
-            {"_id": 0, "token_version": 1, "is_active": 1},
+            {
+                "_id": 0,
+                "token_version": 1,
+                "is_active": 1,
+                "is_approved": 1,
+                "role": 1,
+                "email": 1,
+                "country": 1,
+                "full_name": 1,
+                "driver_id": 1,
+            },
         )
         if not user:
             return JSONResponse(
@@ -127,5 +175,21 @@ class JWTAuthMiddleware(BaseHTTPMiddleware):
                 content={"detail": "Session expired or invalidated. Please sign in again."},
                 headers={"WWW-Authenticate": "Bearer"},
             )
-        request.state.jwt_payload = payload
-        return await call_next(request)
+        if user.get("role") != "GROUP_FLEET_MANAGER" and not user.get("is_approved", False):
+            return JSONResponse(
+                status_code=403,
+                content={"detail": "Account pending approval by a fleet manager"},
+                headers={"WWW-Authenticate": "Bearer"},
+            )
+        # The database is authoritative: role and country changes apply on the next request.
+        request.state.jwt_payload = {
+            **payload,
+            "role": user.get("role"),
+            "email": user.get("email"),
+            "country": user.get("country"),
+            "full_name": user.get("full_name"),
+            "driver_id": user.get("driver_id"),
+        }
+        response = await call_next(request)
+        await _audit_write(request, response, request.state.jwt_payload)
+        return response
