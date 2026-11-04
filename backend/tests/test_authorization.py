@@ -1667,3 +1667,94 @@ def test_a_reminder_slot_can_only_be_claimed_once():
     assert claim("pretrip:1") is True
     assert claim("pretrip:1") is False
     assert claim("pretrip:2") is True
+
+
+# --- Exchange rates ---
+def test_rates_never_touch_the_network_during_a_request(monkeypatch):
+    import currency_utils
+    from models import CurrencyEnum
+
+    def explode(*a, **k):
+        raise AssertionError("network call during a request")
+
+    monkeypatch.setattr(currency_utils.requests, "get", explode)
+    converter = currency_utils.CurrencyConverter()
+    assert converter.convert(11.64, CurrencyEnum.GHS) == 1.0
+    assert converter.convert(100, CurrencyEnum.USD) == 100
+    assert converter.get_rate(CurrencyEnum.USD, CurrencyEnum.GHS) == 11.64
+    assert converter.status()["GHS"]["source"] == "fallback"
+
+
+@pytest.mark.parametrize("bad", [0, -5, "12", None, True, float("nan"), float("inf"), 100.0, 1.0])
+def test_bad_rates_from_the_source_are_ignored(bad):
+    import currency_utils
+    from models import CurrencyEnum
+    converter = currency_utils.CurrencyConverter()
+    assert converter.apply_rates({"GHS": bad}, "now") == []
+    assert converter.get_rate(CurrencyEnum.USD, CurrencyEnum.GHS) == 11.64
+
+
+def test_good_rate_is_used_and_labelled_live():
+    import currency_utils
+    from models import CurrencyEnum
+    converter = currency_utils.CurrencyConverter()
+    assert converter.apply_rates({"GHS": 12.5}, "2026-11-04") == [CurrencyEnum.GHS]
+    assert converter.get_rate(CurrencyEnum.USD, CurrencyEnum.GHS) == 12.5
+    assert converter.status()["GHS"] == {"source": "live", "as_of": "2026-11-04"}
+
+
+def test_failed_refresh_keeps_current_rates(monkeypatch, fake_db):
+    import asyncio
+    import currency_utils
+    from models import CurrencyEnum
+
+    def down(*a, **k):
+        raise currency_utils.requests.ConnectionError()
+
+    monkeypatch.setattr(currency_utils.requests, "get", down)
+    converter = currency_utils.CurrencyConverter()
+    monkeypatch.setattr(currency_utils, "currency_converter", converter)
+    asyncio.run(currency_utils.refresh_rates(fake_db))
+    assert converter.get_rate(CurrencyEnum.USD, CurrencyEnum.GHS) == 11.64
+    assert fake_db.exchange_rates.docs == []
+
+
+def test_reading_current_rates_writes_nothing(client, fake_db):
+    response = client.get("/api/exchange-rates/current", headers=auth("fo_gh"))
+    assert response.status_code == 200 and set(response.json()["rates"]) == {"GHS", "LRD", "STN"}
+    assert "source" in response.json()["sources"]["GHS"]
+    assert fake_db.exchange_rates.docs == []
+
+
+@pytest.mark.parametrize("tire, expected", [
+    ({"purchase_cost": 450, "currency": "USD"}, 450),
+    ({"purchase_cost": 100, "currency": "GHS"}, 100),
+    ({"purchase_cost": 100}, 100),
+    ({"purchase_cost": None, "currency": "USD"}, 0),
+])
+def test_tire_cost_uses_the_tires_own_currency(tire, expected):
+    from models import CurrencyEnum
+    rate = 1.0 if tire.get("currency") == "USD" else server.currency_converter.get_rate(CurrencyEnum.GHS)
+    assert server._tire_cost_usd(tire) == round(expected * rate, 2)
+
+
+# --- Listing drivers does not write ---
+def test_listing_drivers_does_not_create_or_link_profiles(client, fake_db):
+    fake_db.users.docs.append({
+        "id": "legacy", "email": "legacy@example.com", "full_name": "L", "role": "DRIVER",
+        "country": "GH", "is_active": True, "is_approved": True, "token_version": 0, "driver_id": None,
+    })
+    before = len(fake_db.drivers.docs)
+    assert client.get("/api/drivers", headers=auth("fo_gh")).status_code == 200
+    assert len(fake_db.drivers.docs) == before
+    assert next(u for u in fake_db.users.docs if u["id"] == "legacy")["driver_id"] is None
+
+
+def test_weekly_report_uses_the_current_ghs_rate(client, fake_db, monkeypatch):
+    fake_db.fuel_transactions.docs.append({"id": "f1", "date": datetime.now(timezone.utc).isoformat(), "cost_usd": 100.0})
+    monkeypatch.setattr(server.currency_converter, "get_rate", lambda *a, **k: 11.5)
+    sent = []
+    monkeypatch.setattr(server.email_service, "send_weekly_summary_report", lambda to, data: sent.append(data) or True)
+    response = client.post("/api/reports/send-weekly", headers=auth("gfm"))
+    assert response.status_code == 200, response.text
+    assert sent[0]["fuel_cost_ghs"] == 1150.0

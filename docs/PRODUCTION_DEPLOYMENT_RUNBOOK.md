@@ -1130,6 +1130,8 @@ add_header Strict-Transport-Security "max-age=31536000" always;
 
 A `location` with its own `add_header` stops inheriting these headers, so repeat them there. Check with `curl -sI https://fleet.gtiholding.com/login`. The health route is `/health` on `127.0.0.1:8000`; it is not proxied by Nginx.
 
+**Exchange rates:** the API refreshes rates hourly in the background, so `.21` needs outbound HTTPS to `theratesapi.com`. Check with `curl -sS --max-time 10 'https://theratesapi.com/api/latest/?base=USD&symbols=GHS,LRD,STN'`. If it cannot connect, the app keeps working on its last saved rates, or on the fixed table in `backend/currency_utils.py` if none are saved, and logs `Could not refresh exchange rates`. `GET /api/exchange-rates/current` shows which is in use.
+
 **Phase 2 checklist** (on `.21`):
 
 1. Update `backend/.env`: `CORS_ORIGINS` and `FRONTEND_URL` → `https://fleet.gtiholding.com`

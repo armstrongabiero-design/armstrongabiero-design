@@ -5,6 +5,8 @@ import re
 from datetime import datetime, timezone, timedelta
 from typing import Any, Dict, List, Optional
 
+from pymongo.errors import DuplicateKeyError
+
 from country_utils import normalize_country_code
 
 
@@ -145,6 +147,16 @@ async def sync_approved_driver_profiles(db) -> int:
         elif profile and before is None:
             touched += 1
     return touched
+
+
+async def sync_driver_profiles_once_a_day(db) -> None:
+    """Run the backfill in one worker only: the fixed _id lets a single caller win each day."""
+    today = datetime.now(timezone.utc).date().isoformat()
+    try:
+        await db.job_claims.insert_one({"_id": f"driver_profile_sync:{today}"})
+    except DuplicateKeyError:
+        return
+    await sync_approved_driver_profiles(db)
 
 
 async def resolve_driver_display_names(db, driver_ids: List[str]) -> Dict[str, str]:

@@ -145,3 +145,4 @@ When changing the stack, update **this file** and the runbook together.
 | 2026-05-10 | Initial `CLAUDE.md` from live inventory (CentOS Stream 9 @ 192.168.135.21, identical cluster); greenfield app/Mongo/Nginx. |
 | 2026-05-10 | `PRODUCTION_DEPLOYMENT_RUNBOOK.md` aligned to CentOS Stream 9 (`dnf`, firewalld, SELinux). |
 | 2026-11-03 | Backend dependencies locked from `requirements.in`; `gunicorn` now included. JWTs use PyJWT. CI added in `.github/workflows/ci.yml`. |
+| 2026-11-04 | `forex-python` removed. The API host needs outbound HTTPS to `theratesapi.com` for live exchange rates, refreshed hourly in the background. |

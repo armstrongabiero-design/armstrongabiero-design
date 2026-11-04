@@ -5,7 +5,7 @@ boto3
 defusedxml
 email-validator
 fastapi
-forex-python
+requests
 google-genai
 gunicorn
 motor

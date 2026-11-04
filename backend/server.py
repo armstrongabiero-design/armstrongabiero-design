@@ -58,7 +58,7 @@ from auth_service import (
     create_access_token,
     tokens_match,
 )
-from currency_utils import currency_converter
+from currency_utils import currency_converter, load_saved_rates, refresh_rates
 from country_utils import normalize_country_code, country_filter_query
 from ai_services import ai_service, formula_resale_value
 from email_service import email_service
@@ -271,6 +271,27 @@ async def lifespan(app: FastAPI):
     except Exception as exc:
         logging.getLogger(__name__).warning("VRC expiry migration skipped: %s", exc)
 
+    try:
+        # Backfills older accounts. Approval creates the profile for new ones.
+        from driver_profile_service import sync_driver_profiles_once_a_day
+        await sync_driver_profiles_once_a_day(db)
+    except Exception as exc:
+        logging.getLogger(__name__).warning("Driver profile sync skipped: %s", exc)
+
+    async def _exchange_rate_loop():
+        try:
+            await load_saved_rates(db)
+        except Exception as exc:
+            logging.getLogger(__name__).warning("Could not load saved exchange rates: %s", exc)
+        while True:
+            try:
+                await refresh_rates(db)
+            except Exception as exc:
+                logging.getLogger(__name__).warning("Exchange rate refresh failed: %s", exc)
+            await asyncio.sleep(3600)
+
+    rates_task = asyncio.create_task(_exchange_rate_loop())
+
     reminder_task = None
     if os.environ.get("DRIVER_REMINDERS_ENABLED", "true").lower() not in ("0", "false", "no"):
         async def _reminder_loop():
@@ -308,6 +329,11 @@ async def lifespan(app: FastAPI):
     snapshot_task = asyncio.create_task(_availability_snapshot_loop())
 
     yield
+    rates_task.cancel()
+    try:
+        await rates_task
+    except asyncio.CancelledError:
+        pass
     if reminder_task:
         reminder_task.cancel()
         try:
@@ -933,12 +959,7 @@ async def bulk_upload_drivers(
 
 @api_router.get("/drivers", response_model=List[Driver])
 async def get_drivers(country: Optional[str] = None, current_user: dict = Depends(get_current_user)):
-    from driver_profile_service import sync_approved_driver_profiles
     if is_staff(current_user):
-        try:
-            await sync_approved_driver_profiles(db)
-        except Exception as exc:
-            logger.warning("Driver profile sync skipped: %s", exc)
         query = dict(country_query(current_user, country))
     else:
         query = {"id": {"$in": driver_identities(current_user)}}
@@ -3387,25 +3408,27 @@ async def delete_safety_incident(
     return {"message": "Safety incident deleted successfully"}
 
 
+def _tire_cost_usd(tire: dict) -> float:
+    try:
+        currency = CurrencyEnum(tire.get("currency"))
+    except ValueError:
+        currency = CurrencyEnum.GHS  # Older records have no currency and were always treated as GHS.
+    return currency_converter.convert(tire.get("purchase_cost") or 0, currency, CurrencyEnum.USD)
+
+
 # ============= EXCHANGE RATE ROUTES =============
 @api_router.get("/exchange-rates/current")
 async def get_current_rates():
-    rates = {}
-    for currency in [CurrencyEnum.GHS, CurrencyEnum.LRD, CurrencyEnum.STN]:
-        rate = currency_converter.get_rate(currency, CurrencyEnum.USD)
-        rates[currency.value] = rate
-        
-        # Store in database
-        exchange_rate = ExchangeRate(
-            from_currency=currency,
-            to_currency=CurrencyEnum.USD,
-            rate=rate
-        )
-        doc = exchange_rate.model_dump()
-        doc['date'] = doc['date'].isoformat()
-        await db.exchange_rates.insert_one(doc)
-    
-    return {"rates": rates, "base": "USD", "timestamp": datetime.utcnow().isoformat()}
+    rates = {
+        currency.value: currency_converter.get_rate(currency, CurrencyEnum.USD)
+        for currency in [CurrencyEnum.GHS, CurrencyEnum.LRD, CurrencyEnum.STN]
+    }
+    return {
+        "rates": rates,
+        "base": "USD",
+        "timestamp": datetime.utcnow().isoformat(),
+        "sources": currency_converter.status(),
+    }
 
 
 @api_router.get("/exchange-rates/history")
@@ -6388,7 +6411,7 @@ async def get_vehicle_tco(vehicle_id: str, period_days: int = 365, current_user:
         {"vehicle_id": vehicle_id},
         {"_id": 0, "purchase_cost": 1, "currency": 1}
     ).to_list(100)
-    tire_cost = sum(t.get('purchase_cost', 0) * 0.065 for t in tires)  # Convert to USD approx
+    tire_cost = sum(_tire_cost_usd(t) for t in tires)
     
     # Distance from logbook
     logbook = await db.driver_logbook.find(
@@ -6633,7 +6656,7 @@ async def send_weekly_report(current_user: dict = Depends(require_group_manager(
     
     # Costs
     fuel_cost_usd = await sum_field(db.fuel_transactions, week_query, "cost_usd")
-    ghs_rate = 12.0
+    ghs_rate = currency_converter.get_rate(CurrencyEnum.USD, CurrencyEnum.GHS)
     
     maintenance_cost_usd = await sum_field(
         db.maintenance_records, maintenance_on_or_after(start_date), "cost_usd"
