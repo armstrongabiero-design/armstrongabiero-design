@@ -122,3 +122,15 @@ credentials.json
 !.env.example
 !backend/.env.example
 !frontend/.env.example
+
+# Documents that describe security weaknesses (local only, never commit)
+docs/private/
+docs/**/RISK-*
+docs/**/*SECURITY_AUDIT*
+docs/**/*SECURITY-AUDIT*
+docs/**/*VULNERABILIT*
+docs/**/*PENTEST*
+
+# Test output and test logins (local only)
+test_reports/
+memory/test_credentials.md
