@@ -49,7 +49,7 @@ jobs:
           REACT_APP_BACKEND_URL: https://fleet.gtiholding.com
       # Set to critical because xlsx has a high advisory with no npm fix. Raise to high once it is resolved.
       - name: Known vulnerabilities in shipped packages
-        run: npm audit --omit=dev --audit-level=critical
+        run: npm audit --omit=dev --audit-level=high
 
   secrets:
     runs-on: ubuntu-latest
