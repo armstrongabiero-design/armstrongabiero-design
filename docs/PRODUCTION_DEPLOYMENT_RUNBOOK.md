@@ -1203,7 +1203,7 @@ Purpose: Nightly compressed dumps with retention.
 Importance: Recovery point objective for production data.
 
 ```cron
-15 2 * * * mongodump --uri="mongodb://mongoAdmin:Jrfleets%2F0772%21GTI@192.168.135.23:27017/?replicaSet=rs0&authSource=admin" --out=/var/backups/mongodb/$(date +\%F) --gzip && find /var/backups/mongodb -mindepth 1 -maxdepth 1 -type d -mtime +14 -exec rm -rf {} \;
+15 2 * * * mongodump --uri="mongodb://mongoAdmin:REPLACE_URL_ENCODED_ADMIN_PASSWORD@192.168.135.23:27017/?replicaSet=rs0&authSource=admin" --out=/var/backups/mongodb/$(date +\%F) --gzip && find /var/backups/mongodb -mindepth 1 -maxdepth 1 -type d -mtime +14 -exec rm -rf {} \;
 ```
 
 ### F2. Log rotation
@@ -1256,7 +1256,7 @@ sudo systemctl reload nginx
 | `Authentication failed` on `rs.initiate` for one peer                   | Key md5 mismatch **or** peer has no `security.keyFile` | Match md5 on all hosts; verify **B4** + restart                                  |
 | Log: **without a --keyFile parameter** on `.23`                         | `mongod.conf` missing `keyFile`                        | Re-apply **B4** on that host, `configCheck`, restart                             |
 | `sudo: a terminal is required` over SSH                                 | Remote `sudo` without TTY                              | `**ssh -t`** or run `install` in interactive SSH                                 |
-| `!GTI@…: event not found` in bash                                       | `!` in password with double quotes                     | Single-quote URI, URL-encode, or `--password` prompt                             |
+| `!…: event not found` in bash                                       | `!` in password with double quotes                     | Single-quote URI, URL-encode, or `--password` prompt                             |
 | `mongoAdmin` works, `fleetapp` `createUser` **requires authentication** | Normal after first user when auth enabled              | Create `**fleetapp` logged in as `mongoAdmin`** (D2b)                            |
 | Auth fails for both users after D3                                      | `fleetapp` never created, or wrong password            | Temporarily set `authorization: disabled`, fix users, re-enable D3               |
 | CORS errors in browser                                                  | `CORS_ORIGINS` ≠ browser origin                        | Match `http://192.168.135.21` or `https://fleet.gtiholding.com` exactly (E5) |

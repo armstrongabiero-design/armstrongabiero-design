@@ -110,7 +110,7 @@ There is **no** Nginx / MongoDB / app listener yet.
 - **Backend**: FastAPI, entry **`server:app`** (`backend/server.py`), env from **`backend/.env`** (see **`backend/.env.example`**). Requires **`MONGO_URL`**, **`JWT_SECRET_KEY`**, **`DB_NAME`**, production **`ENVIRONMENT`**, **`CORS_ORIGINS`**, **`FRONTEND_URL`**, optional **Resend** (`RESEND_API_KEY`, `SENDER_EMAIL`).
 - **Frontend**: React (Craco), **`REACT_APP_BACKEND_URL`** baked at **build time** — must match the **browser-visible** API URL (same-origin via Nginx `/api` proxy is recommended).
 - **Production public URL**: **`https://fleet.gtiholding.com`** — set **`CORS_ORIGINS`**, **`FRONTEND_URL`**, and **`REACT_APP_BACKEND_URL`** to that origin (no trailing slash). See **`docs/PRODUCTION_DOMAIN.md`**.
-- **Database**: MongoDB (Motor/PyMongo). **Python 3.9.25** on servers is acceptable if dependencies support it; if not, use **`python3.11`/`python3.12` modules** or **pyenv**—document the chosen path in the runbook.
+- **Database**: MongoDB (Motor/PyMongo). The system **Python 3.9.25** is too old: the locked backend packages need **3.10 or newer**. Use **`python3.11`** for the venv, as the runbook does.
 
 ---
 
