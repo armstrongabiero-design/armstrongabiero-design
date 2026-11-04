@@ -2,8 +2,9 @@
   "name": "gti-fleet",
   "version": "0.1.0",
   "private": true,
-  "description": "GTI Fleet \u2014 fleet management web application",
+  "description": "GTI Fleet — fleet management web application",
   "dependencies": {
+    "@fontsource/manrope": "^5.3.0",
     "@radix-ui/react-accordion": "^1.2.8",
     "@radix-ui/react-alert-dialog": "^1.1.11",
     "@radix-ui/react-aspect-ratio": "^1.1.4",

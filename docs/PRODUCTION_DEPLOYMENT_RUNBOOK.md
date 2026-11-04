@@ -985,6 +985,7 @@ server {
     add_header X-Frame-Options "SAMEORIGIN" always;
     add_header X-Content-Type-Options "nosniff" always;
     add_header Referrer-Policy "strict-origin-when-cross-origin" always;
+    add_header Content-Security-Policy-Report-Only "default-src 'self'; base-uri 'self'; object-src 'none'; frame-ancestors 'self'; img-src 'self' data: blob:; font-src 'self' data:; style-src 'self' 'unsafe-inline'; script-src 'self'; connect-src 'self'; frame-src 'self' blob:; media-src 'self' blob:; form-action 'self'" always;
 
     location /api/ {
         proxy_pass http://fleet_api;
@@ -1082,6 +1083,7 @@ server {
     add_header X-Frame-Options "SAMEORIGIN" always;
     add_header X-Content-Type-Options "nosniff" always;
     add_header Referrer-Policy "strict-origin-when-cross-origin" always;
+    add_header Content-Security-Policy-Report-Only "default-src 'self'; base-uri 'self'; object-src 'none'; frame-ancestors 'self'; img-src 'self' data: blob:; font-src 'self' data:; style-src 'self' 'unsafe-inline'; script-src 'self'; connect-src 'self'; frame-src 'self' blob:; media-src 'self' blob:; form-action 'self'" always;
 
     location /api/ {
         proxy_pass http://fleet_api;
@@ -1113,6 +1115,20 @@ EOF
 
 sudo nginx -t && sudo systemctl reload nginx
 ```
+
+**Security headers:** the Content Security Policy ships as `Content-Security-Policy-Report-Only`, which logs violations to the browser console and blocks nothing. To enforce it:
+
+1. Sign in as each role, open every page and a PDF, Word, Excel and image preview, with the console open.
+2. If `S3_BUCKET_NAME` is set, add the bucket origin to `connect-src`. Add `https://view.officeapps.live.com` to `frame-src` only if Office previews through Microsoft are wanted: they send a presigned file URL to Microsoft.
+3. When the console is free of `Content-Security-Policy` messages, rename the header to `Content-Security-Policy`.
+
+Once HTTPS has run cleanly for a week, add this to the 443 server block, starting at `max-age=300` if you want a shorter trial. Do not add `includeSubDomains` or `preload` unless every subdomain is HTTPS-ready:
+
+```nginx
+add_header Strict-Transport-Security "max-age=31536000" always;
+```
+
+A `location` with its own `add_header` stops inheriting these headers, so repeat them there. Check with `curl -sI https://fleet.gtiholding.com/login`. The health route is `/health` on `127.0.0.1:8000`; it is not proxied by Nginx.
 
 **Phase 2 checklist** (on `.21`):
 

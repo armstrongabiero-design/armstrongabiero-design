@@ -4745,6 +4745,31 @@ async def upload_safety_evidence(
     return entry
 
 
+@api_router.get("/safety/incidents/{incident_id}/evidence/{evidence_id}/file")
+async def get_safety_evidence_file(
+    incident_id: str,
+    evidence_id: str,
+    current_user: dict = Depends(get_current_user),
+):
+    incident = await db.safety_incidents.find_one({"id": incident_id}, {"_id": 0})
+    if not incident:
+        raise HTTPException(status_code=404, detail="Safety incident not found")
+    await assert_record_access(current_user, incident)
+    entry = next((f for f in incident.get("evidence_files") or [] if f.get("id") == evidence_id), None)
+    content = read_bytes(entry["s3_key"]) if entry and entry.get("s3_key") else None
+    if content is None:
+        raise HTTPException(status_code=404, detail="Evidence file not found")
+    media_type = entry.get("content_type") or "application/octet-stream"
+    return Response(
+        content=content,
+        media_type=media_type,
+        headers={
+            "Content-Disposition": content_disposition(entry.get("filename") or "evidence", media_type),
+            "X-Content-Type-Options": "nosniff",
+        },
+    )
+
+
 @api_router.get("/pre-trip-checklists/today/{driver_id}/{vehicle_id}")
 async def check_today_checklist(driver_id: str, vehicle_id: str, current_user: dict = Depends(get_current_user)):
     """Check if driver has completed today's checklist for the vehicle"""

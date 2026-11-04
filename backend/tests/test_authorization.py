@@ -1608,3 +1608,62 @@ def test_vehicle_save_does_not_take_over_another_countrys_master(client, fake_db
     new_id = asyncio.run(upsert_master_from_vehicle(fake_db, vehicle))
     assert new_id != "m_lr"
     assert fake_db.vehicle_masters.docs[0]["make"] == "Keep" and fake_db.vehicle_masters.docs[0]["country"] == "LR"
+
+
+# --- Safety evidence files ---
+def _incident_with_evidence(fake_db, monkeypatch, country="GH", driver="d_gh"):
+    monkeypatch.setattr(server, "read_bytes", lambda key: b"evidence-bytes" if key == "k_ev" else None)
+    fake_db.safety_incidents.docs.append({
+        "id": "inc1", "country": country, "driver_id": driver, "vehicle_id": "v_gh",
+        "evidence_files": [
+            {"id": "ev1", "filename": "photo.png", "content_type": "image/png", "s3_key": "k_ev"},
+            {"id": "ev_gone", "filename": "x.png", "content_type": "image/png", "s3_key": "missing"},
+        ],
+    })
+    return "/api/safety/incidents/inc1/evidence/ev1/file"
+
+
+@pytest.mark.parametrize("user", ["gfm", "fm_gh", "fo_gh", "driver_gh"])
+def test_evidence_opens_for_those_who_can_see_the_incident(client, fake_db, monkeypatch, user):
+    response = client.get(_incident_with_evidence(fake_db, monkeypatch), headers=auth(user))
+    assert response.status_code == 200 and response.content == b"evidence-bytes"
+    assert response.headers["x-content-type-options"] == "nosniff"
+
+
+@pytest.mark.parametrize("user", ["fo_lr", "driver2_gh", "user_gh", "fo_none"])
+def test_evidence_is_refused_to_everyone_else(client, fake_db, monkeypatch, user):
+    assert client.get(_incident_with_evidence(fake_db, monkeypatch), headers=auth(user)).status_code == 403
+
+
+def test_evidence_needs_a_login(client, fake_db, monkeypatch):
+    assert client.get(_incident_with_evidence(fake_db, monkeypatch)).status_code == 401
+
+
+def test_evidence_id_must_belong_to_the_incident_and_exist(client, fake_db, monkeypatch):
+    _incident_with_evidence(fake_db, monkeypatch)
+    base = "/api/safety/incidents/inc1/evidence"
+    assert client.get(f"{base}/other/file", headers=auth("gfm")).status_code == 404
+    assert client.get(f"{base}/ev_gone/file", headers=auth("gfm")).status_code == 404
+    assert client.get("/api/safety/incidents/none/evidence/ev1/file", headers=auth("gfm")).status_code == 404
+
+
+# --- Driver reminders ---
+def test_a_reminder_slot_can_only_be_claimed_once():
+    import asyncio
+    from pymongo.errors import DuplicateKeyError
+    import driver_reminders
+
+    class Log:
+        def __init__(self):
+            self.ids = set()
+
+        async def insert_one(self, doc):
+            if doc["_id"] in self.ids:
+                raise DuplicateKeyError("duplicate")
+            self.ids.add(doc["_id"])
+
+    db = SimpleNamespace(reminder_send_log=Log())
+    claim = lambda slot: asyncio.run(driver_reminders._claim_slot(db, "d", "v", "2026-11-03", slot))
+    assert claim("pretrip:1") is True
+    assert claim("pretrip:1") is False
+    assert claim("pretrip:2") is True

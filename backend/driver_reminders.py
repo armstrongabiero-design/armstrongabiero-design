@@ -13,6 +13,8 @@ from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional, Tuple
 from zoneinfo import ZoneInfo
 
+from pymongo.errors import DuplicateKeyError
+
 from country_utils import country_filter_query, normalize_country_code
 from models.reminders import (
     COUNTRY_TIMEZONES,
@@ -172,16 +174,22 @@ async def _already_sent_this_slot(
     return existing is not None
 
 
-async def _mark_sent(db, driver_id: str, vehicle_id: str, local_date: str, slot_key: str) -> None:
-    await db.reminder_send_log.insert_one(
-        {
-            "driver_id": driver_id,
-            "vehicle_id": vehicle_id,
-            "local_date": local_date,
-            "slot_key": slot_key,
-            "sent_at": datetime.now(timezone.utc).isoformat(),
-        }
-    )
+async def _claim_slot(db, driver_id: str, vehicle_id: str, local_date: str, slot_key: str) -> bool:
+    """Reserve a slot before sending. The fixed _id lets only one worker win it."""
+    try:
+        await db.reminder_send_log.insert_one(
+            {
+                "_id": f"{driver_id}:{vehicle_id}:{local_date}:{slot_key}",
+                "driver_id": driver_id,
+                "vehicle_id": vehicle_id,
+                "local_date": local_date,
+                "slot_key": slot_key,
+                "sent_at": datetime.now(timezone.utc).isoformat(),
+            }
+        )
+    except DuplicateKeyError:
+        return False
+    return True
 
 
 async def _create_in_app(
@@ -270,7 +278,10 @@ async def run_reminder_pass(db, email_service, frontend_url: str = "") -> Dict[s
                     stats["skipped_complete"] += 1
                     continue
 
-                if await _already_sent_this_slot(db, driver_id, vehicle_id, local_date, slot_key):
+                # The lookup also honours entries written before slots had a fixed _id.
+                if await _already_sent_this_slot(
+                    db, driver_id, vehicle_id, local_date, slot_key
+                ) or not await _claim_slot(db, driver_id, vehicle_id, local_date, slot_key):
                     stats["skipped_slot"] += 1
                     continue
 
@@ -290,7 +301,6 @@ async def run_reminder_pass(db, email_service, frontend_url: str = "") -> Dict[s
                         },
                     )
 
-                await _mark_sent(db, driver_id, vehicle_id, local_date, slot_key)
                 stats["reminders_sent"] += 1
 
     return stats

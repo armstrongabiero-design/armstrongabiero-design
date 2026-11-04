@@ -1,6 +1,6 @@
 import React, { useEffect, useState } from 'react';
 import axios from 'axios';
-import { Plus, AlertTriangle, Pencil, Trash2, Paperclip, ExternalLink } from 'lucide-react';
+import { Plus, AlertTriangle, Pencil, Trash2, Paperclip } from 'lucide-react';
 import { toast } from 'sonner';
 import { useAuth } from '../contexts/AuthContext';
 import { Button } from '../components/ui/button';
@@ -10,6 +10,7 @@ import { Label } from '../components/ui/label';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '../components/ui/select';
 import { Textarea } from '../components/ui/textarea';
 import ConfirmDeleteDialog from '../components/ConfirmDeleteDialog';
+import FilePreviewModal from '../components/FilePreviewModal';
 import { canEditFleetRecord, canHardDelete } from '../utils/permissions';
 import { safetyScoreTextClass, safetyScoreBarClass, safetyScoreLabel } from '../utils/safetyScore';
 
@@ -41,7 +42,7 @@ const incidentToFormData = (incident) => ({
 });
 
 const Safety = () => {
-  const { user } = useAuth();
+  const { user, token } = useAuth();
   const canEdit = canEditFleetRecord(user?.role);
   const canDelete = canHardDelete(user?.role, 'safety_incident');
 
@@ -57,6 +58,7 @@ const Safety = () => {
   const [formData, setFormData] = useState(createInitialFormData);
   const [pendingEvidence, setPendingEvidence] = useState([]);
   const [evidenceDialog, setEvidenceDialog] = useState(null);
+  const [evidencePreview, setEvidencePreview] = useState(null);
   const [evidenceUploading, setEvidenceUploading] = useState(false);
 
   useEffect(() => {
@@ -164,12 +166,6 @@ const Safety = () => {
     } finally {
       setEvidenceUploading(false);
     }
-  };
-
-  const evidenceUrl = (file) => {
-    const ref = file.file_url || '';
-    if (ref.startsWith('http')) return ref;
-    return `${BACKEND_URL}${ref.startsWith('/') ? '' : '/'}${ref}`;
   };
 
   const handleDelete = async () => {
@@ -350,14 +346,17 @@ const Safety = () => {
                 {evidenceDialog.evidence_files.map((file) => (
                   <li key={file.id} className="flex items-center justify-between text-sm border rounded p-2">
                     <span className="truncate mr-2">{file.filename}</span>
-                    <a
-                      href={evidenceUrl(file)}
-                      target="_blank"
-                      rel="noopener noreferrer"
-                      className="text-amber-700 inline-flex items-center gap-1 shrink-0"
+                    <button
+                      type="button"
+                      onClick={() => setEvidencePreview({
+                        url: `/api/safety/incidents/${evidenceDialog.id}/evidence/${file.id}/file`,
+                        filename: file.filename,
+                        contentType: file.content_type,
+                      })}
+                      className="text-amber-700 shrink-0"
                     >
-                      View <ExternalLink size={14} />
-                    </a>
+                      View
+                    </button>
                   </li>
                 ))}
               </ul>
@@ -377,6 +376,16 @@ const Safety = () => {
           </div>
         </DialogContent>
       </Dialog>
+
+      <FilePreviewModal
+        open={!!evidencePreview}
+        onOpenChange={(open) => !open && setEvidencePreview(null)}
+        url={evidencePreview?.url}
+        filename={evidencePreview?.filename}
+        contentType={evidencePreview?.contentType}
+        title="Incident evidence"
+        authToken={token}
+      />
 
       <ConfirmDeleteDialog
         open={!!deleteTarget}
