@@ -1134,6 +1134,10 @@ A `location` with its own `add_header` stops inheriting these headers, so repeat
 
 **Exchange rates:** the API refreshes rates hourly in the background, so `.21` needs outbound HTTPS to `theratesapi.com`. Check with `curl -sS --max-time 10 'https://theratesapi.com/api/latest/?base=USD&symbols=GHS,LRD,STN'`. If it cannot connect, the app keeps working on its last saved rates, or on the fixed table in `backend/currency_utils.py` if none are saved, and logs `Could not refresh exchange rates`. `GET /api/exchange-rates/current` shows which is in use.
 
+**Live GPS (Fleet Map):** the API reads vehicle positions from ProTrack365 every 30 seconds, so `.21` needs outbound HTTPS to `api.protrack365.com`. Set `PROTRACK_ACCOUNT` and `PROTRACK_PASSWORD_MD5` in `backend/.env` (see `.env.example`), then restart `fleet-api`. Check the connection with `curl -sS --max-time 10 'https://api.protrack365.com/api/authorization?time=0&account=x&signature=x'`: any JSON reply means it can connect. If ProTrack cannot be reached, the map keeps the last positions and shows managers a banner.
+
+**Map tiles:** build the frontend with `REACT_APP_MAP_TILE_URL` (and `REACT_APP_MAP_ATTRIBUTION`) set to a tile provider licensed for business use, and add that provider's host to `img-src` in the Content-Security-Policy above, for example `img-src 'self' data: blob: https://api.maptiler.com;`. Without it the map shows grey squares, and the browser console reports `Content-Security-Policy` violations. OpenStreetMap's own tile servers must not be used in production.
+
 **Phase 2 checklist** (on `.21`):
 
 1. Update `backend/.env`: `CORS_ORIGINS` and `FRONTEND_URL` → `https://fleet.gtiholding.com`

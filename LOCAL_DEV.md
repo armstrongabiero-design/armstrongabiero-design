@@ -114,10 +114,29 @@ More detail: [`docs/side_doc/LOCAL_DEV.md`](docs/side_doc/LOCAL_DEV.md)
 From the **repository root**, with dev tools installed (`pip install -r backend/requirements-dev.txt`):
 
 ```bash
-pytest backend/tests/test_authorization.py   # no database or running server needed
+pytest backend/tests/test_authorization.py backend/tests/test_protrack.py   # no database or running server needed
 ```
 
 Plain `pytest` also runs the older live-API tests, which skip unless `REACT_APP_BACKEND_URL` and test logins are set. See `backend/tests/http_helpers.py`.
+
+## Fleet Map with simulated GPS
+
+`backend/tests/protrack_mock.py` stands in for the ProTrack365 API, with vehicles driving around Accra, Monrovia and São Tomé. To use it, run it beside the backend:
+
+```bash
+cd backend
+PROTRACK_MOCK_PLATES="GR-1234-20,LR-A-1001" uvicorn tests.protrack_mock:app --port 8765
+```
+
+Then add to `backend/.env` and restart the backend:
+
+```
+PROTRACK_BASE_URL=http://127.0.0.1:8765
+PROTRACK_ACCOUNT=mock
+PROTRACK_PASSWORD_MD5=<md5 of mockpass>      # macOS: printf mockpass | md5
+```
+
+Set `PROTRACK_MOCK_PLATES` to registration numbers of vehicles in your local database. Matching plates are linked automatically within 10 minutes, or straight away with **Trackers → Sync from ProTrack** on the Fleet Map. To use the real ProTrack account instead, remove `PROTRACK_BASE_URL` and set the real account and password md5.
 
 ## Updating dependencies
 
