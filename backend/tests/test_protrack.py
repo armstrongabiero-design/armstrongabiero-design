@@ -162,6 +162,23 @@ def test_device_sync_links_by_plate_and_respects_manual_choices(protrack, fake_d
     assert tracker["vehicle_id"] is None  # a manager's unlink is not undone
 
 
+@pytest.mark.parametrize("plate,name,expected", [
+    ("GS 4548-25", "anything", ("v1", "auto")),
+    ("", "Hilux_GS 4548-25", ("v1", "auto_name")),
+    ("", "Bike_GE 2767_24", ("v2", "auto_name")),          # underscore instead of a dash
+    ("", "BikeM_26-GR5713", ("v3", "auto_name")),          # motorbike plate
+    ("", "Prado_GR 926_22", ("v4", "auto_name")),
+    ("", "Liberia_1", (None, None)),
+    ("", "YEA Bike", (None, None)),
+    ("", "Hilux_GS 4548-25 and GE 2767-24", (None, None)),  # two vehicles: leave it to a person
+    ("XX 0000-00", "Hilux_GS 4548-25", (None, None)),    # a wrong plate in ProTrack is not overridden by the name
+])
+def test_trackers_match_vehicles_by_plate_or_device_name(plate, name, expected):
+    vehicles = {"v1": "GS 4548-25", "v2": "GE 2767-24", "v3": "M-26-GR 5713", "v4": "GR 926-22"}
+    plates = {tracking_service.normalize_plate(reg): [vid] for vid, reg in vehicles.items()}
+    assert tracking_service.match_vehicle(plate, name, plates) == expected
+
+
 def test_poll_feeds_the_country_scoped_map(protrack, fake_db, client):
     run(tracking_service.run_cycle(fake_db))
     gh = client.get("/api/vehicle-locations", headers=auth("fo_gh")).json()

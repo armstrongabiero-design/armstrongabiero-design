@@ -14,7 +14,10 @@ const NONE = '__none__';
 const statusOf = (t) => {
   if (t.missing_from_protrack) return { label: 'Removed from ProTrack', className: 'bg-slate-100 text-slate-600' };
   if (!t.vehicle_id) return { label: 'Not linked', className: 'bg-red-100 text-red-700' };
-  if (!t.confirmed) return { label: 'Matched by plate', className: 'bg-amber-100 text-amber-800' };
+  if (!t.confirmed) {
+    const how = t.link_source === 'auto_name' ? 'Matched by name' : 'Matched by plate';
+    return { label: how, className: 'bg-amber-100 text-amber-800' };
+  }
   return { label: 'Linked', className: 'bg-green-100 text-green-800' };
 };
 
@@ -102,8 +105,8 @@ export default function TrackerManager({ open, onOpenChange, vehicles, onChanged
         <DialogHeader>
           <DialogTitle>GPS trackers</DialogTitle>
           <DialogDescription>
-            Trackers come from ProTrack. Those whose plate number matches a vehicle are linked automatically; confirm
-            each match once, or choose the right vehicle.
+            Trackers come from ProTrack. Those whose plate number, or device name, contains a vehicle's registration
+            are linked automatically; confirm each match once, or choose the right vehicle.
           </DialogDescription>
         </DialogHeader>
 

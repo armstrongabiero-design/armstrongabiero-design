@@ -142,6 +142,28 @@ async def _set_status(db, **fields: Any) -> None:
     await db.integration_status.update_one({"_id": STATUS_ID}, {"$set": fields}, upsert=True)
 
 
+MIN_NAME_MATCH_LENGTH = 6  # shorter registrations could appear inside unrelated names
+
+
+def match_vehicle(plate: str, device_name: str, plates: Dict[str, List[str]]) -> Tuple[Optional[str], Optional[str]]:
+    """The one vehicle a tracker belongs to, from its ProTrack plate, else from its device name.
+
+    GTI's trackers often have no plate in ProTrack but carry it in the name, e.g. "Hilux_GS 4548-25".
+    Returns (vehicle_id, "auto" | "auto_name"), or (None, None) when there is no single match.
+    """
+    if normalize_plate(plate):
+        # A plate that matches no vehicle may be a typo; the name must not override it.
+        by_plate = plates.get(normalize_plate(plate), [])
+        return (by_plate[0], "auto") if len(by_plate) == 1 else (None, None)
+    name = normalize_plate(device_name)
+    found = [key for key in plates if len(key) >= MIN_NAME_MATCH_LENGTH and key in name]
+    if not found:
+        return None, None
+    longest = max(len(key) for key in found)
+    best = [vid for key in found if len(key) == longest for vid in plates[key]]
+    return (best[0], "auto_name") if len(best) == 1 else (None, None)
+
+
 async def sync_devices(db) -> Dict[str, int]:
     """Copy ProTrack's tracker list and link new trackers to vehicles with the same plate."""
     body = await protrack_client.call(db, "/api/device/list")
@@ -177,10 +199,10 @@ async def sync_devices(db) -> Dict[str, int]:
         current = existing.get(imei) or {}
         # Only trackers nobody has decided on yet are matched automatically.
         if not current.get("vehicle_id") and not current.get("link_source"):
-            matches = plates.get(normalize_plate(fields["protrack_plate"]), [])
-            if len(matches) == 1 and matches[0] not in taken:
-                fields.update(vehicle_id=matches[0], link_source="auto", confirmed=False, linked_at=now_iso)
-                taken.add(matches[0])
+            vehicle_id, source = match_vehicle(fields["protrack_plate"], fields["device_name"], plates)
+            if vehicle_id and vehicle_id not in taken:
+                fields.update(vehicle_id=vehicle_id, link_source=source, confirmed=False, linked_at=now_iso)
+                taken.add(vehicle_id)
                 linked += 1
         await db.trackers.update_one({"_id": imei}, {"$set": fields}, upsert=True)
     for imei in set(existing) - seen:
