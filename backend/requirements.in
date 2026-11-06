@@ -1,6 +1,6 @@
 # Packages the backend imports directly. Change this file, then regenerate
 # requirements.txt: see "Updating dependencies" in LOCAL_DEV.md.
-bcrypt<4.1
+bcrypt<5.1
 boto3
 defusedxml
 email-validator
