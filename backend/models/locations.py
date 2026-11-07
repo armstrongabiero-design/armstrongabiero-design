@@ -34,3 +34,8 @@ class VehicleLocationCreate(BaseModel):
     heading: Optional[float] = None
     source: str = "MANUAL"
     driver_id: Optional[str] = None
+
+
+class TrackerLinkUpdate(BaseModel):
+    """Link a GPS tracker to a vehicle; null unlinks it."""
+    vehicle_id: Optional[str] = None

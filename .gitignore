@@ -134,3 +134,7 @@ docs/**/*PENTEST*
 # Test output and test logins (local only)
 test_reports/
 memory/test_credentials.md
+
+# Self-hosted map file (large; served by Nginx from /var/www/fleet-maps, see the runbook)
+frontend/public/maps/
+*.pmtiles

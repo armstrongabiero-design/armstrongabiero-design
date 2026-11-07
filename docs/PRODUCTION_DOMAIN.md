@@ -11,7 +11,7 @@ This is the **canonical public URL** for GTI Fleet Solutions in production. All 
 | Admin bootstrap UI | `https://fleet.gtiholding.com/admin-register` |
 | Password reset links | `https://fleet.gtiholding.com/reset-password?token=...` |
 
-Nginx terminates TLS and proxies `/api` to `127.0.0.1:8000`. The React build must use the **same origin** for API calls:
+The GTI proxy at `192.168.135.200`, run by a separate team, terminates TLS and forwards to Nginx on `192.168.135.21` over HTTP. Nginx serves the app and proxies `/api` to `127.0.0.1:8000` (see runbook E9b). The React build must use the **same origin** for API calls:
 
 ```bash
 export REACT_APP_BACKEND_URL="https://fleet.gtiholding.com"
@@ -35,8 +35,8 @@ Rules:
 
 ## DNS and TLS
 
-1. **DNS:** `fleet.gtiholding.com` → public IP of the app server (or your load balancer in front of `192.168.135.21`).
-2. **Certificate:** Issue for `fleet.gtiholding.com` (Let’s Encrypt or corporate CA). Update Nginx `server_name` and run Certbot against this name (see [`PRODUCTION_DEPLOYMENT_RUNBOOK.md`](PRODUCTION_DEPLOYMENT_RUNBOOK.md)).
+1. **DNS:** `fleet.gtiholding.com` → the GTI proxy's public address. Managed by the proxy team.
+2. **Certificate:** Issued for `fleet.gtiholding.com` and installed on the proxy, by the proxy team. `.21` has no certificate. Nginx on `.21` must list `fleet.gtiholding.com` in `server_name` and trust the proxy's `X-Forwarded-For` (see [`PRODUCTION_DEPLOYMENT_RUNBOOK.md`](PRODUCTION_DEPLOYMENT_RUNBOOK.md) E9b).
 3. **Internal access:** Until DNS is public, you can test with `/etc/hosts` pointing `fleet.gtiholding.com` at `192.168.135.21` (Phase 1 HTTP) before enabling HTTPS.
 
 ## What to take note of after the domain change

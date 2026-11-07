@@ -19,7 +19,7 @@ jobs:
       - name: Install dependencies
         run: pip install -r backend/requirements-dev.txt
       - name: Authorization and security tests
-        run: pytest backend/tests/test_authorization.py
+        run: pytest backend/tests/test_authorization.py backend/tests/test_protrack.py
       - name: Undefined names
         run: |
           ! python -m pyflakes backend/*.py backend/models/*.py | grep -E "undefined name"

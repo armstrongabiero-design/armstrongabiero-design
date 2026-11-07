@@ -59,6 +59,8 @@ from auth_service import (
     tokens_match,
 )
 from currency_utils import currency_converter, load_saved_rates, refresh_rates
+import tracking_service
+from protrack_client import ProTrackError, ProTrackNotConfigured
 from country_utils import normalize_country_code, country_filter_query
 from ai_services import ai_service, formula_resale_value
 from email_service import email_service
@@ -93,6 +95,7 @@ from models import (
     TCORecord, ComplianceCheck, ComplianceStatus, ExpenseCategory,
     ForgotPasswordRequest, ResetPasswordRequest, PasswordResetToken
 )
+from models.locations import TrackerLinkUpdate
 from models.vehicle_master import (
     VEHICLE_MASTER_COLUMNS,
     VehicleMaster,
@@ -328,7 +331,17 @@ async def lifespan(app: FastAPI):
 
     snapshot_task = asyncio.create_task(_availability_snapshot_loop())
 
+    tracking_task = None
+    if os.environ.get("GPS_TRACKING_ENABLED", "true").lower() not in ("0", "false", "no"):
+        tracking_task = asyncio.create_task(tracking_service.tracking_loop(db))
+
     yield
+    if tracking_task:
+        tracking_task.cancel()
+        try:
+            await tracking_task
+        except asyncio.CancelledError:
+            pass
     rates_task.cancel()
     try:
         await rates_task
@@ -6361,7 +6374,10 @@ async def get_vehicle_locations(country: Optional[str] = None, current_user: dic
                 "status": vehicle.get('status'),
                 **last_loc
             })
-    
+
+    drivers = await tracking_service.recent_drivers(db, [loc["vehicle_id"] for loc in locations])
+    for loc in locations:
+        loc.update(drivers.get(loc["vehicle_id"], {}))
     return locations
 
 
@@ -6377,6 +6393,158 @@ async def get_vehicle_location_history(vehicle_id: str, hours: int = 24, current
     ).sort("timestamp", -1).to_list(1000)
     
     return locations
+
+
+# ============= GPS TRACKING (PROTRACK) =============
+def _protrack_http_error(exc: ProTrackError) -> HTTPException:
+    if isinstance(exc, ProTrackNotConfigured):
+        return HTTPException(status_code=503, detail="GPS tracking is not configured")
+    return HTTPException(status_code=502, detail=str(exc))
+
+
+@api_router.get("/tracking/status")
+async def get_tracking_status(current_user: dict = Depends(_require_staff)):
+    """Health of the ProTrack connection, for the map's status banner. Counts cover the user's countries."""
+    status = await tracking_service.get_status(db)
+    vehicles = await db.vehicles.find(
+        country_query(current_user), {"_id": 0, "id": 1, "last_location": 1}
+    ).to_list(10000)
+    reporting = {v["id"] for v in vehicles if (v.get("last_location") or {}).get("imei")}
+    linked = await db.trackers.find(
+        {"vehicle_id": {"$in": [v["id"] for v in vehicles]}}, {"_id": 0, "vehicle_id": 1}
+    ).to_list(10000)
+    status["trackers_linked"] = len(linked)
+    status["trackers_without_position"] = len([t for t in linked if t["vehicle_id"] not in reporting])
+    if not is_group_manager(current_user):
+        status["trackers_total"] = None  # GTI-wide device count is for group managers
+    return status
+
+
+@api_router.get("/vehicle-locations/{vehicle_id}/route")
+async def get_vehicle_route(
+    vehicle_id: str,
+    start: datetime,
+    end: datetime,
+    current_user: dict = Depends(_require_staff),
+):
+    """GPS route between two times, fetched from ProTrack on demand and not stored."""
+    await assert_vehicle_scope(current_user, vehicle_id)
+    start = start if start.tzinfo else start.replace(tzinfo=timezone.utc)
+    end = end if end.tzinfo else end.replace(tzinfo=timezone.utc)
+    now = datetime.now(timezone.utc)
+    end = min(end, now)
+    if end <= start:
+        raise HTTPException(status_code=400, detail="The end time must be after the start time")
+    if end - start > timedelta(days=tracking_service.MAX_ROUTE_DAYS):
+        raise HTTPException(
+            status_code=400, detail=f"Choose a period of {tracking_service.MAX_ROUTE_DAYS} days or less"
+        )
+    tracker = await db.trackers.find_one({"vehicle_id": vehicle_id}, {"_id": 0, "imei": 1})
+    if not tracker:
+        raise HTTPException(status_code=404, detail="No GPS tracker is linked to this vehicle")
+    try:
+        route = await tracking_service.fetch_route(
+            db, tracker["imei"], int(start.timestamp()), int(end.timestamp())
+        )
+    except ProTrackError as exc:
+        raise _protrack_http_error(exc)
+    return {"vehicle_id": vehicle_id, "start": start.isoformat(), "end": end.isoformat(), **route}
+
+
+async def _tracker_view(tracker: dict, vehicles: dict) -> dict:
+    vehicle = vehicles.get(tracker.get("vehicle_id")) or {}
+    return {
+        "imei": tracker.get("imei"),
+        "device_name": tracker.get("device_name"),
+        "device_type": tracker.get("device_type"),
+        "protrack_plate": tracker.get("protrack_plate"),
+        "vehicle_id": tracker.get("vehicle_id"),
+        "registration_number": vehicle.get("registration_number"),
+        "country": vehicle.get("country"),
+        "link_source": tracker.get("link_source"),
+        "confirmed": bool(tracker.get("confirmed")),
+        "platform_expires_at": tracker.get("platform_expires_at"),
+        "missing_from_protrack": bool(tracker.get("missing_from_protrack")),
+    }
+
+
+@api_router.get("/trackers")
+async def list_trackers(current_user: dict = Depends(require_manager())):
+    """ProTrack trackers and the vehicle each is linked to. Unlinked ones are shown to every manager."""
+    vehicles = {
+        v["id"]: v
+        for v in await db.vehicles.find(
+            {}, {"_id": 0, "id": 1, "registration_number": 1, "country": 1}
+        ).to_list(10000)
+    }
+    rows = []
+    for tracker in await db.trackers.find({}, {"_id": 0}).to_list(10000):
+        vehicle = vehicles.get(tracker.get("vehicle_id"))
+        if vehicle and not is_group_manager(current_user) and not same_country(
+            vehicle.get("country"), current_user.get("country")
+        ):
+            continue
+        rows.append(await _tracker_view(tracker, vehicles))
+    rows.sort(key=lambda r: (r["vehicle_id"] is not None and r["confirmed"], r.get("protrack_plate") or "", r["imei"]))
+    return rows
+
+
+@api_router.put("/trackers/{imei}")
+async def update_tracker_link(
+    imei: str, body: TrackerLinkUpdate, current_user: dict = Depends(require_manager())
+):
+    """Link a tracker to a vehicle (or unlink it). Saving an automatic match confirms it."""
+    tracker = await db.trackers.find_one({"imei": imei}, {"_id": 0})
+    if not tracker:
+        raise HTTPException(status_code=404, detail="Tracker not found")
+    if tracker.get("vehicle_id"):
+        await assert_vehicle_scope(current_user, tracker["vehicle_id"])
+    now_iso = datetime.now(timezone.utc).isoformat()
+    if body.vehicle_id:
+        await assert_vehicle_scope(current_user, body.vehicle_id)
+        other = await db.trackers.find_one({"vehicle_id": body.vehicle_id}, {"_id": 0, "imei": 1})
+        if other and other["imei"] != imei:
+            raise HTTPException(status_code=409, detail="That vehicle already has a tracker linked")
+        update = {
+            "vehicle_id": body.vehicle_id, "link_source": "manual", "confirmed": True,
+            "linked_at": now_iso, "linked_by": current_user.get("id"),
+        }
+    else:
+        # "manual" with no vehicle stops the automatic plate match from relinking it.
+        update = {"vehicle_id": None, "link_source": "manual", "confirmed": True,
+                  "linked_at": now_iso, "linked_by": current_user.get("id")}
+    previous_vehicle = tracker.get("vehicle_id")
+    await db.trackers.update_one({"imei": imei}, {"$set": update})
+    if previous_vehicle and previous_vehicle != body.vehicle_id:
+        # The old vehicle's GPS position no longer comes from this tracker.
+        await db.vehicles.update_one(
+            {"id": previous_vehicle, "last_location.imei": imei}, {"$set": {"last_location": None}}
+        )
+    await write_audit_log(
+        action="tracker_link", entity_type="tracker", entity_id=imei,
+        actor_id=current_user.get("id"), actor_role=current_user.get("role"),
+        actor_email=current_user.get("email"),
+        details={"from_vehicle": previous_vehicle, "to_vehicle": body.vehicle_id},
+    )
+    vehicles = {
+        v["id"]: v
+        for v in await db.vehicles.find(
+            {"id": {"$in": [body.vehicle_id] if body.vehicle_id else []}},
+            {"_id": 0, "id": 1, "registration_number": 1, "country": 1},
+        ).to_list(1)
+    }
+    return await _tracker_view({**tracker, **update}, vehicles)
+
+
+@api_router.post("/trackers/sync")
+async def sync_trackers_now(current_user: dict = Depends(require_manager())):
+    """Fetch ProTrack's tracker list now instead of waiting for the next scheduled sync."""
+    if not await tracking_service.protrack_client.acquire_lease(db, "protrack_device_sync_manual", 30):
+        raise HTTPException(status_code=429, detail="A sync ran moments ago. Try again in 30 seconds.")
+    try:
+        return await tracking_service.sync_devices(db)
+    except ProTrackError as exc:
+        raise _protrack_http_error(exc)
 
 
 # ============= TCO (TOTAL COST OF OWNERSHIP) ROUTES =============

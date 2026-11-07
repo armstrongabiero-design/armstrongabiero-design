@@ -104,6 +104,9 @@ class _Collection:
         return None
 
     async def insert_one(self, doc):
+        if "_id" in doc and any(d.get("_id") == doc["_id"] for d in self.docs):
+            from pymongo.errors import DuplicateKeyError
+            raise DuplicateKeyError("duplicate _id")
         self.docs.append(dict(doc))
         return SimpleNamespace(inserted_id=str(uuid.uuid4()))
 
