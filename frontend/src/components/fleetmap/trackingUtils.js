@@ -1,11 +1,15 @@
 import { formatDistanceToNowStrict } from 'date-fns';
 
-// Map tiles. Production must set a provider licensed for business use and add its host to the
-// Nginx Content-Security-Policy img-src. OpenStreetMap's own servers are for development only.
-export const TILE_URL = process.env.REACT_APP_MAP_TILE_URL || 'https://tile.openstreetmap.org/{z}/{x}/{y}.png';
+// Background map. By default it is the self-hosted Protomaps file that Nginx serves from /maps/,
+// so map requests never leave GTI's servers and the CSP stays 'self'. Setting
+// REACT_APP_MAP_TILE_URL switches to a raster tile service instead (for local development,
+// https://tile.openstreetmap.org/{z}/{x}/{y}.png). Both are baked in at build time.
+export const MAP_PMTILES_URL = process.env.REACT_APP_MAP_PMTILES_URL || '/maps/west-africa.pmtiles';
+export const MAP_MAX_DATA_ZOOM = Number(process.env.REACT_APP_MAP_MAX_DATA_ZOOM || 15);
+export const TILE_URL = process.env.REACT_APP_MAP_TILE_URL || null;
 export const TILE_ATTRIBUTION =
-  process.env.REACT_APP_MAP_ATTRIBUTION ||
-  '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors';
+  '&copy; <a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noopener noreferrer">OpenStreetMap</a> contributors' +
+  (TILE_URL ? '' : ' &middot; <a href="https://protomaps.com" target="_blank" rel="noopener noreferrer">Protomaps</a>');
 
 export const STATE_ORDER = ['MOVING', 'IDLE', 'PARKED', 'OFFLINE', 'MANUAL'];
 

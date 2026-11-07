@@ -46,6 +46,7 @@
     "lucide-react": "^0.507.0",
     "mammoth": "^1.12.0",
     "next-themes": "^0.4.6",
+    "protomaps-leaflet": "^5.1.0",
     "react": "^19.0.0",
     "react-day-picker": "^9.14.0",
     "react-dom": "^19.0.0",

@@ -15,7 +15,8 @@ Repeatable flow for shipping code changes to **fleet-app-01** (`192.168.135.21`)
 | `/home/fleet/app/frontend/build` | CRA/Craco build output |
 | `/var/www/fleet` | Nginx docroot (published static files) |
 | `127.0.0.1:8000` | `fleet-api` (Gunicorn) — internal only |
-| **443 / 80** | Nginx — public UI + `/api` proxy |
+| **80** | Nginx on `.21` — UI, `/api` and `/maps/`; reachable only from the GTI proxy |
+| **443** | GTI proxy `192.168.135.200` (separate team) — HTTPS for `fleet.gtiholding.com`, forwards to `.21:80` |
 
 **Production URL triple** (must stay aligned):
 

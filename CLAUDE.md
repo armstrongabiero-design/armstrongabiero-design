@@ -32,7 +32,8 @@ Inventory was taken from the application host **192.168.135.21**; **all servers 
 
 | IP | Role |
 |----|------|
-| **192.168.135.21** | **Application**: Nginx + React static + FastAPI (Gunicorn/Uvicorn); **MongoDB arbiter** (e.g. port `27018`) |
+| **192.168.135.200** | **GTI proxy**, run by a **separate team**: public HTTPS (TLS certificate, HSTS) for `fleet.gtiholding.com`, forwards to `.21:80`. Not ours to configure; send changes to that team |
+| **192.168.135.21** | **Application**: Nginx (HTTP on port 80, behind the proxy) + React static + FastAPI (Gunicorn/Uvicorn); **MongoDB arbiter** (e.g. port `27018`) |
 | **192.168.135.22** | **MongoDB data node** (`mongod`, port `27017`) |
 | **192.168.135.23** | **MongoDB data node** (`mongod`, port `27017`) |
 
@@ -86,6 +87,7 @@ Useful for security review and **not** mistaking the box for a minimal server:
 | **22/tcp** | `sshd` — all interfaces |
 | **631/tcp** | **CUPS** — localhost only |
 | **9090/tcp** | **Cockpit** (`systemd`) — **all interfaces**; restrict or disable in hardening if not required |
+| **80/tcp** | **Nginx** (seen Nov 2026) — HTTP only, no TLS on `.21`; all requests arrive from the proxy `192.168.135.200` |
 
 There is **no** Nginx / MongoDB / app listener yet.
 
@@ -132,6 +134,7 @@ When changing the stack, update **this file** and the runbook together.
 1. **OS**: CentOS Stream 9 → **`dnf`**, **`systemctl`**, **`firewall-cmd`**, SELinux-aware paths for Nginx (`httpd_can_network_connect` if proxying to backend).
 2. **No UFW** on these servers unless the team explicitly migrates.
 3. **Three-server split**: MongoDB on **.22/.23**; app + arbiter on **.21** — do not collapse DB onto the app server in production without editing the architecture docs.
+7. **Proxy in front**: public traffic reaches `.21` only through the GTI proxy (`192.168.135.200`). Nginx on `.21` takes the visitor's address from `X-Forwarded-For`, trusted from that IP only (`set_real_ip_from`), so rate limits and audit logs use each visitor's address. TLS and HSTS belong to the proxy team; CSP and the app's headers are set on `.21`.
 4. **Secrets**: never commit; `.env` permissions `600`, owned by `fleet` where applicable.
 5. **Package installs**: never rely on **interactive** `command-not-found` / `dnf` prompts in scripts; use explicit **`sudo dnf install -y ...`** in documented steps after authentication is resolved.
 6. **Node version**: Prefer **Node 20 LTS** for building the React app (CRA/Craco compatibility); avoid relying on default EL9 **`nodejs` 16** unless CI proves the build works.
@@ -146,4 +149,5 @@ When changing the stack, update **this file** and the runbook together.
 | 2026-05-10 | `PRODUCTION_DEPLOYMENT_RUNBOOK.md` aligned to CentOS Stream 9 (`dnf`, firewalld, SELinux). |
 | 2026-11-03 | Backend dependencies locked from `requirements.in`; `gunicorn` now included. JWTs use PyJWT. CI added in `.github/workflows/ci.yml`. |
 | 2026-11-04 | `forex-python` removed. The API host needs outbound HTTPS to `theratesapi.com` for live exchange rates, refreshed hourly in the background. |
-| 2026-11-06 | Fleet Map reads live GPS from ProTrack365 (`backend/protrack_client.py`, `backend/tracking_service.py`). The API host needs outbound HTTPS to `api.protrack365.com`; the browser needs the map tile host in the CSP `img-src`. |
+| 2026-11-06 | Fleet Map reads live GPS from ProTrack365 (`backend/protrack_client.py`, `backend/tracking_service.py`). The API host needs outbound HTTPS to `api.protrack365.com`; the background map is a self-hosted `west-africa.pmtiles` file served by Nginx from `/var/www/fleet-maps` at `/maps/` (see the runbook). |
+| 2026-11-07 | Production runs behind a proxy at `192.168.135.200` owned by another team (verified on `.21`: Nginx on port 80 only, all requests from that IP). Runbook E9b and firewall rules rewritten for it. |

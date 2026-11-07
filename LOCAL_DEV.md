@@ -136,6 +136,8 @@ PROTRACK_ACCOUNT=mock
 PROTRACK_PASSWORD_MD5=<md5 of mockpass>      # macOS: printf mockpass | md5
 ```
 
+For the background map, put a `west-africa.pmtiles` file (see the runbook for how to make one) in `frontend/public/maps/`, or set `REACT_APP_MAP_TILE_URL=https://tile.openstreetmap.org/{z}/{x}/{y}.png` in `frontend/.env` to use OpenStreetMap's tiles while developing.
+
 Set `PROTRACK_MOCK_PLATES` to registration numbers of vehicles in your local database. Matching plates are linked automatically within 10 minutes, or straight away with **Trackers → Sync from ProTrack** on the Fleet Map. To use the real ProTrack account instead, remove `PROTRACK_BASE_URL` and set the real account and password md5.
 
 ## Updating dependencies

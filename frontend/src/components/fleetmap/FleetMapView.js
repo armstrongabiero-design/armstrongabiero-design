@@ -1,8 +1,37 @@
 import React, { useEffect, useMemo, useRef } from 'react';
 import L from './leafletSetup';
 import 'leaflet.markercluster';
+import { leafletLayer } from 'protomaps-leaflet';
 import { MapContainer, TileLayer, Polyline, CircleMarker, Marker, Tooltip, useMap } from 'react-leaflet';
-import { STATE_META, TILE_ATTRIBUTION, TILE_URL, isStale, locationState, speedColor } from './trackingUtils';
+import {
+  MAP_MAX_DATA_ZOOM,
+  MAP_PMTILES_URL,
+  STATE_META,
+  TILE_ATTRIBUTION,
+  TILE_URL,
+  isStale,
+  locationState,
+  speedColor,
+} from './trackingUtils';
+
+// Draws the self-hosted map file. Only the parts in view are fetched, using HTTP range requests.
+function SelfHostedBasemap() {
+  const map = useMap();
+  useEffect(() => {
+    const layer = leafletLayer({
+      url: MAP_PMTILES_URL,
+      flavor: 'light',
+      lang: 'en',
+      maxDataZoom: MAP_MAX_DATA_ZOOM,
+      attribution: TILE_ATTRIBUTION,
+    });
+    layer.addTo(map);
+    return () => {
+      map.removeLayer(layer);
+    };
+  }, [map]);
+  return null;
+}
 
 const DEFAULT_CENTER = [5.6, -2.5]; // West Africa, between Accra and Monrovia
 const DEFAULT_ZOOM = 6;
@@ -50,7 +79,9 @@ function VehicleMarkers({ locations, selectedId, onSelect }) {
       iconCreateFunction: clusterIcon,
       showCoverageOnHover: false,
       maxClusterRadius: 45,
-      spiderfyOnMaxZoom: true,
+      // At street level every vehicle is shown on its own, so a selected one is never hidden.
+      disableClusteringAtZoom: 15,
+      spiderfyOnMaxZoom: false,
     });
     groupRef.current = group;
     map.addLayer(group);
@@ -201,10 +232,10 @@ export default function FleetMapView({ locations, selectedId, onSelect, fitKey, 
       center={DEFAULT_CENTER}
       zoom={DEFAULT_ZOOM}
       className="h-full w-full rounded-lg"
-      worldCopyJump
+      maxZoom={18}
       attributionControl
     >
-      <TileLayer url={TILE_URL} attribution={TILE_ATTRIBUTION} maxZoom={19} />
+      {TILE_URL ? <TileLayer url={TILE_URL} attribution={TILE_ATTRIBUTION} maxZoom={19} /> : <SelfHostedBasemap />}
       <VehicleMarkers locations={locations} selectedId={selectedId} onSelect={onSelect} />
       <RouteLayer route={route} cursor={routeCursor} />
       <Viewport locations={locations} fitKey={fitKey} focus={focus} routeBounds={routeBounds} />

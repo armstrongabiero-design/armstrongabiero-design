@@ -193,12 +193,13 @@ sudo firewall-cmd --list-all --zone=public
 
 **Run on:** `192.168.135.21` **only** (app / arbiter host).
 
-Purpose: Allow HTTP/HTTPS, SSH, and arbiter `27018` from DB nodes only.  
-Importance: User-facing entry on `.21` only; arbiter not open to the world.
+Purpose: Allow web traffic from the GTI proxy only, SSH from the LAN, and arbiter `27018` from DB nodes only.  
+Importance: Users reach the app through the proxy at `192.168.135.200`, which handles HTTPS (see E9b). Only the proxy needs to reach port 80. Before applying, confirm nobody relies on `http://192.168.135.21` directly; admins can still check the app over SSH with `curl http://127.0.0.1/`.
 
 ```bash
-sudo firewall-cmd --permanent --zone=public --add-service=http
-sudo firewall-cmd --permanent --zone=public --add-service=https
+sudo firewall-cmd --permanent --zone=public --remove-service=http
+sudo firewall-cmd --permanent --zone=public --remove-service=https
+sudo firewall-cmd --permanent --zone=public --add-rich-rule='rule family="ipv4" source address="192.168.135.200/32" service name="http" accept'
 sudo firewall-cmd --permanent --zone=public --add-rich-rule='rule family="ipv4" source address="192.168.135.0/24" service name="ssh" accept'
 
 sudo firewall-cmd --permanent --zone=public --add-rich-rule='rule family="ipv4" source address="192.168.135.22/32" port port="27018" protocol="tcp" accept'
@@ -954,12 +955,12 @@ curl -sS http://127.0.0.1:8000/health
 
 **Run on:** `192.168.135.21` **only**.
 
-Purpose: Single public entry — React SPA from `/var/www/fleet`, API via `**/api/`** → `http://127.0.0.1:8000`.  
-Importance: Browsers only talk to Nginx; FastAPI stays on loopback.
+Purpose: React SPA from `/var/www/fleet`, API via `/api/` → `http://127.0.0.1:8000`, map file via `/maps/`.  
+Importance: FastAPI stays on loopback. In production, browsers reach this Nginx only through the GTI proxy at `192.168.135.200`, which handles HTTPS (E9b).
 
 **Prerequisites:** E7 (static files), E8 (`fleet-api` active), firewalld allows **http** on `.21` (Part A5).
 
-Use **Phase 1** first to validate the stack before DNS/TLS. Apply **Phase 2** when `fleet.gtiholding.com` resolves and certificates are ready.
+Use **E9a** to validate the stack on `.21` itself. **E9b** is the production configuration behind the proxy.
 
 #### E9a — Phase 1: HTTP only (pre-DNS)
 
@@ -1027,28 +1028,39 @@ curl -sS -o /dev/null -w "%{http_code}\n" http://127.0.0.1/api/auth/me
 
 From a workstation on the LAN: open `http://192.168.135.21` in a browser.
 
-#### E9b — Phase 2: HTTPS + HTTP→HTTPS redirect (go-live)
+#### E9b — Production: behind the GTI proxy
 
-**Skip until** DNS points `fleet.gtiholding.com` → `192.168.135.21`.
+Public traffic does not reach `.21` directly. A proxy run by a separate team terminates HTTPS and forwards to Nginx on `.21` over plain HTTP on the LAN:
 
-**TLS certificates** — corporate CA:
-
-```bash
-sudo mkdir -p /etc/nginx/ssl
-sudo cp your_fullchain.pem /etc/nginx/ssl/fleet.crt
-sudo cp your_private.key /etc/nginx/ssl/fleet.key
-sudo chmod 640 /etc/nginx/ssl/fleet.key
-sudo chown root:nginx /etc/nginx/ssl/fleet.key
+```
+Browser ──HTTPS──► GTI proxy 192.168.135.200 ──HTTP :80──► Nginx on .21 ──► fleet-api 127.0.0.1:8000
+                   (proxy team: DNS, TLS, HSTS)            (us: files, /api, rate limits, CSP)
 ```
 
-Let’s Encrypt:
+| Responsibility | Where | Owner |
+|---|---|---|
+| DNS for `fleet.gtiholding.com`, TLS certificate, HTTP→HTTPS redirect | Proxy | Proxy team |
+| `Strict-Transport-Security` (HSTS) | Proxy, the layer that serves HTTPS | Proxy team |
+| Pass the visitor's address in `X-Forwarded-For` | Proxy | Proxy team |
+| Website files, `/api` forwarding, `/maps/` map file | `.21` | Fleet app admins |
+| Rate limits on sign-in routes, per real visitor | `.21` | Fleet app admins |
+| Content-Security-Policy and the other security headers | `.21` (they travel with the app) | Fleet app admins |
+
+`.21` has no certificate and listens on port 80 only. Requests arrive from `192.168.135.200`, so Nginx takes each visitor's address from the `X-Forwarded-For` header that the proxy adds, trusting it only when the request comes from the proxy (`set_real_ip_from` below). Rate limits, any address-based exemptions, and the audit log all use that visitor address.
+
+**1. Security headers in one file** (a `location` with its own `add_header` drops headers set outside it, so each such `location` includes this file):
 
 ```bash
-sudo dnf -y install certbot python3-certbot-nginx
-sudo certbot --nginx -d fleet.gtiholding.com
+sudo mkdir -p /etc/nginx/snippets
+sudo tee /etc/nginx/snippets/fleet-security-headers.conf << 'EOF'
+add_header X-Frame-Options "SAMEORIGIN" always;
+add_header X-Content-Type-Options "nosniff" always;
+add_header Referrer-Policy "strict-origin-when-cross-origin" always;
+add_header Content-Security-Policy-Report-Only "default-src 'self'; base-uri 'self'; object-src 'none'; frame-ancestors 'self'; img-src 'self' data: blob:; font-src 'self' data:; style-src 'self' 'unsafe-inline'; script-src 'self'; connect-src 'self'; frame-src 'self' blob:; media-src 'self' blob:; form-action 'self'" always;
+EOF
 ```
 
-If using certbot, it may merge SSL into `fleet.conf`; otherwise replace Phase 1 config with:
+**2. Site configuration on `.21`** (back up the current file first: `sudo cp /etc/nginx/conf.d/fleet.conf /etc/nginx/conf.d/fleet.conf.bak-$(date +%Y%m%d-%H%M)`):
 
 ```bash
 sudo tee /etc/nginx/conf.d/fleet.conf << 'EOF'
@@ -1062,36 +1074,25 @@ upstream fleet_api {
 server {
     listen 80;
     listen [::]:80;
-    server_name fleet.gtiholding.com;
-    return 301 https://$host$request_uri;
-}
+    # Keep any older names that are still in use (for example gti.jrfleetsolutions.com).
+    server_name fleet.gtiholding.com 192.168.135.21;
 
-server {
-    listen 443 ssl http2;
-    listen [::]:443 ssl http2;
-    server_name fleet.gtiholding.com;
-
-    ssl_certificate     /etc/nginx/ssl/fleet.crt;
-    ssl_certificate_key /etc/nginx/ssl/fleet.key;
-    ssl_session_timeout 1d;
-    ssl_session_cache shared:SSL:50m;
-    ssl_protocols TLSv1.2 TLSv1.3;
+    # The visitor's real address, trusted only from the GTI proxy.
+    set_real_ip_from 192.168.135.200;
+    real_ip_header X-Forwarded-For;
+    real_ip_recursive on;
 
     root /var/www/fleet;
     index index.html;
-
-    add_header X-Frame-Options "SAMEORIGIN" always;
-    add_header X-Content-Type-Options "nosniff" always;
-    add_header Referrer-Policy "strict-origin-when-cross-origin" always;
-    add_header Content-Security-Policy-Report-Only "default-src 'self'; base-uri 'self'; object-src 'none'; frame-ancestors 'self'; img-src 'self' data: blob:; font-src 'self' data:; style-src 'self' 'unsafe-inline'; script-src 'self'; connect-src 'self'; frame-src 'self' blob:; media-src 'self' blob:; form-action 'self'" always;
+    include /etc/nginx/snippets/fleet-security-headers.conf;
 
     location /api/ {
         proxy_pass http://fleet_api;
         proxy_http_version 1.1;
         proxy_set_header Host $host;
         proxy_set_header X-Real-IP $remote_addr;
-        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
-        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_set_header X-Forwarded-For $remote_addr;
+        proxy_set_header X-Forwarded-Proto https;
         proxy_read_timeout 120s;
         client_max_body_size 25m;
     }
@@ -1103,8 +1104,14 @@ server {
         proxy_http_version 1.1;
         proxy_set_header Host $host;
         proxy_set_header X-Real-IP $remote_addr;
-        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
-        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_set_header X-Forwarded-For $remote_addr;
+        proxy_set_header X-Forwarded-Proto https;
+    }
+
+    location /maps/ {
+        alias /var/www/fleet-maps/;
+        include /etc/nginx/snippets/fleet-security-headers.conf;
+        add_header Cache-Control "public, max-age=86400" always;
     }
 
     location / {
@@ -1116,19 +1123,38 @@ EOF
 sudo nginx -t && sudo systemctl reload nginx
 ```
 
+`X-Forwarded-For $remote_addr` passes the API one verified address (the visitor's, after the real-IP step) rather than a list a visitor could add to. `X-Forwarded-Proto https` is correct because the public site is reachable only through the proxy over HTTPS.
+
+**3. Check it:**
+
+```bash
+# New requests are logged with visitors' addresses, not 192.168.135.200:
+sudo tail -5 /var/log/nginx/access.log
+# Headers as the public sees them, through the proxy (CSP once, HSTS from the proxy):
+curl -sI https://fleet.gtiholding.com/login | grep -iE 'strict-transport|content-security|x-frame|x-content-type|referrer-policy'
+# Sign-in rate limit returns 429 (not 503) from one workstation, while another workstation still signs in:
+for i in $(seq 1 12); do curl -s -o /dev/null -w "%{http_code} " -X POST https://fleet.gtiholding.com/api/auth/forgot-password -H 'Content-Type: application/json' -d '{"email":"nobody@gtiholding.com"}'; done; echo
+```
+
+If the log still shows only `192.168.135.200`, the proxy is not sending `X-Forwarded-For` yet: ask the proxy team to add it (item 2 below).
+
+**What the proxy team must do** (send them this list):
+
+1. Forward every path (`/`, `/api/`, `/maps/`) for `fleet.gtiholding.com` to `http://192.168.135.21:80`, keeping the `Host` header.
+2. Set or append the visitor's address in `X-Forwarded-For`. Do not pass on a value the visitor sent without appending the real connecting address.
+3. Pass response headers from `.21` unchanged, and do not add a second `Content-Security-Policy` (two policies are both enforced, and the stricter wins).
+4. Add `Strict-Transport-Security: max-age=31536000` on HTTPS responses (start at `max-age=300` for a trial day). No `includeSubDomains` or `preload` unless every `gtiholding.com` subdomain is HTTPS-ready.
+5. Allow request bodies of at least 25 MB (document uploads) and responses of up to 120 seconds for `/api/` (large exports).
+6. Pass `Range` requests for `/maps/` through and return the `206 Partial Content` answers unchanged. Do not cache `/api/`.
+7. If the proxy has its own rate limiting or web application firewall, agree limits that do not undercut `.21`'s, and exempt InfoSec's scanner during agreed rescan windows.
+
 **Security headers:** the Content Security Policy ships as `Content-Security-Policy-Report-Only`, which logs violations to the browser console and blocks nothing. To enforce it:
 
 1. Sign in as each role, open every page and a PDF, Word, Excel and image preview, with the console open.
 2. If `S3_BUCKET_NAME` is set, add the bucket origin to `connect-src`. Add `https://view.officeapps.live.com` to `frame-src` only if Office previews through Microsoft are wanted: they send a presigned file URL to Microsoft.
-3. When the console is free of `Content-Security-Policy` messages, rename the header to `Content-Security-Policy`.
+3. When the console is free of `Content-Security-Policy` messages, rename the header in `/etc/nginx/snippets/fleet-security-headers.conf` to `Content-Security-Policy` and reload Nginx.
 
-Once HTTPS has run cleanly for a week, add this to the 443 server block, starting at `max-age=300` if you want a shorter trial. Do not add `includeSubDomains` or `preload` unless every subdomain is HTTPS-ready:
-
-```nginx
-add_header Strict-Transport-Security "max-age=31536000" always;
-```
-
-A `location` with its own `add_header` stops inheriting these headers, so repeat them there. Check with `curl -sI https://fleet.gtiholding.com/login`. The health route is `/health` on `127.0.0.1:8000`; it is not proxied by Nginx.
+The health route is `/health` on `127.0.0.1:8000`; it is not published through Nginx or the proxy.
 
 **Frontend build:** `xlsx` installs from SheetJS, not npm, so the host running `npm ci` needs outbound HTTPS to `cdn.sheetjs.com`. The lock file pins its checksum.
 
@@ -1136,7 +1162,31 @@ A `location` with its own `add_header` stops inheriting these headers, so repeat
 
 **Live GPS (Fleet Map):** the API reads vehicle positions from ProTrack365 every 30 seconds, so `.21` needs outbound HTTPS to `api.protrack365.com`. Set `PROTRACK_ACCOUNT` and `PROTRACK_PASSWORD_MD5` in `backend/.env` (see `.env.example`), then restart `fleet-api`. Check the connection with `curl -sS --max-time 10 'https://api.protrack365.com/api/authorization?time=0&account=x&signature=x'`: any JSON reply means it can connect. If ProTrack cannot be reached, the map keeps the last positions and shows managers a banner.
 
-**Map tiles:** build the frontend with `REACT_APP_MAP_TILE_URL` (and `REACT_APP_MAP_ATTRIBUTION`) set to a tile provider licensed for business use, and add that provider's host to `img-src` in the Content-Security-Policy above, for example `img-src 'self' data: blob: https://api.maptiler.com;`. Without it the map shows grey squares, and the browser console reports `Content-Security-Policy` violations. OpenStreetMap's own tile servers must not be used in production.
+**Fleet Map background map (self-hosted):** the street map is one file, `west-africa.pmtiles`, served by Nginx from `.21`. Map requests never leave GTI's servers, so the Content-Security-Policy needs no change. The file is not in git.
+
+1. On any machine with internet access, download the `pmtiles` tool from [github.com/protomaps/go-pmtiles/releases](https://github.com/protomaps/go-pmtiles/releases), then cut out the region from the latest daily build listed at `https://build-metadata.protomaps.dev/builds.json`:
+   ```bash
+   pmtiles extract https://build.protomaps.com/YYYYMMDD.pmtiles west-africa.pmtiles \
+     --bbox=-11.6,-0.2,7.6,11.2 --maxzoom=15
+   ```
+   The box covers Liberia, Ghana and São Tomé. Check the result with `pmtiles show west-africa.pmtiles`.
+2. Copy it to `.21`, outside the frontend docroot so `rsync --delete` never removes it:
+   ```bash
+   sudo mkdir -p /var/www/fleet-maps
+   sudo cp west-africa.pmtiles /var/www/fleet-maps/
+   sudo chown -R root:nginx /var/www/fleet-maps && sudo chmod -R a+rX /var/www/fleet-maps
+   sudo restorecon -Rv /var/www/fleet-maps
+   ```
+   Use `cp`, not `mv`: a moved file keeps its home-directory SELinux label and Nginx gets `403 Forbidden`. `restorecon` applies the web-content label.
+3. The `location /maps/` block is already in the E9b configuration. Nginx serves byte ranges from static files by default, which is how the browser reads only the part of the file in view; the proxy must pass them through (proxy team item 6).
+4. Check from `.21` first, then through the proxy:
+   ```bash
+   curl -sI -H 'Range: bytes=0-99' http://127.0.0.1/maps/west-africa.pmtiles | head -1
+   curl -sI -H 'Range: bytes=0-99' https://fleet.gtiholding.com/maps/west-africa.pmtiles | head -1
+   ```
+   Both must return `206 Partial Content`. A `403` or `404` on `.21` means steps 2 or 3 are wrong. A `206` on `.21` but a `200` or an error through the proxy means the proxy is not passing `Range` requests. Either way the map will be blank.
+
+Refresh the file every 3 to 6 months by repeating steps 1 and 2. No rebuild or restart is needed. The frontend reads `/maps/west-africa.pmtiles` unless built with `REACT_APP_MAP_PMTILES_URL`; `REACT_APP_MAP_TILE_URL` switches to a raster tile service instead, which then also needs its host in the CSP `img-src`.
 
 **Phase 2 checklist** (on `.21`):
 
@@ -1144,7 +1194,7 @@ A `location` with its own `add_header` stops inheriting these headers, so repeat
 2. `sudo systemctl restart fleet-api`
 3. Rebuild frontend with `REACT_APP_BACKEND_URL=https://fleet.gtiholding.com` (E6)
 4. `sudo rsync -a /home/fleet/app/frontend/build/ /var/www/fleet/`
-5. Apply E9b Nginx + reload
+5. Apply E9b on `.21` and reload Nginx, and confirm the proxy team's items are in place
 
 ### E10. SELinux: Nginx → backend
 
