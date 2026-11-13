@@ -163,6 +163,15 @@ class _Collection:
                 row["count"] += 1
         return _Cursor([{"_id": key, **row} for key, row in groups.items()])
 
+    async def replace_one(self, query, doc, upsert=False):
+        for index, existing in enumerate(self.docs):
+            if _matches(existing, query):
+                self.docs[index] = dict(doc)
+                return SimpleNamespace(matched_count=1, modified_count=1)
+        if upsert:
+            self.docs.append(dict(doc))
+        return SimpleNamespace(matched_count=0, modified_count=0)
+
     async def count_documents(self, query):
         return len([d for d in self.docs if _matches(d, query)])
 
@@ -322,6 +331,8 @@ SIGNED_IN_ROUTES = {
     ("GET", "/api/dashboard/personal"), ("GET", "/api/auth/me"), ("GET", "/api/auth/users/pending"),
     ("PUT", "/api/auth/users/{user_id}/approve"), ("GET", "/api/notifications/mine"),
     ("POST", "/api/notifications/{notification_id}/read"), ("POST", "/api/notifications/read-all"),
+    # Drivers open evidence on their own incidents; the handler checks it with assert_record_access.
+    ("GET", "/api/safety/incidents/{incident_id}/evidence/{evidence_id}/file"),
 }
 
 
@@ -1256,6 +1267,7 @@ def test_non_ascii_bootstrap_token_is_refused_cleanly(client, monkeypatch):
     ("inventory_bulk_import.build_inventory_template_workbook", "inventory_bulk_import.parse_inventory_bulk_upload", {"default_country": "GH"}),
     ("expenditure_bulk_import.build_expenditure_template_workbook", "expenditure_bulk_import.parse_expenditure_bulk_upload", {"default_country": "GH"}),
     ("vehicle_master_bulk_import.build_vehicle_master_template_workbook", "vehicle_master_bulk_import.parse_vehicle_master_bulk_upload", {}),
+    ("asset_bulk_import.build_asset_template_workbook", "asset_bulk_import.parse_asset_bulk_upload", {}),
 ])
 def test_every_bulk_importer_reads_its_own_template_and_refuses_junk(builder, parser, kwargs):
     import importlib

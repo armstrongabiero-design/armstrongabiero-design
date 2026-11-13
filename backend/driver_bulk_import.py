@@ -20,6 +20,8 @@ BULK_HEADERS = [
     "License Expiry",
     "Phone",
     "Email",
+    "Licence Class",
+    "Department",
 ]
 
 _HEADER_ALIASES = {
@@ -29,6 +31,9 @@ _HEADER_ALIASES = {
     "license expiry": "license_expiry",
     "phone": "phone",
     "email": "email",
+    "licence class": "license_class",
+    "license class": "license_class",
+    "department": "department",
 }
 
 SAMPLE_ROW = [
@@ -38,6 +43,8 @@ SAMPLE_ROW = [
     "2027-12-31",
     "+233201234567",
     "kwame.mensah@example.com",
+    "B",
+    "Operations",
 ]
 
 _NUMBERED_INSTRUCTION = re.compile(r"^\d+\.\s")
@@ -68,7 +75,7 @@ def build_driver_template_workbook() -> bytes:
     guide["A3"] = "1. On the Drivers sheet, keep row 1 (headers) unchanged."
     guide["A4"] = "2. Add one driver per row starting at row 3."
     guide["A5"] = "3. License Expiry format: YYYY-MM-DD (e.g. 2027-12-31)."
-    guide["A6"] = "4. Email is optional."
+    guide["A6"] = "4. Email, Licence Class (e.g. B, C, D) and Department are optional."
     guide["A7"] = "5. Delete the sample row (row 2) before uploading your data."
     guide["A8"] = "6. Select the fleet country in the upload screen (applies to all rows)."
     guide.column_dimensions["A"].width = 72
@@ -101,6 +108,11 @@ def _parse_date(value: Any, field: str = "License Expiry") -> datetime:
         return datetime.fromisoformat(text.replace("Z", "+00:00")).replace(tzinfo=None)
     except ValueError as exc:
         raise ValueError(f"Invalid {field}: {value}") from exc
+
+
+def _optional_text(value: Any) -> Optional[str]:
+    text = str(value).strip() if value is not None else ""
+    return text or None
 
 
 def _row_is_empty(values: List[Any]) -> bool:
@@ -208,6 +220,8 @@ def parse_driver_bulk_upload(
                     license_expiry=_parse_date(data.get("license_expiry")),
                     phone=phone,
                     email=email or None,
+                    license_class=_optional_text(data.get("license_class")),
+                    department=_optional_text(data.get("department")),
                 )
             )
         except ValueError as exc:

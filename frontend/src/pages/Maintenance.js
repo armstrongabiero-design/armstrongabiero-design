@@ -3,13 +3,13 @@ import axios from 'axios';
 import {
   AlertTriangle,
   History,
+  Pencil,
   Search,
   Sparkles,
   Trash2,
   Upload,
   Download,
   Wrench,
-  X,
 } from 'lucide-react';
 import { toast } from 'sonner';
 import { useAuth } from '../contexts/AuthContext';
@@ -32,7 +32,11 @@ import {
   SelectTrigger,
   SelectValue,
 } from '../components/ui/select';
-import { Textarea } from '../components/ui/textarea';
+import { Tabs, TabsContent, TabsList, TabsTrigger } from '../components/ui/tabs';
+import RecordFilters, { SortHeader } from '../components/RecordFilters';
+import MaintenanceRecordDialog, { CURRENCIES, MAINTENANCE_TYPES } from '../components/maintenance/MaintenanceRecordDialog';
+import { WORK_STATUS_OPTIONS } from '../utils/workStatus';
+import { ALL, distinctOptions, matchesText, sameValue, useFilters, useSort } from '../utils/filtering';
 import ConfirmDeleteDialog from '../components/ConfirmDeleteDialog';
 import HorizontalScrollContainer from '../components/HorizontalScrollContainer';
 import { canEditFleetRecord, canHardDelete } from '../utils/permissions';
@@ -57,27 +61,6 @@ const toDateInput = (value) => {
   } catch {
     return '';
   }
-};
-
-/** Local calendar date for today (not UTC). */
-const localTodayYmd = () => {
-  const d = new Date();
-  const pad = (n) => String(n).padStart(2, '0');
-  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
-};
-
-/** Parse YYYY-MM-DD as a local calendar date (avoids UTC midnight shifts). */
-const parseLocalYmd = (ymd) => {
-  const parts = String(ymd || '').split('-').map(Number);
-  if (parts.length < 3 || parts.some((n) => Number.isNaN(n))) return null;
-  return new Date(parts[0], parts[1] - 1, parts[2]);
-};
-
-/** Send date-only values at noon UTC so the calendar day is stable across timezones. */
-const toApiDate = (ymd) => {
-  const day = toDateInput(ymd);
-  if (!day) return null;
-  return `${day}T12:00:00.000Z`;
 };
 
 /** Prefer the user-entered service date over completed_date (legacy rows used "now"). */
@@ -109,10 +92,46 @@ const deviceLabel = (vehicle) => {
   return `${make}_${reg}(${reg})`;
 };
 
-const recordSortKey = (record) => {
-  const raw = serviceDateOf(record) || 0;
-  const t = new Date(raw).getTime();
-  return Number.isNaN(t) ? 0 : t;
+/** Newest service first; on the same day, the record entered last wins. */
+const compareRecords = (a, b) => {
+  const day = (r) => toDateInput(serviceDateOf(r));
+  const byDay = day(b).localeCompare(day(a));
+  if (byDay) return byDay;
+  return String(b.created_at || '').localeCompare(String(a.created_at || ''));
+};
+
+const formatMoney = (amount, currency) => {
+  if (amount == null || Number.isNaN(Number(amount))) return '—';
+  return `${currency || ''} ${Number(amount).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`.trim();
+};
+
+const typeLabel = (value) => MAINTENANCE_TYPES.find((t) => t.value === value)?.label || value || '—';
+
+const STATUS_FILTER_OPTIONS = [
+  { value: 'INCOMPLETE', label: 'Not completed (any)' },
+  ...WORK_STATUS_OPTIONS,
+];
+
+const INITIAL_RECORD_FILTERS = {
+  vehicle: ALL,
+  maintenance_type: ALL,
+  work_status: ALL,
+  provider: ALL,
+  currency: ALL,
+  date_from: '',
+  date_to: '',
+  cost_min: '',
+  cost_max: '',
+};
+
+const RECORD_SORT = {
+  date: (r) => toDateInput(serviceDateOf(r)),
+  registration: (r) => r._registration,
+  item: (r) => r.description,
+  type: (r) => r.maintenance_type,
+  provider: (r) => r.service_provider,
+  cost: (r) => Number(r.cost ?? 0),
+  status: (r) => r.work_status,
 };
 
 const SCHEDULED_ALERT_LEAD_DAYS = 30;
@@ -136,32 +155,6 @@ const isDueAttention = (vehicle, latest) => {
   return false;
 };
 
-const createFormForVehicle = (vehicle, intervalDefaults) => {
-  const odo = vehicle?.odometer_reading ?? 0;
-  const today = localTodayYmd();
-  const km = intervalDefaults?.interval_km ?? 7000;
-  const months = intervalDefaults?.interval_months ?? 3;
-  const nextDate = (() => {
-    const d = parseLocalYmd(today);
-    if (!d) return today;
-    d.setMonth(d.getMonth() + months);
-    return toDateInput(d);
-  })();
-  return {
-    vehicle_id: vehicle?.id || '',
-    maintenance_type: 'ROUTINE',
-    description: 'DUE FOR SERVICING',
-    scheduled_date: today,
-    next_due_date: nextDate,
-    next_service_odometer: String(Number(odo) + km),
-    odometer_at_maintenance: odo,
-    cost: 0,
-    currency: 'GHS',
-    notes: '',
-    work_status: 'WORK_COMPLETED',
-  };
-};
-
 const Maintenance = () => {
   const { user } = useAuth();
   const canEdit = canEditFleetRecord(user?.role);
@@ -177,10 +170,13 @@ const Maintenance = () => {
   const [searchTerm, setSearchTerm] = useState('');
   const [intervalDefaults, setIntervalDefaults] = useState({ interval_months: 3, interval_km: 7000 });
 
-  const [addOpen, setAddOpen] = useState(false);
+  const [vendors, setVendors] = useState([]);
+  const [workshops, setWorkshops] = useState([]);
+  const [tab, setTab] = useState(searchParams.get('view') === 'records' ? 'records' : 'vehicles');
+  // { key, record?, vehicle? } — a new key remounts the form so it never keeps old values.
+  const [editor, setEditor] = useState(null);
   const [historyOpen, setHistoryOpen] = useState(false);
   const [activeVehicle, setActiveVehicle] = useState(null);
-  const [formData, setFormData] = useState(() => createFormForVehicle(null, { interval_months: 3, interval_km: 7000 }));
   const [deleteTarget, setDeleteTarget] = useState(null);
   const [deleting, setDeleting] = useState(false);
 
@@ -196,18 +192,22 @@ const Maintenance = () => {
 
   const fetchData = useCallback(async () => {
     try {
-      const [recordsRes, vehiclesRes, defaultsRes, requestsRes] = await Promise.all([
+      const [recordsRes, vehiclesRes, defaultsRes, requestsRes, vendorsRes, workshopsRes] = await Promise.all([
         axios.get(`${API}/maintenance`),
         axios.get(`${API}/vehicles`),
         axios.get(`${API}/settings/maintenance-defaults`).catch(() => ({
           data: { interval_months: 3, interval_km: 7000 },
         })),
         axios.get(`${API}/maintenance-requests`).catch(() => ({ data: [] })),
+        axios.get(`${API}/vendors`).catch(() => ({ data: [] })),
+        axios.get(`${API}/master/workshops`).catch(() => ({ data: [] })),
       ]);
       setRecords(recordsRes.data || []);
       setVehicles(vehiclesRes.data || []);
       setIntervalDefaults(defaultsRes.data || { interval_months: 3, interval_km: 7000 });
       setRequests(requestsRes.data || []);
+      setVendors(vendorsRes.data || []);
+      setWorkshops(workshopsRes.data || []);
     } catch {
       toast.error('Failed to load maintenance data');
     } finally {
@@ -230,7 +230,7 @@ const Maintenance = () => {
     map.forEach((list, key) => {
       map.set(
         key,
-        [...list].sort((a, b) => recordSortKey(b) - recordSortKey(a))
+        [...list].sort(compareRecords)
       );
     });
     return map;
@@ -298,10 +298,90 @@ const Maintenance = () => {
     highlightVehicleId,
   ]);
 
+  const vehiclesById = useMemo(() => new Map(vehicles.map((v) => [v.id, v])), [vehicles]);
+
+  // ---- All records tab
+  const [recordSearch, setRecordSearch] = useState('');
+  const {
+    filters: recordFilters,
+    setFilter: setRecordFilter,
+    clear: clearRecordFilters,
+    activeCount: recordFilterCount,
+  } = useFilters(INITIAL_RECORD_FILTERS);
+
+  const recordRows = useMemo(
+    () => records.map((r) => ({ ...r, _registration: vehiclesById.get(r.vehicle_id)?.registration_number || '' })),
+    [records, vehiclesById]
+  );
+
+  const recordOptions = useMemo(() => ({
+    vehicle: distinctOptions(recordRows, (r) => r._registration),
+    provider: distinctOptions(recordRows, (r) => r.service_provider),
+    currency: CURRENCIES.filter((c) => records.some((r) => r.currency === c)).map((c) => ({ value: c, label: c })),
+  }), [recordRows, records]);
+
+  const filteredRecords = useMemo(() => {
+    const f = recordFilters;
+    const min = f.cost_min === '' ? null : Number(f.cost_min);
+    const max = f.cost_max === '' ? null : Number(f.cost_max);
+    return recordRows.filter((r) => {
+      const vehicle = vehiclesById.get(r.vehicle_id);
+      if (!matchesText(recordSearch, r.description, r.notes, r.service_provider, r._registration, vehicle?.make, vehicle?.model)) {
+        return false;
+      }
+      const day = toDateInput(serviceDateOf(r));
+      const incomplete = r.work_status !== 'WORK_COMPLETED';
+      return (
+        sameValue(f.vehicle, r._registration) &&
+        sameValue(f.maintenance_type, r.maintenance_type) &&
+        (f.work_status === ALL || (f.work_status === 'INCOMPLETE' ? incomplete : r.work_status === f.work_status)) &&
+        sameValue(f.provider, r.service_provider) &&
+        sameValue(f.currency, r.currency) &&
+        (!f.date_from || day >= f.date_from) &&
+        (!f.date_to || day <= f.date_to) &&
+        (min == null || Number(r.cost ?? 0) >= min) &&
+        (max == null || Number(r.cost ?? 0) <= max)
+      );
+    });
+  }, [recordRows, recordFilters, recordSearch, vehiclesById]);
+
+  const { sorted: visibleRecords, sort: recordSort, toggle: toggleRecordSort } = useSort(filteredRecords, RECORD_SORT, 'date', 'desc');
+
+  const clearAllRecordFilters = () => {
+    clearRecordFilters();
+    setRecordSearch('');
+  };
+
+  const filteredCostTotals = useMemo(() => {
+    const totals = {};
+    filteredRecords.forEach((r) => {
+      totals[r.currency || '—'] = (totals[r.currency || '—'] || 0) + Number(r.cost || 0);
+    });
+    return Object.entries(totals);
+  }, [filteredRecords]);
+
   const openAddForVehicle = (vehicle) => {
-    setActiveVehicle(vehicle);
-    setFormData(createFormForVehicle(vehicle, intervalDefaults));
-    setAddOpen(true);
+    setEditor({ key: Date.now(), vehicle });
+  };
+
+  const openEditRecord = (rec) => {
+    setEditor({ key: Date.now(), record: rec });
+  };
+
+  const handleSaved = (saved) => {
+    const wasEdit = Boolean(editor?.record);
+    const vehicleRecords = recordsByVehicle.get(saved.vehicle_id) || [];
+    const latest = vehicleRecords[0];
+    const olderThanLatest =
+      !wasEdit && latest && toDateInput(saved.scheduled_date) < toDateInput(serviceDateOf(latest));
+    if (olderThanLatest) {
+      toast.success('Record saved', {
+        description: 'It is dated before this vehicle’s latest service, so it shows in the vehicle’s history and under All records, not in the summary row.',
+      });
+    } else {
+      toast.success(wasEdit ? 'Record updated' : 'Maintenance record added');
+    }
+    fetchData();
   };
 
   const openHistoryForVehicle = (vehicle) => {
@@ -309,94 +389,9 @@ const Maintenance = () => {
     setHistoryOpen(true);
   };
 
-  const handleAddOpenChange = (open) => {
-    setAddOpen(open);
-    if (!open) setActiveVehicle(null);
-  };
-
   const handleHistoryOpenChange = (open) => {
     setHistoryOpen(open);
     if (!open) setActiveVehicle(null);
-  };
-
-  const handleCurrentOdoChange = (value) => {
-    const km = intervalDefaults.interval_km ?? 7000;
-    setFormData((prev) => {
-      const odo = parseFloat(value);
-      if (Number.isNaN(odo)) {
-        return { ...prev, odometer_at_maintenance: value };
-      }
-      const prevOdo = parseFloat(prev.odometer_at_maintenance);
-      const prevNext = parseFloat(prev.next_service_odometer);
-      const wasAuto =
-        !Number.isNaN(prevOdo) &&
-        !Number.isNaN(prevNext) &&
-        prevNext === prevOdo + km;
-      return {
-        ...prev,
-        odometer_at_maintenance: value,
-        next_service_odometer:
-          wasAuto || prev.next_service_odometer === '' || prev.next_service_odometer == null
-            ? String(odo + km)
-            : prev.next_service_odometer,
-      };
-    });
-  };
-
-  const handleCurrentDateChange = (value) => {
-    const months = intervalDefaults.interval_months ?? 3;
-    setFormData((prev) => {
-      let nextDue = prev.next_due_date;
-      if (prev.scheduled_date && prev.next_due_date) {
-        const expected = parseLocalYmd(prev.scheduled_date);
-        if (expected) {
-          expected.setMonth(expected.getMonth() + months);
-          if (toDateInput(prev.next_due_date) === toDateInput(expected)) {
-            const d = parseLocalYmd(value);
-            if (d) {
-              d.setMonth(d.getMonth() + months);
-              nextDue = toDateInput(d);
-            }
-          }
-        }
-      } else if (!prev.next_due_date) {
-        const d = parseLocalYmd(value);
-        if (d) {
-          d.setMonth(d.getMonth() + months);
-          nextDue = toDateInput(d);
-        }
-      }
-      return { ...prev, scheduled_date: value, next_due_date: nextDue };
-    });
-  };
-
-  const handleSubmitAdd = async (e) => {
-    e.preventDefault();
-    const payload = {
-      vehicle_id: formData.vehicle_id,
-      maintenance_type: formData.maintenance_type || 'ROUTINE',
-      description: formData.description || 'DUE FOR SERVICING',
-      scheduled_date: toApiDate(formData.scheduled_date),
-      next_due_date: formData.next_due_date ? toApiDate(formData.next_due_date) : null,
-      next_service_odometer:
-        formData.next_service_odometer !== '' && formData.next_service_odometer != null
-          ? parseFloat(formData.next_service_odometer)
-          : null,
-      odometer_at_maintenance: parseFloat(formData.odometer_at_maintenance) || 0,
-      cost: parseFloat(formData.cost) || 0,
-      currency: formData.currency || 'GHS',
-      notes: formData.notes || null,
-      work_status: formData.work_status || 'WORK_COMPLETED',
-    };
-
-    try {
-      await axios.post(`${API}/maintenance`, payload);
-      toast.success('Maintenance record added');
-      handleAddOpenChange(false);
-      fetchData();
-    } catch (error) {
-      toast.error(error.response?.data?.detail || 'Failed to add maintenance record');
-    }
   };
 
   const handleDelete = async () => {
@@ -595,6 +590,16 @@ const Maintenance = () => {
                         <p className="font-medium">
                           Imported {bulkResult.created} · Failed {bulkResult.failed}
                         </p>
+                        {bulkResult.errors?.length > 0 && (
+                          <ul className="max-h-32 overflow-y-auto text-red-700 space-y-1 mt-2">
+                            {bulkResult.errors.map((err, idx) => (
+                              <li key={idx}>
+                                {err.row ? `Row ${err.row}` : 'Import'}
+                                {err.registration_number ? ` (${err.registration_number})` : ''}: {err.message}
+                              </li>
+                            ))}
+                          </ul>
+                        )}
                       </div>
                     )}
                     <div className="flex justify-end gap-2">
@@ -613,6 +618,26 @@ const Maintenance = () => {
         </div>
       </div>
 
+      <Tabs value={tab} onValueChange={setTab} className="w-full">
+        <div className="flex flex-wrap items-center justify-between gap-2 mb-4">
+          <TabsList>
+            <TabsTrigger value="vehicles" data-testid="maint-tab-vehicles">By vehicle</TabsTrigger>
+            <TabsTrigger value="records" data-testid="maint-tab-records">All records ({records.length})</TabsTrigger>
+          </TabsList>
+          {canEdit && (
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() => setEditor({ key: Date.now(), vehicle: null })}
+              data-testid="maint-add-record"
+            >
+              <Wrench size={15} className="mr-1.5" />
+              Add record
+            </Button>
+          )}
+        </div>
+
+        <TabsContent value="vehicles">
       <div className="flex flex-col sm:flex-row gap-3 mb-4">
         <div className="relative flex-1">
           <Search className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" size={18} />
@@ -761,143 +786,155 @@ const Maintenance = () => {
         </HorizontalScrollContainer>
       </div>
 
-      {/* Add Maintenance Record — GTI Holding theme */}
-      <Dialog open={addOpen} onOpenChange={handleAddOpenChange}>
-        <DialogContent className="maint-form-dialog max-w-md p-0 overflow-hidden gap-0 [&>button.absolute]:hidden sm:rounded-xl">
-          <div className="maint-form-header flex items-center justify-between px-5 py-3.5">
-            <div className="flex items-center gap-2.5 text-white">
-              <span
-                className="inline-flex h-8 w-8 items-center justify-center rounded-full"
-                style={{ backgroundColor: 'rgba(227, 170, 39, 0.25)', color: '#e3aa27' }}
-              >
-                <Wrench size={16} />
-              </span>
-              <DialogTitle className="text-white text-base font-semibold tracking-tight">
-                Add Maintenance Record
-              </DialogTitle>
+        </TabsContent>
+
+        <TabsContent value="records">
+          <RecordFilters
+            testId="maintenance-filters"
+            search={recordSearch}
+            onSearch={setRecordSearch}
+            searchPlaceholder="Search item, remark, provider, registration, make or model"
+            noun="records"
+            shown={visibleRecords.length}
+            total={records.length}
+            activeCount={recordFilterCount}
+            onClear={clearAllRecordFilters}
+            filters={[
+              { key: 'vehicle', label: 'Registration', allLabel: 'All vehicles', value: recordFilters.vehicle, onChange: (v) => setRecordFilter('vehicle', v), options: recordOptions.vehicle },
+              { key: 'maintenance_type', label: 'Type', allLabel: 'All types', value: recordFilters.maintenance_type, onChange: (v) => setRecordFilter('maintenance_type', v), options: MAINTENANCE_TYPES },
+              { key: 'work_status', label: 'Status', allLabel: 'All statuses', value: recordFilters.work_status, onChange: (v) => setRecordFilter('work_status', v), options: STATUS_FILTER_OPTIONS },
+              { key: 'provider', label: 'Service provider', allLabel: 'All providers', value: recordFilters.provider, onChange: (v) => setRecordFilter('provider', v), options: recordOptions.provider },
+              { key: 'currency', label: 'Currency', allLabel: 'All currencies', value: recordFilters.currency, onChange: (v) => setRecordFilter('currency', v), options: recordOptions.currency },
+            ]}
+          >
+            <div className="grid grid-cols-2 md:flex gap-2">
+              <div>
+                <label className="block text-xs font-medium text-slate-500 mb-1" htmlFor="maint-date-from">From</label>
+                <Input id="maint-date-from" type="date" className="h-9" value={recordFilters.date_from}
+                  max={recordFilters.date_to || undefined}
+                  onChange={(e) => setRecordFilter('date_from', e.target.value)} data-testid="maint-filter-date-from" />
+              </div>
+              <div>
+                <label className="block text-xs font-medium text-slate-500 mb-1" htmlFor="maint-date-to">To</label>
+                <Input id="maint-date-to" type="date" className="h-9" value={recordFilters.date_to}
+                  min={recordFilters.date_from || undefined}
+                  onChange={(e) => setRecordFilter('date_to', e.target.value)} data-testid="maint-filter-date-to" />
+              </div>
+              <div>
+                <label className="block text-xs font-medium text-slate-500 mb-1" htmlFor="maint-cost-min">Cost from</label>
+                <Input id="maint-cost-min" type="number" min="0" className="h-9 md:w-28" value={recordFilters.cost_min}
+                  onChange={(e) => setRecordFilter('cost_min', e.target.value)} placeholder="Min" data-testid="maint-filter-cost-min" />
+              </div>
+              <div>
+                <label className="block text-xs font-medium text-slate-500 mb-1" htmlFor="maint-cost-max">Cost to</label>
+                <Input id="maint-cost-max" type="number" min="0" className="h-9 md:w-28" value={recordFilters.cost_max}
+                  onChange={(e) => setRecordFilter('cost_max', e.target.value)} placeholder="Max" data-testid="maint-filter-cost-max" />
+              </div>
             </div>
-            <button
-              type="button"
-              className="text-white/70 hover:text-[#e3aa27] transition-colors"
-              onClick={() => handleAddOpenChange(false)}
-              aria-label="Close"
-            >
-              <X size={18} />
-            </button>
+          </RecordFilters>
+
+          {filteredCostTotals.length > 0 && (
+            <p className="text-sm text-slate-600 mb-2" data-testid="maint-filter-total">
+              Total cost of these records:{' '}
+              {filteredCostTotals.map(([currency, amount]) => formatMoney(amount, currency)).join(' · ')}
+            </p>
+          )}
+
+          <div className="fleet-card table-container !p-0 overflow-hidden">
+            <HorizontalScrollContainer>
+              <table className="maint-device-table min-w-full" data-testid="maintenance-records-table">
+                <thead>
+                  <tr>
+                    <SortHeader label="Service date" sortKey="date" sort={recordSort} onSort={toggleRecordSort} />
+                    <SortHeader label="Registration" sortKey="registration" sort={recordSort} onSort={toggleRecordSort} />
+                    <SortHeader label="Item" sortKey="item" sort={recordSort} onSort={toggleRecordSort} />
+                    <SortHeader label="Type" sortKey="type" sort={recordSort} onSort={toggleRecordSort} />
+                    <SortHeader label="Provider" sortKey="provider" sort={recordSort} onSort={toggleRecordSort} />
+                    <th>Odometer</th>
+                    <th>Next service</th>
+                    <SortHeader label="Cost" sortKey="cost" sort={recordSort} onSort={toggleRecordSort} />
+                    <SortHeader label="Status" sortKey="status" sort={recordSort} onSort={toggleRecordSort} />
+                    {(canEdit || canDelete) && <th className="text-center">Operation</th>}
+                  </tr>
+                </thead>
+                <tbody>
+                  {visibleRecords.length === 0 ? (
+                    <tr>
+                      <td colSpan={10} className="text-center py-12 text-slate-500">
+                        {records.length === 0 ? 'No maintenance records yet.' : 'No records match these filters.'}
+                        {records.length > 0 && (
+                          <Button variant="link" className="ml-1 h-auto p-0" onClick={clearAllRecordFilters}>
+                            Clear filters
+                          </Button>
+                        )}
+                      </td>
+                    </tr>
+                  ) : (
+                    visibleRecords.map((rec) => {
+                      const vehicle = vehiclesById.get(rec.vehicle_id);
+                      return (
+                        <tr key={rec.id} data-testid={`maint-record-row-${rec.id}`} {...rowHighlightProps(rec.id)}>
+                          <td className="whitespace-nowrap">{formatDate(serviceDateOf(rec))}</td>
+                          <td className="whitespace-nowrap font-medium">
+                            {rec._registration || <span className="text-red-600" title="This record's vehicle no longer exists">Unknown vehicle</span>}
+                            {vehicle && <div className="text-xs text-slate-500 font-normal">{vehicle.make} {vehicle.model}</div>}
+                          </td>
+                          <td>
+                            <div className="font-medium text-slate-800">{rec.description}</div>
+                            {rec.notes && <div className="text-xs text-slate-500 line-clamp-1">{rec.notes}</div>}
+                          </td>
+                          <td className="text-xs whitespace-nowrap">{typeLabel(rec.maintenance_type)}</td>
+                          <td className="text-sm">{rec.service_provider || <span className="text-slate-400">—</span>}</td>
+                          <td className="whitespace-nowrap">{formatKm(rec.odometer_at_maintenance)}</td>
+                          <td className="whitespace-nowrap">
+                            <div>{formatKm(rec.next_service_odometer)}</div>
+                            <div className="text-xs text-slate-500">{formatDate(rec.next_due_date)}</div>
+                          </td>
+                          <td className="whitespace-nowrap">{formatMoney(rec.cost, rec.currency)}</td>
+                          <td className="text-xs">{workStatusLabel(rec.work_status)}</td>
+                          {(canEdit || canDelete) && (
+                            <td>
+                              <div className="flex items-center justify-center gap-1">
+                                {canEdit && (
+                                  <Button type="button" variant="ghost" size="icon" className="h-8 w-8 text-slate-500 hover:text-amber-700"
+                                    title="Edit record" onClick={() => openEditRecord(rec)} data-testid={`maint-edit-${rec.id}`}>
+                                    <Pencil size={15} />
+                                  </Button>
+                                )}
+                                {canDelete && (
+                                  <Button type="button" variant="ghost" size="icon" className="h-8 w-8 text-slate-500 hover:text-red-600"
+                                    title="Delete record" onClick={() => setDeleteTarget(rec)}>
+                                    <Trash2 size={15} />
+                                  </Button>
+                                )}
+                              </div>
+                            </td>
+                          )}
+                        </tr>
+                      );
+                    })
+                  )}
+                </tbody>
+              </table>
+            </HorizontalScrollContainer>
           </div>
-          <form onSubmit={handleSubmitAdd} className="maint-form-body px-5 py-4 space-y-3.5">
-            <div className="maint-form-row">
-              <Label className="maint-form-label">Item</Label>
-              <Input
-                value={formData.description}
-                onChange={(e) => setFormData({ ...formData, description: e.target.value })}
-                placeholder="DUE FOR SERVICING"
-                required
-              />
-            </div>
-            <div className="maint-form-row">
-              <Label className="maint-form-label">Device</Label>
-              <Input value={deviceLabel(activeVehicle)} readOnly />
-            </div>
-            <div className="maint-form-row">
-              <Label className="maint-form-label">Odometer</Label>
-              <div className="relative">
-                <Input
-                  type="number"
-                  step="0.01"
-                  value={activeVehicle?.odometer_reading ?? ''}
-                  readOnly
-                  className="pr-12"
-                />
-                <span className="absolute right-3 top-1/2 -translate-y-1/2 text-xs text-amber-700/70">
-                  km
-                </span>
-              </div>
-            </div>
-            <div className="maint-form-row">
-              <Label className="maint-form-label">
-                Current Maintenance <span className="text-red-500">*</span>
-              </Label>
-              <div className="relative">
-                <Input
-                  type="number"
-                  step="0.01"
-                  value={formData.odometer_at_maintenance}
-                  onChange={(e) => handleCurrentOdoChange(e.target.value)}
-                  required
-                  className="pr-12"
-                />
-                <span className="absolute right-3 top-1/2 -translate-y-1/2 text-xs text-amber-700/70">
-                  km
-                </span>
-              </div>
-            </div>
-            <div className="maint-form-row">
-              <Label className="maint-form-label">
-                Current date <span className="text-red-500">*</span>
-              </Label>
-              <Input
-                type="date"
-                value={formData.scheduled_date}
-                onChange={(e) => handleCurrentDateChange(e.target.value)}
-                required
-              />
-            </div>
-            <div className="maint-form-row">
-              <Label className="maint-form-label">
-                Next Maintenance Mileage <span className="text-red-500">*</span>
-              </Label>
-              <div className="relative">
-                <Input
-                  type="number"
-                  step="0.01"
-                  value={formData.next_service_odometer}
-                  onChange={(e) =>
-                    setFormData({ ...formData, next_service_odometer: e.target.value })
-                  }
-                  required
-                  className="pr-12"
-                />
-                <span className="absolute right-3 top-1/2 -translate-y-1/2 text-xs text-amber-700/70">
-                  km
-                </span>
-              </div>
-            </div>
-            <div className="maint-form-row">
-              <Label className="maint-form-label">
-                Next Maintenance Date <span className="text-red-500">*</span>
-              </Label>
-              <Input
-                type="date"
-                value={formData.next_due_date}
-                onChange={(e) => setFormData({ ...formData, next_due_date: e.target.value })}
-                required
-              />
-            </div>
-            <div className="maint-form-row">
-              <Label className="maint-form-label">Remark</Label>
-              <Textarea
-                value={formData.notes}
-                onChange={(e) => setFormData({ ...formData, notes: e.target.value })}
-                rows={3}
-              />
-            </div>
-            <div className="flex justify-center gap-3 pt-2 pb-1">
-              <Button type="submit" className="maint-form-submit">
-                Submit
-              </Button>
-              <Button
-                type="button"
-                variant="outline"
-                className="maint-form-cancel"
-                onClick={() => handleAddOpenChange(false)}
-              >
-                Cancel
-              </Button>
-            </div>
-          </form>
-        </DialogContent>
-      </Dialog>
+        </TabsContent>
+      </Tabs>
+
+      {editor && (
+        <MaintenanceRecordDialog
+          key={editor.key}
+          open
+          onOpenChange={(open) => !open && setEditor(null)}
+          record={editor.record || null}
+          vehicle={editor.vehicle || null}
+          vehicles={vehicles}
+          vendors={vendors}
+          workshops={workshops}
+          intervals={intervalDefaults}
+          onSaved={handleSaved}
+        />
+      )}
 
       {/* View All Records — history + requests for vehicle */}
       <Dialog open={historyOpen} onOpenChange={handleHistoryOpenChange}>
@@ -944,8 +981,9 @@ const Maintenance = () => {
                         <th className="text-left px-3 py-2 font-medium">Mileage</th>
                         <th className="text-left px-3 py-2 font-medium">Date</th>
                         <th className="text-left px-3 py-2 font-medium">Next</th>
+                        <th className="text-left px-3 py-2 font-medium">Cost</th>
                         <th className="text-left px-3 py-2 font-medium">Status</th>
-                        {canDelete && <th className="w-12" />}
+                        {(canEdit || canDelete) && <th className="w-20" />}
                       </tr>
                     </thead>
                     <tbody>
@@ -954,7 +992,7 @@ const Maintenance = () => {
                           <td className="px-3 py-2.5">
                             <div className="font-medium text-slate-800">{rec.description}</div>
                             <div className="text-xs text-slate-500">
-                              {rec.maintenance_type}
+                              {typeLabel(rec.maintenance_type)}
                               {rec.notes ? ` · ${rec.notes}` : ''}
                             </div>
                           </td>
@@ -970,11 +1008,31 @@ const Maintenance = () => {
                               {formatDate(rec.next_due_date)}
                             </div>
                           </td>
+                          <td className="px-3 py-2.5 whitespace-nowrap text-xs">
+                            {formatMoney(rec.cost, rec.currency)}
+                            {rec.service_provider && <div className="text-slate-500">{rec.service_provider}</div>}
+                          </td>
                           <td className="px-3 py-2.5 text-xs">
                             {workStatusLabel(rec.work_status)}
                           </td>
-                          {canDelete && (
-                            <td className="px-2 py-2.5">
+                          {(canEdit || canDelete) && (
+                            <td className="px-2 py-2.5 whitespace-nowrap">
+                              {canEdit && (
+                                <Button
+                                  type="button"
+                                  variant="ghost"
+                                  size="icon"
+                                  className="h-7 w-7 text-slate-400 hover:text-amber-700"
+                                  title="Edit record"
+                                  onClick={() => {
+                                    setHistoryOpen(false);
+                                    openEditRecord(rec);
+                                  }}
+                                >
+                                  <Pencil size={14} />
+                                </Button>
+                              )}
+                              {canDelete && (
                               <Button
                                 type="button"
                                 variant="ghost"
@@ -985,6 +1043,7 @@ const Maintenance = () => {
                               >
                                 <Trash2 size={14} />
                               </Button>
+                              )}
                             </td>
                           )}
                         </tr>

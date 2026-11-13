@@ -24,6 +24,7 @@ BULK_HEADERS = [
     "Cost",
     "Currency",
     "Work Status",
+    "Service Provider",
     "Notes",
 ]
 
@@ -46,6 +47,10 @@ _HEADER_ALIASES = {
     "currency": "currency",
     "work status": "work_status",
     "notes": "notes",
+    "service provider": "service_provider",
+    "provider": "service_provider",
+    "vendor": "service_provider",
+    "workshop": "service_provider",
 }
 
 _TYPE_ALIASES = {
@@ -81,6 +86,7 @@ SAMPLE_ROW = [
     "GHS",
     "WORK_IN_PROGRESS",
     "",
+    "",
 ]
 
 _NUMBERED_INSTRUCTION = re.compile(r"^\d+\.\s")
@@ -102,7 +108,7 @@ def build_maintenance_template_workbook() -> bytes:
     for col, value in enumerate(SAMPLE_ROW, start=1):
         ws.cell(row=2, column=col, value=value)
 
-    widths = [20, 16, 32, 14, 16, 12, 18, 10, 10, 18, 24]
+    widths = [20, 16, 32, 14, 16, 12, 18, 10, 10, 18, 24, 24]
     for col, width in enumerate(widths, start=1):
         ws.column_dimensions[get_column_letter(col)].width = width
 
@@ -115,7 +121,9 @@ def build_maintenance_template_workbook() -> bytes:
     guide["A6"] = "4. Dates: YYYY-MM-DD. Currency: GHS, LRD, USD, or STN."
     guide["A7"] = "5. Next Service Date / Next Service Odometer are optional — auto-calculated from Master Data defaults when blank."
     guide["A8"] = "6. Work Status (optional): WORK_IN_PROGRESS, WORK_COMPLETED, ETC, ADDITIONAL_WORK_REQUIRED."
-    guide["A9"] = "7. Delete the sample row before uploading."
+    guide["A9"] = "7. Service Provider (optional): the vendor or workshop name, matched to Vendors or Master Data workshops when spelled the same."
+    guide["A10"] = "8. ETC rows are rejected: set the estimated completion on screen instead."
+    guide["A11"] = "9. Delete the sample row before uploading."
     guide.column_dimensions["A"].width = 88
 
     buf = io.BytesIO()
@@ -294,6 +302,7 @@ def parse_maintenance_bulk_upload(file_bytes: bytes) -> Tuple[List[Dict[str, Any
                 "next_service_odometer": next_odo,
                 "work_status": _normalize_work_status(data.get("work_status")),
                 "notes": notes,
+                "service_provider": str(data.get("service_provider") or "").strip() or None,
             })
         except ValueError as exc:
             errors.append({

@@ -1,13 +1,107 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import axios from 'axios';
+import { Link, useSearchParams } from 'react-router-dom';
 import { useAuth } from '../contexts/AuthContext';
-import { Gauge, AlertTriangle, TrendingUp, TrendingDown, Activity, Clock } from 'lucide-react';
+import { Gauge, AlertTriangle, TrendingUp, TrendingDown, Activity, Clock, MapPin } from 'lucide-react';
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '../components/ui/select';
+import { Tabs, TabsContent, TabsList, TabsTrigger } from '../components/ui/tabs';
+import VehicleDrivingMetrics from '../components/driving/VehicleDrivingMetrics';
 
 const BACKEND_URL = process.env.REACT_APP_BACKEND_URL;
 const API = `${BACKEND_URL}/api`;
 
+/** Staff view: pick a vehicle (GPS + logbook) or a driver (logbook). */
+const StaffDrivingMetrics = () => {
+  const [searchParams, setSearchParams] = useSearchParams();
+  const vehicleId = searchParams.get('vehicle_id') || '';
+  const driverId = searchParams.get('driver_id') || '';
+  const [tab, setTab] = useState(driverId && !vehicleId ? 'driver' : 'vehicle');
+  const [vehicles, setVehicles] = useState([]);
+  const [drivers, setDrivers] = useState([]);
+
+  useEffect(() => {
+    axios.get(`${API}/vehicles`).then((r) => setVehicles(r.data || [])).catch(() => setVehicles([]));
+    axios.get(`${API}/drivers`).then((r) => setDrivers(r.data || [])).catch(() => setDrivers([]));
+  }, []);
+
+  const choose = (key, value) => {
+    const next = new URLSearchParams(searchParams);
+    next.set(key, value);
+    setSearchParams(next, { replace: true });
+  };
+
+  const sortedVehicles = [...vehicles].sort((a, b) => (a.registration_number || '').localeCompare(b.registration_number || ''));
+  const sortedDrivers = [...drivers].sort((a, b) => `${a.first_name} ${a.last_name}`.localeCompare(`${b.first_name} ${b.last_name}`));
+
+  return (
+    <div className="p-6 lg:p-8" data-testid="driving-metrics">
+      <div className="mb-6">
+        <h1 className="text-3xl font-bold text-slate-800">Driving Metrics</h1>
+        <p className="text-slate-500 mt-1">GPS driving behaviour from the trackers, with logbook figures for each driver</p>
+      </div>
+      <Tabs value={tab} onValueChange={setTab}>
+        <TabsList className="mb-4">
+          <TabsTrigger value="vehicle">By vehicle</TabsTrigger>
+          <TabsTrigger value="driver">By driver</TabsTrigger>
+        </TabsList>
+        <TabsContent value="vehicle">
+          <div className="flex flex-col sm:flex-row sm:items-center gap-3 mb-4">
+            <Select value={vehicleId} onValueChange={(v) => choose('vehicle_id', v)}>
+              <SelectTrigger className="w-full sm:w-80" data-testid="metrics-vehicle-select">
+                <SelectValue placeholder="Choose a vehicle" />
+              </SelectTrigger>
+              <SelectContent>
+                {sortedVehicles.map((v) => (
+                  <SelectItem key={v.id} value={v.id}>{v.registration_number} — {v.make} {v.model}</SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+            {vehicleId && (
+              <Link to={`/fleet-map?vehicle_id=${encodeURIComponent(vehicleId)}`} className="inline-flex items-center gap-1 text-sm text-amber-700 underline">
+                <MapPin size={14} /> Show on Fleet Map
+              </Link>
+            )}
+          </div>
+          {vehicleId ? (
+            <div className="fleet-card">
+              <VehicleDrivingMetrics key={vehicleId} vehicleId={vehicleId} />
+            </div>
+          ) : (
+            <p className="text-slate-500">Choose a vehicle to see its driving figures, or open a vehicle on the Fleet Map and use its Driving tab.</p>
+          )}
+        </TabsContent>
+        <TabsContent value="driver">
+          <div className="mb-4">
+            <Select value={driverId} onValueChange={(v) => choose('driver_id', v)}>
+              <SelectTrigger className="w-full sm:w-80" data-testid="metrics-driver-select">
+                <SelectValue placeholder="Choose a driver" />
+              </SelectTrigger>
+              <SelectContent>
+                {sortedDrivers.map((d) => (
+                  <SelectItem key={d.id} value={d.id}>{d.first_name} {d.last_name}</SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          </div>
+          {driverId ? (
+            <LogbookMetrics driverId={driverId} embedded />
+          ) : (
+            <p className="text-slate-500">Choose a driver to see their logbook figures.</p>
+          )}
+        </TabsContent>
+      </Tabs>
+    </div>
+  );
+};
+
 const DrivingMetrics = () => {
-  const { user, token, isDriverOrUser } = useAuth();
+  const { user, isStaff } = useAuth();
+  if (isStaff()) return <StaffDrivingMetrics />;
+  return <LogbookMetrics driverId={user?.id} />;
+};
+
+const LogbookMetrics = ({ driverId, embedded = false }) => {
+  const { token } = useAuth();
   const [metrics, setMetrics] = useState(null);
   const [loading, setLoading] = useState(true);
   const [period, setPeriod] = useState(30);
@@ -15,7 +109,7 @@ const DrivingMetrics = () => {
   const fetchMetrics = useCallback(async () => {
     setLoading(true);
     try {
-      const endpoint = `${API}/logbook/summary/${user?.id}?period_days=${period}`;
+      const endpoint = `${API}/logbook/summary/${driverId}?period_days=${period}`;
       
       const response = await axios.get(endpoint, {
         headers: { Authorization: `Bearer ${token}` }
@@ -34,7 +128,7 @@ const DrivingMetrics = () => {
     } finally {
       setLoading(false);
     }
-  }, [period, user, token]);
+  }, [period, driverId, token]);
 
   useEffect(() => {
     fetchMetrics();
@@ -104,11 +198,11 @@ const DrivingMetrics = () => {
   ];
 
   return (
-    <div className="p-8" data-testid="driving-metrics">
+    <div className={embedded ? '' : 'p-8'} data-testid={embedded ? 'driver-logbook-metrics' : 'driving-metrics'}>
       <div className="flex items-center justify-between mb-8">
         <div>
-          <h1 className="text-3xl font-bold text-slate-800">Driving Metrics</h1>
-          <p className="text-slate-500 mt-1">GPS & Telematics Performance Data</p>
+          {!embedded && <h1 className="text-3xl font-bold text-slate-800">Driving Metrics</h1>}
+          <p className="text-slate-500 mt-1">{embedded ? 'From this driver\'s logbook trips' : 'From your logbook trips'}</p>
         </div>
         
         <div className="flex items-center gap-2">

@@ -1,4 +1,4 @@
-import React, { useEffect, useState, useCallback } from 'react';
+import React, { useEffect, useMemo, useState, useCallback } from 'react';
 import axios from 'axios';
 import { Plus, Pencil, Trash2, Upload, Download, Mail, RefreshCw } from 'lucide-react';
 import { toast } from 'sonner';
@@ -18,6 +18,16 @@ import { completeDialogSubmit } from '../utils/formUtils';
 import { canEditFleetRecord, canHardDelete } from '../utils/permissions';
 import { useRecordHighlight } from '../utils/recordHighlight';
 import { safetyScoreTextClass, safetyScoreBadgeClass, safetyScoreLabel } from '../utils/safetyScore';
+import RecordFilters, { SortHeader } from '../components/RecordFilters';
+import {
+  ALL,
+  daysUntil,
+  distinctOptions,
+  matchesText,
+  sameValue,
+  useFilters,
+  useSort,
+} from '../utils/filtering';
 
 const BACKEND_URL = process.env.REACT_APP_BACKEND_URL;
 const API = `${BACKEND_URL}/api`;
@@ -27,10 +37,64 @@ const createInitialFormData = () => ({
   first_name: '',
   last_name: '',
   license_number: '',
+  license_class: '',
   license_expiry: new Date(Date.now() + 365 * 24 * 60 * 60 * 1000).toISOString().split('T')[0],
   phone: '',
   email: '',
+  department: '',
 });
+
+/** Common licence classes in Ghana, Liberia and São Tomé; any other value can be typed. */
+const LICENCE_CLASS_SUGGESTIONS = ['A', 'B', 'C', 'C1', 'D', 'D1', 'E', 'F', 'G'];
+
+const EXPIRY_OPTIONS = [
+  { value: 'EXPIRED', label: 'Expired' },
+  { value: 'SOON', label: 'Expires within 30 days' },
+  { value: 'VALID', label: 'Valid over 30 days' },
+];
+
+const LOGIN_OPTIONS = [
+  { value: 'Active', label: 'Active' },
+  { value: 'Invite pending', label: 'Invite pending' },
+  { value: 'Invite expired', label: 'Invite expired' },
+  { value: 'No login', label: 'No login' },
+];
+
+const INITIAL_FILTERS = {
+  country: ALL,
+  status: ALL,
+  license_class: ALL,
+  department: ALL,
+  expiry: ALL,
+  login: ALL,
+};
+
+const expiryBucket = (driver) => {
+  const days = daysUntil(driver.license_expiry);
+  if (days == null) return null;
+  if (days < 0) return 'EXPIRED';
+  if (days <= 30) return 'SOON';
+  return 'VALID';
+};
+
+const loginLabelFor = (invite) =>
+  invite?.status === 'ACCEPTED'
+    ? 'Active'
+    : invite?.status === 'PENDING'
+      ? 'Invite pending'
+      : invite?.status === 'EXPIRED'
+        ? 'Invite expired'
+        : 'No login';
+
+const SORT_ACCESSORS = {
+  name: (d) => `${d.first_name || ''} ${d.last_name || ''}`.trim().toLowerCase(),
+  license: (d) => d.license_number,
+  license_class: (d) => d.license_class,
+  department: (d) => d.department,
+  expiry: (d) => (d.license_expiry ? new Date(d.license_expiry).getTime() : null),
+  safety: (d) => (d.safety_score == null ? null : Number(d.safety_score)),
+  status: (d) => d.status,
+};
 
 const driverToFormData = (driver) => {
   const expiry = driver.license_expiry;
@@ -46,9 +110,11 @@ const driverToFormData = (driver) => {
     first_name: driver.first_name,
     last_name: driver.last_name,
     license_number: driver.license_number,
+    license_class: driver.license_class || '',
     license_expiry: licenseExpiry,
     phone: driver.phone,
     email: driver.email || '',
+    department: driver.department || '',
   };
 };
 
@@ -117,6 +183,36 @@ const Drivers = () => {
   }, [invites]);
 
   const openInvites = invites.filter((i) => i.status === 'PENDING' || i.status === 'EXPIRED');
+
+  const [search, setSearch] = useState('');
+  const { filters, setFilter, clear: clearFilters, activeCount } = useFilters(INITIAL_FILTERS);
+  const clearAll = () => {
+    clearFilters();
+    setSearch('');
+  };
+
+  const options = useMemo(() => ({
+    country: distinctOptions(drivers, (d) => normalizeCountryCode(d.country), (c) => getCountryLabel(c)),
+    status: distinctOptions(drivers, (d) => d.status),
+    license_class: distinctOptions(drivers, (d) => d.license_class),
+    department: distinctOptions(drivers, (d) => d.department),
+  }), [drivers]);
+
+  const filteredDrivers = useMemo(() => drivers.filter((d) => {
+    if (!matchesText(search, `${d.first_name} ${d.last_name}`, d.license_number, d.phone, d.email, d.department)) {
+      return false;
+    }
+    return (
+      sameValue(filters.country, normalizeCountryCode(d.country)) &&
+      sameValue(filters.status, d.status) &&
+      sameValue(filters.license_class, d.license_class) &&
+      sameValue(filters.department, d.department) &&
+      (filters.expiry === ALL || expiryBucket(d) === filters.expiry) &&
+      (filters.login === ALL || loginLabelFor(latestInviteByDriver[d.id]) === filters.login)
+    );
+  }), [drivers, search, filters, latestInviteByDriver]);
+
+  const { sorted: visibleDrivers, sort, toggle: toggleSort } = useSort(filteredDrivers, SORT_ACCESSORS, 'name');
 
   const handleInvite = async (driver) => {
     if (!driver.email) {
@@ -346,6 +442,22 @@ const Drivers = () => {
                   />
                 </div>
                 <div>
+                  <Label>Licence Class</Label>
+                  <Input
+                    list="licence-class-options"
+                    value={formData.license_class}
+                    onChange={(e) => setFormData({ ...formData, license_class: e.target.value })}
+                    placeholder="e.g. B"
+                    maxLength={60}
+                    data-testid="driver-license-class-input"
+                  />
+                  <datalist id="licence-class-options">
+                    {[...new Set([...LICENCE_CLASS_SUGGESTIONS, ...options.license_class.map((o) => o.value)])].map(
+                      (c) => <option key={c} value={c} />
+                    )}
+                  </datalist>
+                </div>
+                <div>
                   <Label>License Expiry</Label>
                   <Input
                     type="date"
@@ -369,6 +481,20 @@ const Drivers = () => {
                     value={formData.email}
                     onChange={(e) => setFormData({ ...formData, email: e.target.value })}
                   />
+                </div>
+                <div>
+                  <Label>Department</Label>
+                  <Input
+                    list="driver-department-options"
+                    value={formData.department}
+                    onChange={(e) => setFormData({ ...formData, department: e.target.value })}
+                    placeholder="e.g. Operations"
+                    maxLength={60}
+                    data-testid="driver-department-input"
+                  />
+                  <datalist id="driver-department-options">
+                    {options.department.map((o) => <option key={o.value} value={o.value} />)}
+                  </datalist>
                 </div>
                 <div className="flex justify-end gap-2 mt-6">
                   <Button type="button" variant="outline" onClick={() => handleDialogOpenChange(false)}>
@@ -413,7 +539,7 @@ const Drivers = () => {
                     required
                   />
                   <p className="text-xs text-slate-500 mt-1">
-                    Columns: First Name, Last Name, License Number, License Expiry, Phone, Email.
+                    Columns: First Name, Last Name, License Number, License Expiry, Phone, Email, Licence Class, Department.
                   </p>
                 </div>
                 {bulkResult && (
@@ -448,45 +574,95 @@ const Drivers = () => {
         )}
       </div>
 
+      <RecordFilters
+        testId="driver-filters"
+        search={search}
+        onSearch={setSearch}
+        searchPlaceholder="Search name, licence number, phone, email or department"
+        noun="drivers"
+        shown={visibleDrivers.length}
+        total={drivers.length}
+        activeCount={activeCount}
+        onClear={clearAll}
+        filters={[
+          options.country.length > 1 && {
+            key: 'country', label: 'Country', allLabel: 'All countries',
+            value: filters.country, onChange: (v) => setFilter('country', v), options: options.country,
+          },
+          {
+            key: 'status', label: 'Status', allLabel: 'All statuses',
+            value: filters.status, onChange: (v) => setFilter('status', v), options: options.status,
+          },
+          {
+            key: 'license_class', label: 'Licence class', allLabel: 'All classes',
+            value: filters.license_class, onChange: (v) => setFilter('license_class', v), options: options.license_class,
+          },
+          {
+            key: 'department', label: 'Department', allLabel: 'All departments',
+            value: filters.department, onChange: (v) => setFilter('department', v), options: options.department,
+          },
+          {
+            key: 'expiry', label: 'Licence expiry', allLabel: 'Any expiry',
+            value: filters.expiry, onChange: (v) => setFilter('expiry', v), options: EXPIRY_OPTIONS,
+          },
+          canEdit && {
+            key: 'login', label: 'Login', allLabel: 'Any login',
+            value: filters.login, onChange: (v) => setFilter('login', v), options: LOGIN_OPTIONS,
+          },
+        ].filter(Boolean)}
+      />
+
       <div className="fleet-card table-container">
-        <table>
+        <table data-testid="drivers-table">
           <thead>
             <tr>
-              <th>Name</th>
-              <th>License</th>
+              <SortHeader label="Name" sortKey="name" sort={sort} onSort={toggleSort} />
+              <SortHeader label="License" sortKey="license" sort={sort} onSort={toggleSort} />
+              <SortHeader label="Class" sortKey="license_class" sort={sort} onSort={toggleSort} />
+              <SortHeader label="Expiry" sortKey="expiry" sort={sort} onSort={toggleSort} />
+              <SortHeader label="Department" sortKey="department" sort={sort} onSort={toggleSort} />
               <th>Country</th>
               <th>Phone</th>
               <th>Email</th>
-              <th>Safety Score</th>
-              <th>Status</th>
+              <SortHeader label="Safety Score" sortKey="safety" sort={sort} onSort={toggleSort} />
+              <SortHeader label="Status" sortKey="status" sort={sort} onSort={toggleSort} />
               <th>Login</th>
               {canEdit && <th className="w-36">Actions</th>}
             </tr>
           </thead>
           <tbody>
-            {drivers.length === 0 ? (
+            {visibleDrivers.length === 0 ? (
               <tr>
-                <td colSpan={canEdit ? 9 : 8} className="text-center py-8 text-slate-500">
-                  No drivers found
+                <td colSpan={canEdit ? 12 : 11} className="text-center py-8 text-slate-500">
+                  {drivers.length === 0 ? 'No drivers found' : 'No drivers match these filters.'}
+                  {drivers.length > 0 && (
+                    <Button variant="link" className="ml-1 h-auto p-0" onClick={clearAll}>
+                      Clear filters
+                    </Button>
+                  )}
                 </td>
               </tr>
             ) : (
-              drivers.map((driver) => {
+              visibleDrivers.map((driver) => {
                 const inv = latestInviteByDriver[driver.id];
-                const loginLabel =
-                  inv?.status === 'ACCEPTED'
-                    ? 'Active'
-                    : inv?.status === 'PENDING'
-                      ? 'Invite pending'
-                      : inv?.status === 'EXPIRED'
-                        ? 'Invite expired'
-                        : 'No login';
+                const loginLabel = loginLabelFor(inv);
+                const expiryState = expiryBucket(driver);
                 return (
                 <tr key={driver.id} {...rowHighlightProps(driver.id)}>
                   <td className="font-semibold">
                     {driver.first_name} {driver.last_name}
                   </td>
                   <td className="text-xs font-mono">{driver.license_number}</td>
+                  <td className="text-sm">{driver.license_class || '—'}</td>
+                  <td
+                    className={`text-xs whitespace-nowrap ${
+                      expiryState === 'EXPIRED' ? 'text-red-600 font-semibold' : expiryState === 'SOON' ? 'text-amber-700 font-medium' : 'text-slate-600'
+                    }`}
+                    title={expiryState === 'EXPIRED' ? 'Licence expired' : expiryState === 'SOON' ? 'Licence expires within 30 days' : undefined}
+                  >
+                    {driver.license_expiry ? String(driver.license_expiry).slice(0, 10) : '—'}
+                  </td>
+                  <td className="text-sm">{driver.department || '—'}</td>
                   <td>
                     <span className={getCountryBadgeClass(driver.country)}>
                       {getCountryLabel(driver.country)}

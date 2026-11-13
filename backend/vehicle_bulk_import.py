@@ -19,6 +19,7 @@ _OPS_COLUMNS = [
     ("odometer_reading", "Odometer Reading (km)"),
     ("acquisition_cost", "Acquisition Cost"),
     ("acquisition_currency", "Currency"),
+    ("department", "Department"),
 ]
 
 BULK_HEADERS = [label for _, label in VEHICLE_MASTER_COLUMNS] + [label for _, label in _OPS_COLUMNS]
@@ -36,6 +37,8 @@ _HEADER_ALIASES.update({
     "odometer reading": "odometer_reading",
     "acquisition cost": "acquisition_cost",
     "currency": "acquisition_currency",
+    "department": "department",
+    "vehicle type": "vehicle_category",
 })
 
 _NUMERIC_MASTER_KEYS = {
@@ -84,6 +87,7 @@ SAMPLE_ROW = [
     45000,  # odometer
     185000,  # acquisition_cost
     "GHS",  # currency
+    "Operations",  # department
 ]
 
 
@@ -117,6 +121,7 @@ def build_template_workbook() -> bytes:
     guide["A8"] = "6. Delete the sample row (row 2) before uploading your data."
     guide["A9"] = "7. Select the fleet country in the upload screen (applies to all rows)."
     guide["A10"] = "8. Master fields are stored on the vehicle and synced to Vehicle Master."
+    guide["A11"] = "9. Department is optional. Vehicle Category is the vehicle type (e.g. Pickup, Saloon, Bus)."
     guide.column_dimensions["A"].width = 90
 
     buf = io.BytesIO()
@@ -292,6 +297,7 @@ def parse_bulk_upload(
                 acquisition_cost=cost,
                 acquisition_currency=currency,
                 master_fields=master_fields,
+                department=(str(data.get("department")).strip() or None) if data.get("department") else None,
             )
             creates.append(vehicle_input)
         except ValueError as exc:

@@ -15,6 +15,43 @@ def _require_etc_datetime(work_status: Optional[WorkStatus], etc_datetime: Optio
         raise ValueError("ETC datetime is required when Work Status is Estimated Time of Completion (ETC)")
 
 
+def check_maintenance_values(data: dict) -> None:
+    """Reject values that would save a misleading maintenance record.
+
+    Works on a full record or on the merged result of an update.
+    """
+    description = data.get("description")
+    if description is not None and not str(description).strip():
+        raise ValueError("Description is required")
+    for field, label in (
+        ("cost", "Cost"),
+        ("odometer_at_maintenance", "Odometer at service"),
+        ("next_service_odometer", "Next service odometer"),
+    ):
+        value = data.get(field)
+        if value is not None and float(value) < 0:
+            raise ValueError(f"{label} cannot be negative")
+    odo = data.get("odometer_at_maintenance")
+    next_odo = data.get("next_service_odometer")
+    if odo is not None and next_odo is not None and float(next_odo) < float(odo):
+        raise ValueError("Next service odometer must not be lower than the odometer at service")
+    scheduled = _as_date(data.get("scheduled_date"))
+    next_due = _as_date(data.get("next_due_date"))
+    if scheduled and next_due and next_due < scheduled:
+        raise ValueError("Next service date must not be before the service date")
+
+
+def _as_date(value):
+    if value is None or value == "":
+        return None
+    if isinstance(value, datetime):
+        return value.date()
+    try:
+        return datetime.fromisoformat(str(value).replace("Z", "+00:00")).date()
+    except ValueError:
+        return None
+
+
 class MaintenanceRecord(BaseModel):
     model_config = ConfigDict(extra="ignore")
     id: str = Field(default_factory=lambda: str(uuid.uuid4()))
@@ -30,6 +67,8 @@ class MaintenanceRecord(BaseModel):
     currency: CurrencyEnum
     cost_usd: float
     workshop_id: Optional[str] = None
+    vendor_id: Optional[str] = None
+    service_provider: Optional[str] = None
     parts_used: List[str] = Field(default_factory=list)
     notes: Optional[str] = None
     work_status: WorkStatus = WorkStatus.WORK_IN_PROGRESS
@@ -50,6 +89,8 @@ class MaintenanceRecordCreate(BaseModel):
     cost: float
     currency: CurrencyEnum
     workshop_id: Optional[str] = None
+    vendor_id: Optional[str] = None
+    service_provider: Optional[str] = None
     notes: Optional[str] = None
     work_status: WorkStatus = WorkStatus.WORK_IN_PROGRESS
     etc_datetime: Optional[datetime] = None
@@ -57,6 +98,8 @@ class MaintenanceRecordCreate(BaseModel):
     @model_validator(mode="after")
     def validate_etc(self):
         _require_etc_datetime(self.work_status, self.etc_datetime)
+        check_maintenance_values(self.model_dump())
+        self.description = self.description.strip()
         return self
 
 
@@ -72,9 +115,18 @@ class MaintenanceRecordUpdate(BaseModel):
     cost: Optional[float] = None
     currency: Optional[CurrencyEnum] = None
     workshop_id: Optional[str] = None
+    vendor_id: Optional[str] = None
+    service_provider: Optional[str] = None
     notes: Optional[str] = None
     work_status: Optional[WorkStatus] = None
     etc_datetime: Optional[datetime] = None
+
+
+# Fields an update may set back to empty. Everything else ignores an explicit null.
+MAINTENANCE_CLEARABLE_FIELDS = frozenset({
+    "next_due_date", "next_service_odometer", "workshop_id", "vendor_id",
+    "service_provider", "notes", "etc_datetime", "completed_date",
+})
 
 
 class WorkshopMaster(BaseModel):

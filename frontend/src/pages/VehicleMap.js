@@ -1,5 +1,6 @@
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import axios from 'axios';
+import { useSearchParams } from 'react-router-dom';
 import { RefreshCw, Radio, Search, AlertTriangle, CircleOff, Settings2 } from 'lucide-react';
 import { Button } from '../components/ui/button';
 import { Input } from '../components/ui/input';
@@ -89,6 +90,9 @@ const VehicleMap = () => {
   const [route, setRoute] = useState(null);
   const [routeCursor, setRouteCursor] = useState(null);
   const [trackersOpen, setTrackersOpen] = useState(false);
+  const [searchParams] = useSearchParams();
+  const linkedVehicleId = searchParams.get('vehicle_id');
+  const [linkHandled, setLinkHandled] = useState(false);
 
   const loadLive = useCallback(async () => {
     try {
@@ -179,6 +183,15 @@ const VehicleMap = () => {
     const loc = locations.find((l) => l.vehicle_id === id);
     if (loc && Number.isFinite(loc.latitude)) setFocus({ latitude: loc.latitude, longitude: loc.longitude, at: Date.now() });
   };
+
+  // Opened from another page with ?vehicle_id=: select that vehicle once the positions load.
+  useEffect(() => {
+    if (linkHandled || !linkedVehicleId || !locations.length) return;
+    setLinkHandled(true);
+    if (locations.some((l) => l.vehicle_id === linkedVehicleId)) selectVehicle(linkedVehicleId);
+    // selectVehicle only reads current state
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [linkedVehicleId, locations, linkHandled]);
 
   const closePanel = () => {
     setSelectedId(null);

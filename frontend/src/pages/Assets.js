@@ -1,6 +1,6 @@
 import React, { useEffect, useState } from 'react';
 import axios from 'axios';
-import { Plus, TrendingUp, Sparkles, Pencil, Trash2 } from 'lucide-react';
+import { Plus, TrendingUp, Sparkles, Pencil, Trash2, Upload } from 'lucide-react';
 import { toast } from 'sonner';
 import { useAuth } from '../contexts/AuthContext';
 import { Button } from '../components/ui/button';
@@ -9,6 +9,7 @@ import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle, Di
 import { Label } from '../components/ui/label';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '../components/ui/select';
 import ConfirmDeleteDialog from '../components/ConfirmDeleteDialog';
+import AssetBulkUploadDialog from '../components/AssetBulkUploadDialog';
 import { completeDialogSubmit } from '../utils/formUtils';
 import { canEditFleetRecord, canHardDelete } from '../utils/permissions';
 
@@ -54,6 +55,7 @@ const Assets = () => {
   const [deleting, setDeleting] = useState(false);
 
   const [formData, setFormData] = useState(createInitialFormData);
+  const [bulkOpen, setBulkOpen] = useState(false);
 
   useEffect(() => {
     fetchData();
@@ -183,6 +185,15 @@ const Assets = () => {
           <p className="text-slate-600 mt-1">Track asset value and predict resale prices</p>
         </div>
         <div className="flex gap-2">
+          {canEdit && (
+            <>
+              <Button variant="outline" onClick={() => setBulkOpen(true)} data-testid="bulk-upload-assets-btn">
+                <Upload size={18} className="mr-2" />
+                Bulk Upload
+              </Button>
+              <AssetBulkUploadDialog open={bulkOpen} onOpenChange={setBulkOpen} onImported={fetchData} />
+            </>
+          )}
           {canEdit && (
             <Dialog open={predictDialogOpen} onOpenChange={setPredictDialogOpen}>
               <DialogTrigger asChild>

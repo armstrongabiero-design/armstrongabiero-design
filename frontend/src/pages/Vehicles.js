@@ -1,6 +1,6 @@
-import React, { useEffect, useState, useCallback } from 'react';
+import React, { useEffect, useMemo, useState, useCallback } from 'react';
 import axios from 'axios';
-import { Plus, Search, Pencil, Trash2, Upload, Download } from 'lucide-react';
+import { Plus, Pencil, Trash2, Upload, Download } from 'lucide-react';
 import { toast } from 'sonner';
 import { useAuth } from '../contexts/AuthContext';
 import { Link, useSearchParams } from 'react-router-dom';
@@ -36,6 +36,28 @@ import { completeDialogSubmit } from '../utils/formUtils';
 import { canEditFleetRecord, canHardDelete } from '../utils/permissions';
 import { VEHICLE_MASTER_FIELDS } from '../components/VehicleMasterPanel';
 import HorizontalScrollContainer from '../components/HorizontalScrollContainer';
+import RecordFilters, { SortHeader } from '../components/RecordFilters';
+import { ALL, distinctOptions, matchesText, sameValue, useFilters, useSort } from '../utils/filtering';
+
+const INITIAL_FILTERS = {
+  status: ALL,
+  make: ALL,
+  model: ALL,
+  vehicle_type: ALL,
+  department: ALL,
+  fuel_type: ALL,
+};
+
+const VEHICLE_SORT = {
+  registration: (v) => v.registration_number,
+  vehicle: (v) => `${v.make || ''} ${v.model || ''}`.toLowerCase(),
+  year: (v) => (v.year == null ? null : Number(v.year)),
+  type: (v) => v.master_fields?.vehicle_category,
+  department: (v) => v.department,
+  status: (v) => v.status,
+  odometer: (v) => Number(v.odometer_reading || 0),
+  cost: (v) => Number(v.acquisition_cost_usd || 0),
+};
 
 const BACKEND_URL = process.env.REACT_APP_BACKEND_URL;
 const API = `${BACKEND_URL}/api`;
@@ -82,6 +104,7 @@ const createInitialFormData = () => {
     acquisition_cost: 0,
     acquisition_currency: 'GHS',
     odometer_reading: 0,
+    department: '',
   };
   MASTER_EXTRA_FIELDS.forEach((f) => {
     base[f.key] = '';
@@ -110,6 +133,7 @@ const vehicleToFormData = (vehicle) => {
     acquisition_cost: vehicle.acquisition_cost ?? 0,
     acquisition_currency: vehicle.acquisition_currency || 'GHS',
     odometer_reading: vehicle.odometer_reading ?? 0,
+    department: vehicle.department || '',
   };
   MASTER_EXTRA_FIELDS.forEach((f) => {
     const val = mf[f.key];
@@ -142,6 +166,7 @@ const buildVehiclePayload = (formData) => {
     acquisition_cost: parseFloat(formData.acquisition_cost),
     acquisition_currency: formData.acquisition_currency,
     odometer_reading: parseFloat(formData.odometer_reading) || 0,
+    department: (formData.department || '').trim(),
     master_fields,
   };
 };
@@ -156,7 +181,6 @@ const Vehicles = () => {
 
   const [activeTab, setActiveTab] = useState(tabFromUrl);
   const [vehicles, setVehicles] = useState([]);
-  const [filteredVehicles, setFilteredVehicles] = useState([]);
   const [loading, setLoading] = useState(true);
   const [searchTerm, setSearchTerm] = useState('');
   const [countryFilter, setCountryFilter] = useState(countryFromUrl === 'ALL' ? 'ALL' : countryFromUrl);
@@ -183,32 +207,51 @@ const Vehicles = () => {
     }
   }, []);
 
-  const filterVehicles = useCallback(() => {
-    let filtered = vehicles;
+  const { filters, setFilter, clear: clearFilters, activeCount } = useFilters(INITIAL_FILTERS);
 
-    if (countryFilter !== 'ALL') {
-      filtered = filtered.filter((v) => countryMatchesFilter(v.country, countryFilter));
+  const options = useMemo(() => {
+    const forMake = filters.make === ALL ? vehicles : vehicles.filter((v) => sameValue(filters.make, v.make));
+    return {
+      status: distinctOptions(vehicles, (v) => v.status),
+      make: distinctOptions(vehicles, (v) => v.make),
+      model: distinctOptions(forMake, (v) => v.model),
+      vehicle_type: distinctOptions(vehicles, (v) => v.master_fields?.vehicle_category),
+      department: distinctOptions(vehicles, (v) => v.department),
+      fuel_type: distinctOptions(vehicles, (v) => v.master_fields?.fuel_type),
+    };
+  }, [vehicles, filters.make]);
+
+  const filteredVehicles = useMemo(() => vehicles.filter((v) => {
+    if (countryFilter !== 'ALL' && !countryMatchesFilter(v.country, countryFilter)) return false;
+    if (!matchesText(searchTerm, v.registration_number, v.make, v.model, v.vin, v.department, v.master_fields?.vehicle_category)) {
+      return false;
     }
+    return (
+      sameValue(filters.status, v.status) &&
+      sameValue(filters.make, v.make) &&
+      sameValue(filters.model, v.model) &&
+      sameValue(filters.vehicle_type, v.master_fields?.vehicle_category) &&
+      sameValue(filters.department, v.department) &&
+      sameValue(filters.fuel_type, v.master_fields?.fuel_type)
+    );
+  }), [vehicles, countryFilter, searchTerm, filters]);
 
-    if (searchTerm) {
-      filtered = filtered.filter(
-        (v) =>
-          v.registration_number.toLowerCase().includes(searchTerm.toLowerCase()) ||
-          v.make.toLowerCase().includes(searchTerm.toLowerCase()) ||
-          v.model.toLowerCase().includes(searchTerm.toLowerCase())
-      );
-    }
+  const { sorted: visibleVehicles, sort, toggle: toggleSort } = useSort(filteredVehicles, VEHICLE_SORT, 'registration');
 
-    setFilteredVehicles(filtered);
-  }, [vehicles, searchTerm, countryFilter]);
+  const clearAll = () => {
+    clearFilters();
+    setSearchTerm('');
+    setCountryFilter('ALL');
+  };
+
+  const setMake = (value) => {
+    setFilter('make', value);
+    setFilter('model', ALL); // a model from another make would hide everything
+  };
 
   useEffect(() => {
     fetchVehicles();
   }, [fetchVehicles]);
-
-  useEffect(() => {
-    filterVehicles();
-  }, [filterVehicles]);
 
   useEffect(() => {
     setActiveTab(tabFromUrl);
@@ -406,6 +449,20 @@ const Vehicles = () => {
                       onChange={(e) => setFormData({ ...formData, odometer_reading: e.target.value })}
                     />
                   </div>
+                  <div>
+                    <Label>Department</Label>
+                    <Input
+                      list="vehicle-department-options"
+                      value={formData.department}
+                      onChange={(e) => setFormData({ ...formData, department: e.target.value })}
+                      placeholder="e.g. Logistics"
+                      maxLength={60}
+                      data-testid="vehicle-department-input"
+                    />
+                    <datalist id="vehicle-department-options">
+                      {options.department.map((o) => <option key={o.value} value={o.value} />)}
+                    </datalist>
+                  </div>
                 </div>
 
                 {FIELD_GROUPS.map((group) => (
@@ -429,8 +486,9 @@ const Vehicles = () => {
                           undefined;
                         return (
                           <div key={key}>
-                            <Label>{meta.label}{required ? ' *' : ''}</Label>
+                            <Label>{key === 'vehicle_category' ? 'Vehicle Type / Category' : meta.label}{required ? ' *' : ''}</Label>
                             <Input
+                              list={key === 'vehicle_category' ? 'vehicle-type-options' : undefined}
                               data-testid={testId}
                               type={key === 'acquisition_date' ? 'date' : (meta.type === 'number' ? 'number' : 'text')}
                               value={formData[key] ?? ''}
@@ -443,6 +501,11 @@ const Vehicles = () => {
                     </div>
                   </div>
                 ))}
+                <datalist id="vehicle-type-options">
+                  {[...new Set(['Pickup', 'Saloon', 'SUV', 'Van', 'Bus', 'Truck', 'Motorcycle', ...options.vehicle_type.map((o) => o.value)])].map(
+                    (t) => <option key={t} value={t} />
+                  )}
+                </datalist>
 
                 <div className="space-y-3">
                   <h4 className="text-sm font-semibold text-slate-700 border-b border-slate-200 pb-1">Financial</h4>
@@ -526,7 +589,7 @@ const Vehicles = () => {
                     required
                   />
                   <p className="text-xs text-slate-500 mt-1">
-                    Template columns match Vehicle Master Data (Serial No through Active Flag), plus Odometer Reading (km), Acquisition Cost, and Currency.
+                    Template columns match Vehicle Master Data (Serial No through Active Flag), plus Odometer Reading (km), Acquisition Cost, Currency and Department.
                   </p>
                 </div>
                 {bulkResult && (
@@ -568,58 +631,73 @@ const Vehicles = () => {
         </TabsList>
 
         <TabsContent value="fleet">
-      <div className="flex flex-col lg:flex-row gap-4 mb-6">
-        <div className="relative flex-1">
-          <Search className="absolute left-3 top-1/2 transform -translate-y-1/2 text-slate-400" size={18} />
-          <Input
-            data-testid="search-vehicles-input"
-            placeholder="Search by registration, make, or model..."
-            className="pl-10"
-            value={searchTerm}
-            onChange={(e) => setSearchTerm(e.target.value)}
-          />
-        </div>
+      <RecordFilters
+        testId="vehicle-filters"
+        search={searchTerm}
+        onSearch={setSearchTerm}
+        searchPlaceholder="Search registration, make, model, VIN, type or department"
+        noun="vehicles"
+        shown={visibleVehicles.length}
+        total={vehicles.length}
+        activeCount={activeCount + (countryFilter !== 'ALL' ? 1 : 0)}
+        onClear={clearAll}
+        filters={[
+          { key: 'status', label: 'Status', allLabel: 'All statuses', value: filters.status, onChange: (v) => setFilter('status', v), options: options.status },
+          { key: 'make', label: 'Make', allLabel: 'All makes', value: filters.make, onChange: setMake, options: options.make },
+          { key: 'model', label: 'Model', allLabel: 'All models', value: filters.model, onChange: (v) => setFilter('model', v), options: options.model },
+          { key: 'vehicle_type', label: 'Vehicle type', allLabel: 'All types', value: filters.vehicle_type, onChange: (v) => setFilter('vehicle_type', v), options: options.vehicle_type },
+          { key: 'department', label: 'Department', allLabel: 'All departments', value: filters.department, onChange: (v) => setFilter('department', v), options: options.department },
+          { key: 'fuel_type', label: 'Fuel', allLabel: 'All fuel types', value: filters.fuel_type, onChange: (v) => setFilter('fuel_type', v), options: options.fuel_type },
+        ]}
+      >
         <CountrySelect
           value={countryFilter}
           onValueChange={setCountryFilter}
           includeAllOption
           allLabel="All Countries"
-          className="w-full lg:w-56"
+          className="w-full md:w-56"
         />
-      </div>
+      </RecordFilters>
 
       <div className="fleet-card table-container">
         <HorizontalScrollContainer>
         <table data-testid="vehicles-table" className="min-w-full">
           <thead>
             <tr>
-              <th>Registration</th>
-              <th>Vehicle</th>
-              <th>Category</th>
+              <SortHeader label="Registration" sortKey="registration" sort={sort} onSort={toggleSort} />
+              <SortHeader label="Vehicle" sortKey="vehicle" sort={sort} onSort={toggleSort} />
+              <SortHeader label="Type" sortKey="type" sort={sort} onSort={toggleSort} />
+              <SortHeader label="Department" sortKey="department" sort={sort} onSort={toggleSort} />
               <th>VIN</th>
               <th>Fuel</th>
               <th>Country</th>
-              <th>Status</th>
-              <th>Odometer</th>
-              <th>Cost (USD)</th>
+              <SortHeader label="Status" sortKey="status" sort={sort} onSort={toggleSort} />
+              <SortHeader label="Odometer" sortKey="odometer" sort={sort} onSort={toggleSort} />
+              <SortHeader label="Cost (USD)" sortKey="cost" sort={sort} onSort={toggleSort} />
               {canEdit && <th className="w-24">Actions</th>}
             </tr>
           </thead>
           <tbody>
-            {filteredVehicles.length === 0 ? (
+            {visibleVehicles.length === 0 ? (
               <tr>
-                <td colSpan={canEdit ? 10 : 9} className="text-center py-8 text-slate-500">
-                  No vehicles found. Add your first vehicle to get started.
+                <td colSpan={canEdit ? 11 : 10} className="text-center py-8 text-slate-500">
+                  {vehicles.length === 0 ? 'No vehicles found. Add your first vehicle to get started.' : 'No vehicles match these filters.'}
+                  {vehicles.length > 0 && (
+                    <Button variant="link" className="ml-1 h-auto p-0" onClick={clearAll}>
+                      Clear filters
+                    </Button>
+                  )}
                 </td>
               </tr>
             ) : (
-              filteredVehicles.map((vehicle) => (
+              visibleVehicles.map((vehicle) => (
                 <tr key={vehicle.id} data-testid={`vehicle-row-${vehicle.id}`}>
                   <td className="font-semibold">{vehicle.registration_number}</td>
                   <td>
                     {vehicle.make} {vehicle.model} ({vehicle.year})
                   </td>
                   <td className="text-xs text-slate-600">{vehicle.master_fields?.vehicle_category || '—'}</td>
+                  <td className="text-xs text-slate-600">{vehicle.department || '—'}</td>
                   <td className="text-xs">{vehicle.vin}</td>
                   <td className="text-xs text-slate-600">{vehicle.master_fields?.fuel_type || '—'}</td>
                   <td>

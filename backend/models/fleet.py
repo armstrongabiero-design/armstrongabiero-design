@@ -1,10 +1,37 @@
 """Fleet models: Country, Vehicle, Driver"""
-from pydantic import BaseModel, Field, ConfigDict
+import re
+
+from pydantic import BaseModel, Field, ConfigDict, field_validator
 from typing import Optional, Dict, Any
 from datetime import datetime
 import uuid
 
 from .enums import CountryCode, CurrencyEnum, VehicleStatus
+
+LABEL_MAX_LENGTH = 60
+
+
+def clean_label(value: Optional[str], *, upper: bool = False) -> Optional[str]:
+    """Tidy a short free-text label such as a department or licence class.
+
+    Blank input becomes "" so an update can clear the field; None stays None.
+    """
+    if value is None:
+        return None
+    text = re.sub(r"\s+", " ", str(value)).strip()[:LABEL_MAX_LENGTH]
+    return text.upper() if upper else text
+
+
+class _LabelFields(BaseModel):
+    @field_validator("department", check_fields=False)
+    @classmethod
+    def _clean_department(cls, value):
+        return clean_label(value)
+
+    @field_validator("license_class", check_fields=False)
+    @classmethod
+    def _clean_license_class(cls, value):
+        return clean_label(value, upper=True)
 
 
 class Country(BaseModel):
@@ -44,6 +71,7 @@ class Vehicle(BaseModel):
     country_specific_fields: Dict[str, Any] = Field(default_factory=dict)
     # Extended Fleet Master Data fields (aligned with Vehicle Master template)
     master_fields: Dict[str, Any] = Field(default_factory=dict)
+    department: Optional[str] = None
     availability_reason: Optional[str] = None
     availability_notes: Optional[str] = None
     availability_changed_at: Optional[datetime] = None
@@ -52,7 +80,7 @@ class Vehicle(BaseModel):
     updated_at: datetime = Field(default_factory=datetime.utcnow)
 
 
-class VehicleCreate(BaseModel):
+class VehicleCreate(_LabelFields):
     country: CountryCode
     registration_number: str
     make: str
@@ -66,9 +94,10 @@ class VehicleCreate(BaseModel):
     acquisition_currency: CurrencyEnum
     country_specific_fields: Dict[str, Any] = Field(default_factory=dict)
     master_fields: Dict[str, Any] = Field(default_factory=dict)
+    department: Optional[str] = None
 
 
-class VehicleUpdate(BaseModel):
+class VehicleUpdate(_LabelFields):
     country: Optional[CountryCode] = None
     registration_number: Optional[str] = None
     make: Optional[str] = None
@@ -82,6 +111,7 @@ class VehicleUpdate(BaseModel):
     acquisition_currency: Optional[CurrencyEnum] = None
     country_specific_fields: Optional[Dict[str, Any]] = None
     master_fields: Optional[Dict[str, Any]] = None
+    department: Optional[str] = None
 
 
 class Driver(BaseModel):
@@ -94,6 +124,8 @@ class Driver(BaseModel):
     license_expiry: datetime
     phone: str
     email: Optional[str] = None
+    license_class: Optional[str] = None
+    department: Optional[str] = None
     safety_score: float = 100.0
     total_incidents: int = 0
     status: str = "ACTIVE"
@@ -101,7 +133,7 @@ class Driver(BaseModel):
     updated_at: datetime = Field(default_factory=datetime.utcnow)
 
 
-class DriverCreate(BaseModel):
+class DriverCreate(_LabelFields):
     country: CountryCode
     first_name: str
     last_name: str
@@ -109,9 +141,11 @@ class DriverCreate(BaseModel):
     license_expiry: datetime
     phone: str
     email: Optional[str] = None
+    license_class: Optional[str] = None
+    department: Optional[str] = None
 
 
-class DriverUpdate(BaseModel):
+class DriverUpdate(_LabelFields):
     country: Optional[CountryCode] = None
     first_name: Optional[str] = None
     last_name: Optional[str] = None
@@ -119,5 +153,7 @@ class DriverUpdate(BaseModel):
     license_expiry: Optional[datetime] = None
     phone: Optional[str] = None
     email: Optional[str] = None
+    license_class: Optional[str] = None
+    department: Optional[str] = None
     safety_score: Optional[float] = None
     status: Optional[str] = None

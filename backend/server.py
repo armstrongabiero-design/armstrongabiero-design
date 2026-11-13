@@ -7,7 +7,7 @@ import re
 import uuid
 from datetime import datetime, timezone, timedelta
 from pathlib import Path
-from typing import List, Optional, Tuple
+from typing import Dict, List, Optional, Tuple
 
 from dotenv import load_dotenv
 
@@ -60,6 +60,7 @@ from auth_service import (
 )
 from currency_utils import currency_converter, load_saved_rates, refresh_rates
 import tracking_service
+import driving_metrics
 from protrack_client import ProTrackError, ProTrackNotConfigured
 from country_utils import normalize_country_code, country_filter_query
 from ai_services import ai_service, formula_resale_value
@@ -96,6 +97,7 @@ from models import (
     ForgotPasswordRequest, ResetPasswordRequest, PasswordResetToken
 )
 from models.locations import TrackerLinkUpdate
+from models.maintenance import MAINTENANCE_CLEARABLE_FIELDS, check_maintenance_values
 from models.vehicle_master import (
     VEHICLE_MASTER_COLUMNS,
     VehicleMaster,
@@ -117,6 +119,7 @@ from driver_bulk_import import build_driver_template_workbook, parse_driver_bulk
 from logbook_bulk_import import build_logbook_template_workbook, parse_logbook_bulk_upload
 from document_bulk_import import build_document_template_workbook, parse_document_bulk_upload
 from maintenance_bulk_import import build_maintenance_template_workbook, parse_maintenance_bulk_upload
+from asset_bulk_import import build_asset_template_workbook, parse_asset_bulk_upload, registration_key as asset_registration_key
 from tire_bulk_import import build_tire_template_workbook, parse_tire_bulk_upload
 from inventory_bulk_import import build_inventory_template_workbook, parse_inventory_bulk_upload
 from expenditure_bulk_import import build_expenditure_template_workbook, parse_expenditure_bulk_upload
@@ -331,15 +334,16 @@ async def lifespan(app: FastAPI):
 
     snapshot_task = asyncio.create_task(_availability_snapshot_loop())
 
-    tracking_task = None
+    gps_tasks = []
     if os.environ.get("GPS_TRACKING_ENABLED", "true").lower() not in ("0", "false", "no"):
-        tracking_task = asyncio.create_task(tracking_service.tracking_loop(db))
+        gps_tasks.append(asyncio.create_task(tracking_service.tracking_loop(db)))
+        gps_tasks.append(asyncio.create_task(driving_metrics.backfill_loop(db)))
 
     yield
-    if tracking_task:
-        tracking_task.cancel()
+    for task in gps_tasks:
+        task.cancel()
         try:
-            await tracking_task
+            await task
         except asyncio.CancelledError:
             pass
     rates_task.cancel()
@@ -1197,30 +1201,123 @@ def _validate_etc_or_raise(work_status, etc_datetime) -> None:
         )
 
 
+_MAINTENANCE_DATE_FIELDS = ("scheduled_date", "completed_date", "next_due_date", "etc_datetime", "created_at", "updated_at")
+_MAINTENANCE_LIST_LIMIT = 5000
+
+
+def normalize_country_code_safe(value) -> str:
+    try:
+        return normalize_country_code(value) if value else ""
+    except ValueError:
+        return str(value or "").upper()
+
+
+def _registration_key(value: Optional[str]) -> str:
+    """Registration compared without case, spaces or dashes ("GR 1234-20" == "gr1234 20")."""
+    return re.sub(r"[^A-Z0-9]", "", str(value or "").upper())
+
+
+def _maintenance_out(record: dict) -> dict:
+    for field in _MAINTENANCE_DATE_FIELDS:
+        if record.get(field) and isinstance(record[field], str):
+            try:
+                record[field] = datetime.fromisoformat(record[field].replace("Z", "+00:00"))
+            except ValueError:
+                record[field] = None
+    if not record.get("work_status"):
+        record["work_status"] = (
+            WorkStatus.WORK_COMPLETED.value if record.get("completed_date") else WorkStatus.WORK_IN_PROGRESS.value
+        )
+    return record
+
+
+async def _maintenance_vehicle(current_user: dict, vehicle_id: Optional[str]) -> dict:
+    """The vehicle a record is for. It must exist, or the record would never show on the page."""
+    vehicle = await db.vehicles.find_one(
+        {"id": vehicle_id}, {"_id": 0, "id": 1, "country": 1, "odometer_reading": 1}
+    ) if vehicle_id else None
+    if not vehicle:
+        raise HTTPException(status_code=400, detail="Vehicle not found. Choose an existing vehicle.")
+    assert_country(current_user, vehicle.get("country"))
+    return vehicle
+
+
+async def _resolve_service_provider(data: dict, vehicle: dict) -> None:
+    """Fill service_provider from the chosen vendor or workshop, in the vehicle's country.
+
+    With neither chosen, a typed provider name is kept as entered.
+    """
+    vendor_id = data.get("vendor_id")
+    workshop_id = data.get("workshop_id")
+    if vendor_id:
+        provider = await db.vendors.find_one({"id": vendor_id}, {"_id": 0, "name": 1, "country": 1})
+        data["workshop_id"] = None
+    elif workshop_id:
+        provider = await db.master_workshops.find_one({"id": workshop_id}, {"_id": 0, "name": 1, "country": 1})
+        data["vendor_id"] = None
+    else:
+        name = str(data.get("service_provider") or "").strip()
+        data["service_provider"] = name[:120] or None
+        return
+    if not provider:
+        raise HTTPException(status_code=400, detail="Service provider not found")
+    if provider.get("country") and not _countries_match(provider.get("country"), vehicle.get("country")):
+        raise HTTPException(status_code=400, detail="Service provider is in a different country from the vehicle")
+    data["service_provider"] = provider.get("name")
+
+
+async def _raise_vehicle_odometer(vehicle: dict, reading) -> None:
+    """A service at a higher reading than the vehicle shows moves the vehicle's odometer up."""
+    try:
+        value = float(reading)
+    except (TypeError, ValueError):
+        return
+    if value > float(vehicle.get("odometer_reading") or 0):
+        await db.vehicles.update_one(
+            {"id": vehicle["id"], "$or": [
+                {"odometer_reading": {"$lt": value}}, {"odometer_reading": None},
+            ]},
+            {"$set": {"odometer_reading": value, "updated_at": datetime.now(timezone.utc).isoformat()}},
+        )
+
+
+def _maintenance_doc(record: MaintenanceRecord) -> dict:
+    doc = record.model_dump()
+    for field in _MAINTENANCE_DATE_FIELDS:
+        if doc.get(field) and hasattr(doc[field], "isoformat"):
+            doc[field] = doc[field].isoformat()
+    for field in ("work_status", "maintenance_type", "currency"):
+        if hasattr(doc.get(field), "value"):
+            doc[field] = doc[field].value
+    return doc
+
+
 @api_router.post("/maintenance", response_model=MaintenanceRecord)
 async def create_maintenance(input: MaintenanceRecordCreate, current_user: dict = Depends(_require_staff)):
-    await assert_payload_scope(current_user, input.model_dump())
-    cost_usd = currency_converter.convert(input.cost, input.currency, CurrencyEnum.USD)
+    vehicle = await _maintenance_vehicle(current_user, input.vehicle_id)
     maintenance_data = input.model_dump()
     from maintenance_defaults import apply_maintenance_defaults, get_maintenance_defaults
     defaults = await get_maintenance_defaults(db)
     maintenance_data = apply_maintenance_defaults(maintenance_data, defaults)
-    maintenance_data["cost_usd"] = cost_usd
+    maintenance_data["cost_usd"] = currency_converter.convert(input.cost, input.currency, CurrencyEnum.USD)
     _validate_etc_or_raise(maintenance_data.get("work_status"), maintenance_data.get("etc_datetime"))
-    # Preserve the entered service date — do not overwrite with "now"
+    await _resolve_service_provider(maintenance_data, vehicle)
+    # The record's service date is the completion date; never "now".
     if _normalize_work_status(maintenance_data.get("work_status")) == WorkStatus.WORK_COMPLETED.value:
-        if not maintenance_data.get("completed_date"):
-            maintenance_data["completed_date"] = maintenance_data.get("scheduled_date")
-    maintenance = MaintenanceRecord(**maintenance_data)
+        maintenance_data["completed_date"] = maintenance_data.get("scheduled_date")
+    maintenance = MaintenanceRecord(**maintenance_data, created_at=datetime.now(timezone.utc))
 
-    doc = maintenance.model_dump()
-    for field in ("scheduled_date", "completed_date", "next_due_date", "etc_datetime", "created_at"):
-        if doc.get(field):
-            doc[field] = doc[field].isoformat()
-    if hasattr(doc.get("work_status"), "value"):
-        doc["work_status"] = doc["work_status"].value
-
-    await db.maintenance_records.insert_one(doc)
+    await db.maintenance_records.insert_one(_maintenance_doc(maintenance))
+    await _raise_vehicle_odometer(vehicle, maintenance.odometer_at_maintenance)
+    await write_audit_log(
+        action="create",
+        entity_type="maintenance_record",
+        entity_id=maintenance.id,
+        actor_id=current_user["id"],
+        actor_role=current_user.get("role", ""),
+        actor_email=current_user.get("email"),
+        details={"vehicle_id": maintenance.vehicle_id, "description": maintenance.description},
+    )
     return maintenance
 
 
@@ -1233,34 +1330,46 @@ async def get_maintenance_records(
     date_to: Optional[str] = None,
     search: Optional[str] = None,
     registration: Optional[str] = None,
+    service_provider: Optional[str] = None,
+    cost_min: Optional[float] = None,
+    cost_max: Optional[float] = None,
+    currency: Optional[str] = None,
     current_user: dict = Depends(_require_staff),
 ):
-    query: dict = {}
+    clauses: List[dict] = []
     if vehicle_id:
-        query["vehicle_id"] = vehicle_id
+        clauses.append({"vehicle_id": vehicle_id})
     if registration:
-        reg = re.escape(registration.strip())
-        vehicle_ids = [
-            v["id"]
-            for v in await db.vehicles.find(
-                {"registration_number": {"$regex": reg, "$options": "i"}},
-                {"_id": 0, "id": 1},
-            ).to_list(200)
-        ]
-        query["vehicle_id"] = {"$in": vehicle_ids or ["__none__"]}
+        wanted = _registration_key(registration)
+        vehicles = await db.vehicles.find({}, {"_id": 0, "id": 1, "registration_number": 1}).to_list(10000)
+        ids = [v["id"] for v in vehicles if wanted and wanted in _registration_key(v.get("registration_number"))]
+        clauses.append({"vehicle_id": {"$in": ids or ["__none__"]}})
     if maintenance_type:
-        query["maintenance_type"] = maintenance_type
+        clauses.append({"maintenance_type": maintenance_type})
+    if currency:
+        clauses.append({"currency": currency})
     if search:
-        query["description"] = {"$regex": re.escape(search.strip()), "$options": "i"}
+        pattern = {"$regex": re.escape(search.strip()), "$options": "i"}
+        clauses.append({"$or": [{"description": pattern}, {"notes": pattern}, {"service_provider": pattern}]})
+    if service_provider:
+        clauses.append({"service_provider": {"$regex": re.escape(service_provider.strip()), "$options": "i"}})
+    if cost_min is not None or cost_max is not None:
+        cost_q: dict = {}
+        if cost_min is not None:
+            cost_q["$gte"] = cost_min
+        if cost_max is not None:
+            cost_q["$lte"] = cost_max
+        clauses.append({"cost": cost_q})
     if date_from or date_to:
         date_q: dict = {}
         if date_from:
-            date_q["$gte"] = date_from if "T" in date_from else f"{date_from}T00:00:00"
+            date_q["$gte"] = date_from[:10]
         if date_to:
-            date_q["$lte"] = date_to if "T" in date_to else f"{date_to}T23:59:59.999999"
-        query["scheduled_date"] = date_q
+            # Stored dates are ISO strings, so "YYYY-MM-DD~" sorts after every time on that day.
+            date_q["$lte"] = f"{date_to[:10]}~"
+        clauses.append({"scheduled_date": date_q})
     if work_status == "incomplete":
-        incomplete_clause = {
+        clauses.append({
             "$or": [
                 {"work_status": {"$in": [
                     WorkStatus.WORK_IN_PROGRESS.value,
@@ -1269,22 +1378,18 @@ async def get_maintenance_records(
                 ]}},
                 {"work_status": {"$exists": False}, "completed_date": None},
             ]
-        }
-        query = {"$and": [query, incomplete_clause]} if query else incomplete_clause
+        })
     elif work_status:
-        query["work_status"] = work_status
+        clauses.append({"work_status": work_status})
 
+    query: dict = {"$and": clauses} if clauses else {}
     query = merge_scope(query, await vehicle_scope_query(current_user))
-    records = await db.maintenance_records.find(query, {"_id": 0}).to_list(1000)
-    for r in records:
-        for field in ("scheduled_date", "completed_date", "next_due_date", "etc_datetime", "created_at"):
-            if r.get(field) and isinstance(r[field], str):
-                r[field] = datetime.fromisoformat(r[field])
-        if not r.get("work_status"):
-            r["work_status"] = (
-                WorkStatus.WORK_COMPLETED.value if r.get("completed_date") else WorkStatus.WORK_IN_PROGRESS.value
-            )
-    return records
+    records = await (
+        db.maintenance_records.find(query, {"_id": 0})
+        .sort([("scheduled_date", -1), ("created_at", -1)])
+        .to_list(_MAINTENANCE_LIST_LIMIT)
+    )
+    return [_maintenance_out(r) for r in records]
 
 
 @api_router.get("/maintenance/bulk-upload/template")
@@ -1321,16 +1426,24 @@ async def bulk_upload_maintenance(
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
-    vehicles = await db.vehicles.find(country_query(current_user), {"_id": 0, "id": 1, "registration_number": 1}).to_list(10000)
-    vehicles_by_reg = {(v.get("registration_number") or "").upper(): v for v in vehicles}
+    vehicles = await db.vehicles.find(
+        country_query(current_user),
+        {"_id": 0, "id": 1, "registration_number": 1, "country": 1, "odometer_reading": 1},
+    ).to_list(10000)
+    vehicles_by_reg = {_registration_key(v.get("registration_number")): v for v in vehicles}
 
     created: List[dict] = []
     errors: List[dict] = list(parse_errors)
     from maintenance_defaults import apply_maintenance_defaults, get_maintenance_defaults
     defaults = await get_maintenance_defaults(db)
+    providers_by_name: Dict[tuple, dict] = {}
+    for collection, id_field in ((db.master_workshops, "workshop_id"), (db.vendors, "vendor_id")):
+        for item in await collection.find({}, {"_id": 0, "id": 1, "name": 1, "country": 1}).to_list(5000):
+            key = (str(item.get("name") or "").strip().lower(), normalize_country_code_safe(item.get("country")))
+            providers_by_name.setdefault(key, {id_field: item["id"]})
 
     for row in rows:
-        vehicle = vehicles_by_reg.get(row["registration_number"].upper())
+        vehicle = vehicles_by_reg.get(_registration_key(row["registration_number"]))
         if not vehicle:
             errors.append({
                 "row": row["row"],
@@ -1340,7 +1453,6 @@ async def bulk_upload_maintenance(
             continue
 
         try:
-            cost_usd = currency_converter.convert(row["cost"], row["currency"], CurrencyEnum.USD)
             maintenance_data = apply_maintenance_defaults({
                 "vehicle_id": vehicle["id"],
                 "maintenance_type": row["maintenance_type"],
@@ -1351,36 +1463,38 @@ async def bulk_upload_maintenance(
                 "odometer_at_maintenance": row["odometer_at_maintenance"],
                 "cost": row["cost"],
                 "currency": row["currency"],
+                "service_provider": row.get("service_provider"),
                 "notes": row.get("notes"),
                 "work_status": row.get("work_status") or WorkStatus.WORK_IN_PROGRESS.value,
             }, defaults)
-            maintenance_data["cost_usd"] = cost_usd
+            # Same checks as a record entered on screen.
+            validated = MaintenanceRecordCreate(**maintenance_data)
+            maintenance_data = validated.model_dump()
+            maintenance_data["cost_usd"] = currency_converter.convert(row["cost"], row["currency"], CurrencyEnum.USD)
+            named = str(row.get("service_provider") or "").strip().lower()
+            if named:
+                maintenance_data.update(providers_by_name.get(
+                    (named, normalize_country_code_safe(vehicle.get("country"))), {}
+                ))
+            await _resolve_service_provider(maintenance_data, vehicle)
             if _normalize_work_status(maintenance_data.get("work_status")) == WorkStatus.WORK_COMPLETED.value:
-                if not maintenance_data.get("completed_date"):
-                    maintenance_data["completed_date"] = maintenance_data.get("scheduled_date")
-            maintenance = MaintenanceRecord(**maintenance_data)
-            doc = maintenance.model_dump()
-            doc["scheduled_date"] = doc["scheduled_date"].isoformat()
-            if doc.get("completed_date"):
-                doc["completed_date"] = doc["completed_date"].isoformat()
-            if doc.get("next_due_date"):
-                doc["next_due_date"] = doc["next_due_date"].isoformat()
-            if doc.get("next_service_odometer") is not None:
-                doc["next_service_odometer"] = doc["next_service_odometer"]
-            if hasattr(doc.get("work_status"), "value"):
-                doc["work_status"] = doc["work_status"].value
-            doc["created_at"] = doc["created_at"].isoformat()
-
-            await db.maintenance_records.insert_one(doc)
+                maintenance_data["completed_date"] = maintenance_data.get("scheduled_date")
+            maintenance = MaintenanceRecord(**maintenance_data, created_at=datetime.now(timezone.utc))
+            await db.maintenance_records.insert_one(_maintenance_doc(maintenance))
+            await _raise_vehicle_odometer(vehicle, maintenance.odometer_at_maintenance)
+            vehicle["odometer_reading"] = max(
+                float(vehicle.get("odometer_reading") or 0), float(maintenance.odometer_at_maintenance)
+            )
             created.append({
                 "id": maintenance.id,
                 "registration_number": row["registration_number"],
             })
-        except Exception as exc:
+        except (ValueError, HTTPException) as exc:
+            message = exc.detail if isinstance(exc, HTTPException) else _validation_message(exc)
             errors.append({
                 "row": row["row"],
                 "registration_number": row["registration_number"],
-                "message": str(exc),
+                "message": message,
             })
 
     await write_audit_log(
@@ -1401,6 +1515,21 @@ async def bulk_upload_maintenance(
     }
 
 
+def _validation_message(exc: Exception) -> str:
+    """Readable text for a pydantic ValidationError or plain ValueError."""
+    errors = getattr(exc, "errors", None)
+    if callable(errors):
+        try:
+            parts = []
+            for err in errors():
+                msg = str(err.get("msg", "")).removeprefix("Value error, ")
+                parts.append(msg)
+            return "; ".join(parts) or str(exc)
+        except Exception:
+            return str(exc)
+    return str(exc)
+
+
 @api_router.put("/maintenance/{record_id}", response_model=MaintenanceRecord)
 async def update_maintenance(
     record_id: str,
@@ -1412,43 +1541,60 @@ async def update_maintenance(
         raise HTTPException(status_code=404, detail="Maintenance record not found")
     await assert_record_scope(current_user, existing)
 
-    update_data = input.model_dump(exclude_none=True)
+    sent = input.model_dump(exclude_unset=True)
+    update_data = {
+        k: v for k, v in sent.items()
+        if v is not None or k in MAINTENANCE_CLEARABLE_FIELDS
+    }
     if not update_data:
         raise HTTPException(status_code=400, detail="No fields to update")
-    await assert_payload_scope(current_user, update_data)
+    if "description" in update_data:
+        update_data["description"] = str(update_data["description"]).strip()
 
-    merged_status = update_data.get("work_status", existing.get("work_status"))
-    merged_etc = update_data.get("etc_datetime", existing.get("etc_datetime"))
-    _validate_etc_or_raise(merged_status, merged_etc)
+    vehicle = await _maintenance_vehicle(current_user, update_data.get("vehicle_id") or existing.get("vehicle_id"))
+    merged = {**existing, **update_data}
+    try:
+        check_maintenance_values(merged)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    _validate_etc_or_raise(merged.get("work_status"), merged.get("etc_datetime"))
+
+    if {"vendor_id", "workshop_id", "service_provider"} & update_data.keys():
+        provider = {
+            "vendor_id": merged.get("vendor_id"),
+            "workshop_id": merged.get("workshop_id"),
+            "service_provider": merged.get("service_provider"),
+        }
+        if "service_provider" in update_data and not ({"vendor_id", "workshop_id"} & update_data.keys()):
+            provider["vendor_id"] = provider["workshop_id"] = None  # typed name replaces a picked one
+        await _resolve_service_provider(provider, vehicle)
+        update_data.update(provider)
 
     if "cost" in update_data or "currency" in update_data:
-        cost = update_data.get("cost", existing.get("cost"))
-        currency = update_data.get("currency", existing.get("currency"))
-        update_data["cost_usd"] = currency_converter.convert(cost, currency, CurrencyEnum.USD)
+        update_data["cost_usd"] = currency_converter.convert(merged.get("cost"), merged.get("currency"), CurrencyEnum.USD)
 
-    if _normalize_work_status(merged_status) == WorkStatus.WORK_COMPLETED.value:
-        if not update_data.get("completed_date") and not existing.get("completed_date"):
-            # Prefer entered scheduled_date over wall-clock "now"
-            update_data["completed_date"] = (
-                update_data.get("scheduled_date")
-                or existing.get("scheduled_date")
-                or datetime.now(timezone.utc)
-            )
+    # Completed work is dated by its service date; anything else has no completion date.
+    if _normalize_work_status(merged.get("work_status")) == WorkStatus.WORK_COMPLETED.value:
+        update_data["completed_date"] = merged.get("scheduled_date")
+    else:
+        update_data["completed_date"] = None
 
-    if hasattr(update_data.get("work_status"), "value"):
-        update_data["work_status"] = update_data["work_status"].value
-
+    update_data["updated_at"] = datetime.now(timezone.utc)
     update_data = _mongo_update_payload(update_data)
     await db.maintenance_records.update_one({"id": record_id}, {"$set": update_data})
+    if "odometer_at_maintenance" in update_data:
+        await _raise_vehicle_odometer(vehicle, update_data["odometer_at_maintenance"])
+    await write_audit_log(
+        action="update",
+        entity_type="maintenance_record",
+        entity_id=record_id,
+        actor_id=current_user["id"],
+        actor_role=current_user.get("role", ""),
+        actor_email=current_user.get("email"),
+        details={"fields": sorted(k for k in sent if k != "updated_at")},
+    )
     updated = await db.maintenance_records.find_one({"id": record_id}, {"_id": 0})
-    for field in ("scheduled_date", "completed_date", "next_due_date", "etc_datetime", "created_at"):
-        if updated.get(field) and isinstance(updated[field], str):
-            updated[field] = datetime.fromisoformat(updated[field])
-    if not updated.get("work_status"):
-        updated["work_status"] = (
-            WorkStatus.WORK_COMPLETED.value if updated.get("completed_date") else WorkStatus.WORK_IN_PROGRESS.value
-        )
-    return MaintenanceRecord(**updated)
+    return MaintenanceRecord(**_maintenance_out(updated))
 
 
 @api_router.delete("/maintenance/{record_id}")
@@ -3131,29 +3277,157 @@ async def delete_document(
 
 
 # ============= ASSET ROUTES =============
+_ASSET_BULK_MAX_BYTES = 5 * 1024 * 1024
+
+
+def _asset_doc(asset: Asset) -> dict:
+    doc = asset.model_dump()
+    for field in ("acquisition_date", "disposal_date", "created_at", "updated_at"):
+        if doc.get(field) and hasattr(doc[field], "isoformat"):
+            doc[field] = doc[field].isoformat()
+    if hasattr(doc.get("currency"), "value"):
+        doc["currency"] = doc["currency"].value
+    return doc
+
+
+def _new_asset(vehicle_id: str, acquisition_date, cost: float, currency, depreciation_rate: float,
+               current_value: Optional[float] = None) -> Asset:
+    cost_usd = currency_converter.convert(cost, currency, CurrencyEnum.USD)
+    value = cost if current_value is None else current_value
+    value_usd = cost_usd if current_value is None else currency_converter.convert(value, currency, CurrencyEnum.USD)
+    now = datetime.now(timezone.utc)
+    return Asset(
+        vehicle_id=vehicle_id,
+        acquisition_date=acquisition_date,
+        acquisition_cost=cost,
+        currency=currency,
+        acquisition_cost_usd=cost_usd,
+        current_value=value,
+        current_value_usd=value_usd,
+        depreciation_rate=depreciation_rate,
+        created_at=now,
+        updated_at=now,
+    )
+
+
 @api_router.post("/assets", response_model=Asset)
 async def create_asset(input: AssetCreate, current_user: dict = Depends(_require_staff)):
     await assert_payload_scope(current_user, input.model_dump())
-    acquisition_cost_usd = currency_converter.convert(
-        input.acquisition_cost, input.currency, CurrencyEnum.USD
-    )
-    
-    asset_data = input.model_dump()
-    asset_data['acquisition_cost_usd'] = acquisition_cost_usd
-    asset_data['current_value'] = input.acquisition_cost
-    asset_data['current_value_usd'] = acquisition_cost_usd
-    
-    asset = Asset(**asset_data)
-    
-    doc = asset.model_dump()
-    doc['acquisition_date'] = doc['acquisition_date'].isoformat()
-    if doc.get('disposal_date'):
-        doc['disposal_date'] = doc['disposal_date'].isoformat()
-    doc['created_at'] = doc['created_at'].isoformat()
-    doc['updated_at'] = doc['updated_at'].isoformat()
-    
-    await db.assets.insert_one(doc)
+    if not await db.vehicles.find_one({"id": input.vehicle_id}, {"_id": 1}):
+        raise HTTPException(status_code=400, detail="Vehicle not found")
+    if await db.assets.find_one({"vehicle_id": input.vehicle_id}, {"_id": 1}):
+        raise HTTPException(status_code=409, detail="This vehicle already has an asset record. Edit that record instead.")
+    asset = _new_asset(input.vehicle_id, input.acquisition_date, input.acquisition_cost,
+                       input.currency, input.depreciation_rate)
+    await db.assets.insert_one(_asset_doc(asset))
     return asset
+
+
+@api_router.get("/assets/bulk-upload/template")
+async def download_asset_bulk_template(current_user: dict = Depends(_require_staff)):
+    return Response(
+        content=build_asset_template_workbook(),
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={"Content-Disposition": 'attachment; filename="asset-import-template.xlsx"'},
+    )
+
+
+@api_router.post("/assets/bulk-upload")
+async def bulk_upload_assets(
+    file: UploadFile = File(...),
+    current_user: dict = Depends(_require_staff),
+):
+    """Import assets from the Excel or CSV template.
+
+    Valid new rows are imported; duplicates and invalid rows are skipped and reported by row.
+    """
+    filename = (file.filename or "").lower()
+    if not filename.endswith((".xlsx", ".csv")):
+        raise HTTPException(
+            status_code=400,
+            detail="Please upload an Excel (.xlsx) or CSV (.csv) file. Download the template for the correct format.",
+        )
+    content = await file.read()
+    if len(content) > _ASSET_BULK_MAX_BYTES:
+        raise HTTPException(status_code=400, detail="File too large (max 5 MB)")
+
+    try:
+        rows, parse_errors = parse_asset_bulk_upload(content, filename)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    # Only vehicles the user may manage can be matched.
+    vehicles = await db.vehicles.find(
+        country_query(current_user), {"_id": 0, "id": 1, "registration_number": 1}
+    ).to_list(10000)
+    vehicles_by_reg = {asset_registration_key(v.get("registration_number")): v for v in vehicles}
+    has_asset = {
+        a["vehicle_id"]
+        for a in await db.assets.find(
+            {"vehicle_id": {"$in": [v["id"] for v in vehicles]}}, {"_id": 0, "vehicle_id": 1}
+        ).to_list(20000)
+    }
+
+    created: List[dict] = []
+    skipped: List[dict] = []
+    errors: List[dict] = list(parse_errors)
+
+    for row in rows:
+        vehicle = vehicles_by_reg.get(asset_registration_key(row["registration_number"]))
+        if not vehicle:
+            errors.append({
+                "row": row["row"],
+                "registration_number": row["registration_number"],
+                "message": f"No vehicle found with registration {row['registration_number']}",
+            })
+            continue
+        if vehicle["id"] in has_asset:
+            skipped.append({
+                "row": row["row"],
+                "registration_number": row["registration_number"],
+                "message": "Already has an asset record; skipped",
+            })
+            continue
+        try:
+            asset = _new_asset(
+                vehicle["id"], row["acquisition_date"], row["acquisition_cost"], row["currency"],
+                row["depreciation_rate"], row.get("current_value"),
+            )
+            await db.assets.insert_one(_asset_doc(asset))
+        except Exception as exc:  # report the row; keep importing the rest
+            logger.warning("Asset import row %s failed: %s", row["row"], type(exc).__name__)
+            errors.append({
+                "row": row["row"],
+                "registration_number": row["registration_number"],
+                "message": "Could not be saved",
+            })
+            continue
+        has_asset.add(vehicle["id"])
+        created.append({
+            "id": asset.id,
+            "row": row["row"],
+            "registration_number": vehicle.get("registration_number"),
+            "acquisition_cost": asset.acquisition_cost,
+            "currency": asset.currency.value if hasattr(asset.currency, "value") else asset.currency,
+        })
+
+    await write_audit_log(
+        action="bulk_create",
+        entity_type="asset",
+        entity_id="bulk",
+        actor_id=current_user["id"],
+        actor_role=current_user.get("role", ""),
+        actor_email=current_user.get("email"),
+        details={"created_count": len(created), "skipped_count": len(skipped), "failed_count": len(errors)},
+    )
+    return {
+        "created": len(created),
+        "skipped": len(skipped),
+        "failed": len(errors),
+        "records": created,
+        "skipped_rows": sorted(skipped, key=lambda e: e.get("row") or 0),
+        "errors": sorted(errors, key=lambda e: e.get("row") or 0),
+    }
 
 
 @api_router.get("/assets", response_model=List[Asset])
@@ -6449,6 +6723,37 @@ async def get_vehicle_route(
     except ProTrackError as exc:
         raise _protrack_http_error(exc)
     return {"vehicle_id": vehicle_id, "start": start.isoformat(), "end": end.isoformat(), **route}
+
+
+@api_router.get("/vehicle-locations/{vehicle_id}/driving-metrics")
+async def get_vehicle_driving_metrics(
+    vehicle_id: str,
+    days: int = Query(7),
+    current_user: dict = Depends(_require_staff),
+):
+    """GPS driving figures (from ProTrack) and logbook figures for one vehicle."""
+    if days not in driving_metrics.PERIODS:
+        raise HTTPException(status_code=400, detail="Choose 7 or 30 days")
+    await assert_vehicle_scope(current_user, vehicle_id)
+    tracker = await db.trackers.find_one({"vehicle_id": vehicle_id}, {"_id": 0, "imei": 1})
+    gps = None
+    if tracker:
+        try:
+            gps = await driving_metrics.gps_metrics(db, tracker["imei"], days)
+        except ProTrackNotConfigured:
+            gps = None
+    logbook = await driving_metrics.logbook_metrics(db, vehicle_id, days)
+    return {
+        "vehicle_id": vehicle_id,
+        "days": days,
+        "has_tracker": bool(tracker),
+        "gps": gps,
+        "logbook": logbook,
+        "thresholds": {
+            "speeding_kmh": driving_metrics.SPEEDING_KMH,
+            "fast_kmh": driving_metrics.FAST_KMH,
+        },
+    }
 
 
 async def _tracker_view(tracker: dict, vehicles: dict) -> dict:

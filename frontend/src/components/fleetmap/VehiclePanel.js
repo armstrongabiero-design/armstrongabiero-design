@@ -1,10 +1,13 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import axios from 'axios';
-import { ArrowLeft, Pause, Play, Route, X, AlertTriangle, Satellite, Link2 } from 'lucide-react';
+import { Link } from 'react-router-dom';
+import { ArrowLeft, Pause, Play, Route, X, AlertTriangle, Satellite, Link2, Gauge, ExternalLink } from 'lucide-react';
 import { Button } from '../ui/button';
 import { Input } from '../ui/input';
 import { Label } from '../ui/label';
 import { Slider } from '../ui/slider';
+import { Tabs, TabsContent, TabsList, TabsTrigger } from '../ui/tabs';
+import VehicleDrivingMetrics from '../driving/VehicleDrivingMetrics';
 import { getCountryLabel } from '../CountrySelect';
 import {
   STATE_META,
@@ -131,11 +134,21 @@ export default function VehiclePanel({
   });
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState(null);
+  const [tab, setTab] = useState('live');
 
   useEffect(() => {
     setPreset(null);
     setError(null);
   }, [location?.vehicle_id]);
+
+  // A day picked on the Driving tab opens its route on the map.
+  const showDayRoute = (day) => {
+    const start = new Date(`${day}T00:00:00Z`);
+    const end = new Date(Math.min(Date.now(), start.getTime() + 86400000 - 1000));
+    setCustom({ start: toLocalInputValue(start), end: toLocalInputValue(end) });
+    setTab('live');
+    loadRoute(start, end, 'custom');
+  };
 
   const state = locationState(location);
   const meta = STATE_META[state];
@@ -186,7 +199,26 @@ export default function VehiclePanel({
         <span className={`status-badge ${meta.badge}`}>{meta.label}</span>
       </div>
 
-      <div className="flex-1 space-y-4 overflow-y-auto pt-3">
+      <Tabs value={tab} onValueChange={setTab} className="flex min-h-0 flex-1 flex-col">
+        <TabsList className="mt-3 grid w-full grid-cols-2">
+          <TabsTrigger value="live" data-testid="panel-tab-live">Live &amp; route</TabsTrigger>
+          <TabsTrigger value="driving" data-testid="panel-tab-driving">
+            <Gauge size={14} className="mr-1" /> Driving
+          </TabsTrigger>
+        </TabsList>
+        <TabsContent value="driving" className="flex-1 overflow-y-auto pt-1">
+          {tab === 'driving' && (
+            <VehicleDrivingMetrics vehicleId={location.vehicle_id} compact onSelectDay={tracker ? showDayRoute : undefined} />
+          )}
+          <Link
+            to={`/driving-metrics?vehicle_id=${encodeURIComponent(location.vehicle_id)}`}
+            className="mt-4 inline-flex items-center gap-1 text-sm text-amber-700 underline"
+          >
+            Open in Driving Metrics <ExternalLink size={13} />
+          </Link>
+        </TabsContent>
+        <TabsContent value="live" className="flex-1 overflow-y-auto">
+      <div className="space-y-4 pt-1">
         {location.tracker_state_reason && state === 'OFFLINE' && (
           <div className="flex gap-2 rounded-lg bg-red-50 p-3 text-sm text-red-800">
             <AlertTriangle size={16} className="mt-0.5 shrink-0" />
@@ -373,6 +405,8 @@ export default function VehiclePanel({
           )}
         </div>
       </div>
+        </TabsContent>
+      </Tabs>
     </div>
   );
 }
