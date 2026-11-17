@@ -16,6 +16,7 @@ import VehicleMasterPanel from '../components/VehicleMasterPanel';
 import { canEditFleetRecord, canHardDelete, canExportMasterData } from '../utils/permissions';
 import { WORK_STATUS_OPTIONS } from '../utils/workStatus';
 import { completeDialogSubmit } from '../utils/formUtils';
+import HorizontalScrollContainer from '../components/HorizontalScrollContainer';
 
 const BACKEND_URL = process.env.REACT_APP_BACKEND_URL;
 const API = `${BACKEND_URL}/api`;
@@ -303,7 +304,7 @@ const MasterData = () => {
               Add Workshop
             </Button>
           </div>
-          <div className="fleet-card table-container">
+          <HorizontalScrollContainer className="fleet-card table-container">
             <table>
               <thead>
                 <tr>
@@ -347,7 +348,7 @@ const MasterData = () => {
                 )}
               </tbody>
             </table>
-          </div>
+          </HorizontalScrollContainer>
         </TabsContent>
 
         <TabsContent value="countries">
@@ -580,7 +581,7 @@ const MasterData = () => {
                 <li><strong>Trigger:</strong> When a Safety Incident is recorded for that driver.</li>
                 <li><strong>Formula:</strong> <code className="text-xs bg-slate-100 px-1 rounded">new_score = max(0, current_score − penalty)</code></li>
               </ul>
-              <div className="mt-3 overflow-x-auto">
+              <HorizontalScrollContainer className="mt-3">
                 <table className="w-full text-left border-collapse">
                   <thead>
                     <tr className="border-b border-slate-200">
@@ -607,7 +608,7 @@ const MasterData = () => {
                     </tr>
                   </tbody>
                 </table>
-              </div>
+              </HorizontalScrollContainer>
               <p className="mt-3">
                 Each incident also increments <strong>Total Incidents</strong> on the driver record.
                 Editing or deleting an incident does not automatically reverse prior penalties; score can be adjusted manually on the driver profile if needed.

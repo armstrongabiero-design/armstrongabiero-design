@@ -12,6 +12,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '.
 import ConfirmDeleteDialog from '../components/ConfirmDeleteDialog';
 import { completeDialogSubmit } from '../utils/formUtils';
 import { canEditFleetRecord, canHardDelete } from '../utils/permissions';
+import HorizontalScrollContainer from '../components/HorizontalScrollContainer';
 
 const BACKEND_URL = process.env.REACT_APP_BACKEND_URL;
 const API = `${BACKEND_URL}/api`;
@@ -294,7 +295,7 @@ const Fuel = () => {
         loading={deleting}
       />
 
-      <div className="fleet-card table-container">
+      <HorizontalScrollContainer className="fleet-card table-container">
         <table>
           <thead>
             <tr>
@@ -359,7 +360,7 @@ const Fuel = () => {
             )}
           </tbody>
         </table>
-      </div>
+      </HorizontalScrollContainer>
     </div>
   );
 };

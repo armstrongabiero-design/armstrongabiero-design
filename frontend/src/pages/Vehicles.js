@@ -659,8 +659,7 @@ const Vehicles = () => {
         />
       </RecordFilters>
 
-      <div className="fleet-card table-container">
-        <HorizontalScrollContainer>
+      <HorizontalScrollContainer className="fleet-card table-container">
         <table data-testid="vehicles-table" className="min-w-full">
           <thead>
             <tr>
@@ -742,7 +741,6 @@ const Vehicles = () => {
           </tbody>
         </table>
       </HorizontalScrollContainer>
-      </div>
         </TabsContent>
 
         <TabsContent value="availability">

@@ -265,8 +265,7 @@ const VehicleMasterPanel = ({ canEdit, canDelete }) => {
         )}
       </div>
 
-      <div className="fleet-card p-0 overflow-hidden table-container">
-        <HorizontalScrollContainer>
+      <HorizontalScrollContainer className="fleet-card p-0 table-container">
           <table className="min-w-max text-sm">
             <thead>
               <tr>
@@ -357,8 +356,7 @@ const VehicleMasterPanel = ({ canEdit, canDelete }) => {
               )}
             </tbody>
           </table>
-        </HorizontalScrollContainer>
-      </div>
+      </HorizontalScrollContainer>
 
       <Dialog open={bulkDialogOpen} onOpenChange={handleBulkDialogOpenChange}>
         <DialogContent className="max-w-lg">

@@ -12,6 +12,7 @@ import ConfirmDeleteDialog from '../components/ConfirmDeleteDialog';
 import AssetBulkUploadDialog from '../components/AssetBulkUploadDialog';
 import { completeDialogSubmit } from '../utils/formUtils';
 import { canEditFleetRecord, canHardDelete } from '../utils/permissions';
+import HorizontalScrollContainer from '../components/HorizontalScrollContainer';
 
 const BACKEND_URL = process.env.REACT_APP_BACKEND_URL;
 const API = `${BACKEND_URL}/api`;
@@ -326,7 +327,7 @@ const Assets = () => {
         loading={deleting}
       />
 
-      <div className="fleet-card table-container">
+      <HorizontalScrollContainer className="fleet-card table-container">
         <table>
           <thead>
             <tr>
@@ -397,7 +398,7 @@ const Assets = () => {
             )}
           </tbody>
         </table>
-      </div>
+      </HorizontalScrollContainer>
     </div>
   );
 };

@@ -655,8 +655,7 @@ const Maintenance = () => {
         </p>
       </div>
 
-      <div className="fleet-card table-container !p-0 overflow-hidden">
-        <HorizontalScrollContainer>
+      <HorizontalScrollContainer className="fleet-card table-container !p-0">
           <table className="maint-device-table min-w-full" data-testid="maintenance-device-table">
             <thead>
               <tr>
@@ -783,8 +782,7 @@ const Maintenance = () => {
               )}
             </tbody>
           </table>
-        </HorizontalScrollContainer>
-      </div>
+      </HorizontalScrollContainer>
 
         </TabsContent>
 
@@ -840,8 +838,7 @@ const Maintenance = () => {
             </p>
           )}
 
-          <div className="fleet-card table-container !p-0 overflow-hidden">
-            <HorizontalScrollContainer>
+          <HorizontalScrollContainer className="fleet-card table-container !p-0">
               <table className="maint-device-table min-w-full" data-testid="maintenance-records-table">
                 <thead>
                   <tr>
@@ -916,8 +913,7 @@ const Maintenance = () => {
                   )}
                 </tbody>
               </table>
-            </HorizontalScrollContainer>
-          </div>
+          </HorizontalScrollContainer>
         </TabsContent>
       </Tabs>
 
@@ -973,7 +969,7 @@ const Maintenance = () => {
                   No servicing records yet for this vehicle.
                 </p>
               ) : (
-                <div className="border border-slate-200 rounded-lg overflow-hidden">
+                <HorizontalScrollContainer className="border border-slate-200 rounded-lg">
                   <table className="w-full text-sm">
                     <thead className="bg-slate-50 text-slate-600">
                       <tr>
@@ -1050,7 +1046,7 @@ const Maintenance = () => {
                       ))}
                     </tbody>
                   </table>
-                </div>
+                </HorizontalScrollContainer>
               )}
             </section>
 

@@ -5,6 +5,7 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } f
 import { Button } from './ui/button';
 import { toast } from 'sonner';
 import { sanitizeDocumentHtml } from '../utils/sanitizeHtml';
+import HorizontalScrollContainer from './HorizontalScrollContainer';
 
 const BACKEND_URL = process.env.REACT_APP_BACKEND_URL;
 
@@ -172,7 +173,7 @@ export default function FilePreviewModal({
             />
           )}
           {!loading && kind === 'spreadsheet' && tablePreview && (
-            <div className="overflow-auto">
+            <HorizontalScrollContainer>
               <p className="text-xs text-slate-500 mb-2">Sheet: {tablePreview.sheetName}</p>
               <table className="text-xs border-collapse w-full bg-white">
                 <tbody>
@@ -187,7 +188,7 @@ export default function FilePreviewModal({
                   ))}
                 </tbody>
               </table>
-            </div>
+            </HorizontalScrollContainer>
           )}
           {!loading && officeOnlineUrl && !htmlPreview && !tablePreview && (kind === 'presentation' || error) && (
             <iframe title={filename} src={officeOnlineUrl} className="w-full h-full min-h-[60vh]" />

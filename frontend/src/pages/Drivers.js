@@ -28,6 +28,7 @@ import {
   useFilters,
   useSort,
 } from '../utils/filtering';
+import HorizontalScrollContainer from '../components/HorizontalScrollContainer';
 
 const BACKEND_URL = process.env.REACT_APP_BACKEND_URL;
 const API = `${BACKEND_URL}/api`;
@@ -612,7 +613,7 @@ const Drivers = () => {
         ].filter(Boolean)}
       />
 
-      <div className="fleet-card table-container">
+      <HorizontalScrollContainer className="fleet-card table-container">
         <table data-testid="drivers-table">
           <thead>
             <tr>
@@ -729,10 +730,10 @@ const Drivers = () => {
             )}
           </tbody>
         </table>
-      </div>
+      </HorizontalScrollContainer>
 
       {canEdit && (
-        <div className="fleet-card table-container mt-6" data-testid="driver-invites-panel">
+        <HorizontalScrollContainer className="fleet-card table-container mt-6" data-testid="driver-invites-panel">
           <div className="flex items-center justify-between mb-3">
             <div>
               <h2 className="text-lg font-semibold text-slate-800">Login invites</h2>
@@ -796,7 +797,7 @@ const Drivers = () => {
               )}
             </tbody>
           </table>
-        </div>
+        </HorizontalScrollContainer>
       )}
 
       <ConfirmDeleteDialog

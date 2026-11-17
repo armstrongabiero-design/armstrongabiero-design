@@ -669,7 +669,6 @@
 }
 
 .table-container {
-  overflow-x: auto;
   border-radius: 12px;
   border: 1px solid #f5e6c8;
 }
@@ -739,34 +738,69 @@ table tbody tr:hover {
   color: #c4912a;
 }
 
-/* Wide tables: always show horizontal scroll; sticky mirror bar added by TableScrollEnhancer */
-.table-container {
-  overflow-x: auto;
-  overflow-y: visible;
-  scrollbar-width: thin;
+/* Wide tables/sections: content scrolls sideways; HorizontalScrollContainer adds a
+   mirror scrollbar pinned to the bottom of the screen while the section is visible. */
+.hscroll {
+  position: relative;
+  min-width: 0;
+  max-width: 100%;
 }
 
-.horizontal-scroll-top {
+.hscroll__content {
+  overflow-x: auto;
+  overflow-y: hidden;
+  border-radius: inherit;
+}
+
+/* The pinned bar replaces the native one, so hide the native bar while it shows. */
+.hscroll--overflowing > .hscroll__content {
   scrollbar-width: none;
   -ms-overflow-style: none;
 }
 
-.horizontal-scroll-top::-webkit-scrollbar {
+.hscroll--overflowing > .hscroll__content::-webkit-scrollbar {
   display: none;
   height: 0;
 }
 
-.horizontal-scroll-bar {
-  scrollbar-width: thin;
+.hscroll__bar {
+  position: sticky;
+  bottom: 0;
+  z-index: 15;
+  background: rgba(255, 255, 255, 0.96);
+  border-top: 1px solid #e2e8f0;
+  box-shadow: 0 -2px 6px rgba(15, 23, 42, 0.06);
+  border-bottom-left-radius: inherit;
+  border-bottom-right-radius: inherit;
 }
 
-.horizontal-scroll-bar::-webkit-scrollbar {
+.hscroll__bar[hidden] {
+  display: none;
+}
+
+.hscroll__track {
+  overflow-x: auto;
+  overflow-y: hidden;
+  height: 14px;
+  scrollbar-width: thin;
+  scrollbar-color: #cbd5e1 transparent;
+}
+
+.hscroll__track::-webkit-scrollbar {
   height: 10px;
 }
 
-.horizontal-scroll-bar::-webkit-scrollbar-thumb {
+.hscroll__track::-webkit-scrollbar-thumb {
   background: #cbd5e1;
   border-radius: 9999px;
+}
+
+.hscroll__track::-webkit-scrollbar-thumb:hover {
+  background: #94a3b8;
+}
+
+.hscroll__spacer {
+  height: 1px;
 }
 
 .record-highlight {

@@ -13,6 +13,7 @@ import CountrySelect, { DEFAULT_COUNTRY_CODE, getCountryBadgeClass, getCountryLa
 import ConfirmDeleteDialog from '../components/ConfirmDeleteDialog';
 import { completeDialogSubmit } from '../utils/formUtils';
 import { canEditFleetRecord, canHardDelete } from '../utils/permissions';
+import HorizontalScrollContainer from '../components/HorizontalScrollContainer';
 
 const BACKEND_URL = process.env.REACT_APP_BACKEND_URL;
 const API = `${BACKEND_URL}/api`;
@@ -343,7 +344,7 @@ const VendorManagement = () => {
       {/* All Vendors Table */}
       <div className="fleet-card">
         <h3 className="text-lg font-semibold text-slate-800 mb-4">All Vendors</h3>
-        <div className="table-container">
+        <HorizontalScrollContainer className="table-container">
           <table>
             <thead>
               <tr>
@@ -426,7 +427,7 @@ const VendorManagement = () => {
               )}
             </tbody>
           </table>
-        </div>
+        </HorizontalScrollContainer>
       </div>
 
       <ConfirmDeleteDialog

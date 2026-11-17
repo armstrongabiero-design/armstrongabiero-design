@@ -33,6 +33,7 @@ import CountrySelect, {
   getCountryLabel,
   countryMatchesFilter,
 } from '../components/CountrySelect';
+import HorizontalScrollContainer from './HorizontalScrollContainer';
 
 const BACKEND_URL = process.env.REACT_APP_BACKEND_URL;
 const API = `${BACKEND_URL}/api`;
@@ -220,7 +221,7 @@ const VehicleAvailabilityPanel = ({ canEdit, initialCountry = 'ALL' }) => {
         </div>
       </div>
 
-      <div className="fleet-card table-container">
+      <HorizontalScrollContainer className="fleet-card table-container">
         <h3 className="font-semibold text-slate-800 mb-3">Vehicles</h3>
         <table>
           <thead>
@@ -271,9 +272,9 @@ const VehicleAvailabilityPanel = ({ canEdit, initialCountry = 'ALL' }) => {
             )}
           </tbody>
         </table>
-      </div>
+      </HorizontalScrollContainer>
 
-      <div className="fleet-card table-container">
+      <HorizontalScrollContainer className="fleet-card table-container">
         <h3 className="font-semibold text-slate-800 mb-3">Recent status changes</h3>
         <table>
           <thead>
@@ -307,7 +308,7 @@ const VehicleAvailabilityPanel = ({ canEdit, initialCountry = 'ALL' }) => {
             )}
           </tbody>
         </table>
-      </div>
+      </HorizontalScrollContainer>
 
       <Dialog open={dialogOpen} onOpenChange={setDialogOpen}>
         <DialogContent>

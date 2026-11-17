@@ -14,6 +14,7 @@ import ConfirmDeleteDialog from '../components/ConfirmDeleteDialog';
 import FilePreviewModal from '../components/FilePreviewModal';
 import { canEditFleetRecord, canHardDelete } from '../utils/permissions';
 import { useRecordHighlight } from '../utils/recordHighlight';
+import HorizontalScrollContainer from '../components/HorizontalScrollContainer';
 
 const BACKEND_URL = process.env.REACT_APP_BACKEND_URL;
 const API = `${BACKEND_URL}/api`;
@@ -706,7 +707,7 @@ const Documents = () => {
         </div>
       </div>
 
-      <div className="fleet-card table-container">
+      <HorizontalScrollContainer className="fleet-card table-container">
         <table>
           <thead>
             <tr>
@@ -820,7 +821,7 @@ const Documents = () => {
             )}
           </tbody>
         </table>
-      </div>
+      </HorizontalScrollContainer>
 
       <ConfirmDeleteDialog
         open={!!deleteTarget}

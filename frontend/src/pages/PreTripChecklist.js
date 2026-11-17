@@ -20,6 +20,7 @@ import FilePreviewModal from '../components/FilePreviewModal';
 import { completeDialogSubmit } from '../utils/formUtils';
 import { downloadExport } from '../utils/downloadExport';
 import { canEditFleetRecord, canEditPreTripChecklist, canHardDelete } from '../utils/permissions';
+import HorizontalScrollContainer from '../components/HorizontalScrollContainer';
 
 const BACKEND_URL = process.env.REACT_APP_BACKEND_URL;
 const API = `${BACKEND_URL}/api`;
@@ -692,7 +693,7 @@ const PreTripChecklist = () => {
           </div>
         </div>
 
-        <div className="table-container">
+        <HorizontalScrollContainer className="table-container">
           <table>
             <thead>
               <tr>
@@ -761,7 +762,7 @@ const PreTripChecklist = () => {
               )}
             </tbody>
           </table>
-        </div>
+        </HorizontalScrollContainer>
       </div>
 
       <Dialog open={!!resolutionDialog} onOpenChange={(open) => !open && setResolutionDialog(null)}>

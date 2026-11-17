@@ -2,6 +2,7 @@ import React, { useCallback, useEffect, useState } from 'react';
 import axios from 'axios';
 import { AlertTriangle, Gauge, RefreshCw } from 'lucide-react';
 import { Button } from '../ui/button';
+import HorizontalScrollContainer from '../HorizontalScrollContainer';
 
 const API = `${process.env.REACT_APP_BACKEND_URL}/api`;
 
@@ -230,7 +231,7 @@ export default function VehicleDrivingMetrics({ vehicleId, compact = false, onSe
                     tone={lb.totals.harsh_braking_events + lb.totals.harsh_acceleration_events > 5 ? 'warn' : undefined}
                   />
                 </div>
-                <div className="overflow-x-auto">
+                <HorizontalScrollContainer>
                   <table className="w-full text-sm" data-testid="driving-metrics-drivers">
                     <thead className="text-left text-xs text-slate-500">
                       <tr>
@@ -259,7 +260,7 @@ export default function VehicleDrivingMetrics({ vehicleId, compact = false, onSe
                       ))}
                     </tbody>
                   </table>
-                </div>
+                </HorizontalScrollContainer>
               </>
             )}
           </section>

@@ -5,6 +5,7 @@ import { toast } from 'sonner';
 import { Button } from '../components/ui/button';
 import { useAuth } from '../contexts/AuthContext';
 import CountrySelect, { getCountryFlag, getCountryLabel } from '../components/CountrySelect';
+import HorizontalScrollContainer from '../components/HorizontalScrollContainer';
 
 const BACKEND_URL = process.env.REACT_APP_BACKEND_URL;
 const API = `${BACKEND_URL}/api`;
@@ -159,7 +160,7 @@ const UserManagement = () => {
       {/* All Users Table */}
       <div className="fleet-card">
         <h2 className="text-lg font-semibold text-slate-800 mb-4">All Users</h2>
-        <div className="table-container">
+        <HorizontalScrollContainer className="table-container">
           <table>
             <thead>
               <tr>
@@ -237,7 +238,7 @@ const UserManagement = () => {
               })}
             </tbody>
           </table>
-        </div>
+        </HorizontalScrollContainer>
       </div>
     </div>
   );

@@ -13,6 +13,7 @@ import CountrySelect, { DEFAULT_COUNTRY_CODE, getCountryBadgeClass, getCountryLa
 import ConfirmDeleteDialog from '../components/ConfirmDeleteDialog';
 import { completeDialogSubmit } from '../utils/formUtils';
 import { canEditFleetRecord, canHardDelete } from '../utils/permissions';
+import HorizontalScrollContainer from '../components/HorizontalScrollContainer';
 
 const BACKEND_URL = process.env.REACT_APP_BACKEND_URL;
 const API = `${BACKEND_URL}/api`;
@@ -511,7 +512,7 @@ const TireManagement = () => {
         </TabsContent>
 
         <TabsContent value="all-tires" className="mt-4">
-          <div className="fleet-card table-container">
+          <HorizontalScrollContainer className="fleet-card table-container">
             <table>
               <thead>
                 <tr>
@@ -574,7 +575,7 @@ const TireManagement = () => {
                 })}
               </tbody>
             </table>
-          </div>
+          </HorizontalScrollContainer>
         </TabsContent>
 
         <TabsContent value="spare" className="mt-4">

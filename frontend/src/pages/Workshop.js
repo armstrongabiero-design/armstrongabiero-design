@@ -13,6 +13,7 @@ import ConfirmDeleteDialog from '../components/ConfirmDeleteDialog';
 import { canEditFleetRecord, canHardDelete } from '../utils/permissions';
 import { WORK_STATUS_OPTIONS, workStatusLabel } from '../utils/workStatus';
 import { completeDialogSubmit } from '../utils/formUtils';
+import HorizontalScrollContainer from '../components/HorizontalScrollContainer';
 
 const BACKEND_URL = process.env.REACT_APP_BACKEND_URL;
 const API = `${BACKEND_URL}/api`;
@@ -327,7 +328,7 @@ const Workshop = () => {
         </DialogContent>
       </Dialog>
 
-      <div className="fleet-card table-container">
+      <HorizontalScrollContainer className="fleet-card table-container">
         <table>
           <thead>
             <tr>
@@ -386,7 +387,7 @@ const Workshop = () => {
             )}
           </tbody>
         </table>
-      </div>
+      </HorizontalScrollContainer>
 
       <ConfirmDeleteDialog
         open={!!deleteTarget}
