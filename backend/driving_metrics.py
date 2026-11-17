@@ -198,6 +198,35 @@ def _totals(daily: List[Dict[str, Any]]) -> Dict[str, Any]:
     }
 
 
+async def cached_gps_totals(db, imeis: List[str], days: int) -> Dict[str, Dict[str, Any]]:
+    """Per-tracker GPS totals for the period, read from the cache only (no ProTrack calls).
+
+    Used by fleet-wide reports, which cannot afford a live fetch per vehicle. The hourly
+    backfill keeps finished days filled; `days_cached` says how many days the totals cover.
+    """
+    if not imeis:
+        return {}
+    since = _period_days(days)[0].isoformat()
+    out: Dict[str, Dict[str, Any]] = {
+        imei: {"distance_km": 0.0, "moving_minutes": 0, "days_driven": 0, "days_cached": 0}
+        for imei in imeis
+    }
+    for doc in await db.gps_daily_stats.find(
+        {"imei": {"$in": list(imeis)}, "day": {"$gte": since}},
+        {"_id": 0, "imei": 1, "distance_km": 1, "moving_minutes": 1},
+    ).to_list(len(imeis) * (days + 1)):
+        row = out[doc["imei"]]
+        distance = doc.get("distance_km") or 0
+        row["distance_km"] += distance
+        row["moving_minutes"] += doc.get("moving_minutes") or 0
+        row["days_cached"] += 1
+        if distance >= 1:
+            row["days_driven"] += 1
+    for row in out.values():
+        row["distance_km"] = round(row["distance_km"], 1)
+    return out
+
+
 async def logbook_metrics(db, vehicle_id: str, days: int) -> Dict[str, Any]:
     """Logbook figures for a vehicle over the period, in total and per driver."""
     from driver_profile_service import resolve_driver_display_names

@@ -1773,3 +1773,27 @@ def test_weekly_report_uses_the_current_ghs_rate(client, fake_db, monkeypatch):
     response = client.post("/api/reports/send-weekly", headers=auth("gfm"))
     assert response.status_code == 200, response.text
     assert sent[0]["fuel_cost_ghs"] == 1150.0
+
+
+def test_utilization_uses_gps_time_then_logbook_trip_times(client, fake_db):
+    now = datetime.now(timezone.utc)
+    vehicle_ids = [v["id"] for v in fake_db.vehicles.docs if v.get("country") == "GH"]
+    gps_vehicle, log_vehicle = vehicle_ids[0], "v_util_log"
+    fake_db.vehicles.docs.append({"id": log_vehicle, "country": "GH", "registration_number": "LOG-1"})
+    fake_db.trackers.docs.append({"_id": "imei1", "imei": "imei1", "vehicle_id": gps_vehicle})
+    fake_db.gps_daily_stats.docs.append({
+        "_id": f"imei1:{now.date().isoformat()}", "imei": "imei1", "day": now.date().isoformat(),
+        "distance_km": 120.0, "moving_minutes": 240,
+    })
+    fake_db.driver_logbook.docs.append({
+        "id": "log_util", "driver_id": "d_gh", "vehicle_id": log_vehicle, "country": "GH",
+        "date": now.isoformat(), "start_time": (now - timedelta(hours=2)).isoformat(),
+        "end_time": now.isoformat(), "distance_km": 50.0,
+    })
+    body = client.get("/api/reports/utilization?period_days=1", headers=auth("fm_gh")).json()
+    rows = {v["vehicle_id"]: v for v in body["vehicles"]}
+    assert rows[gps_vehicle]["source"] == "gps" and rows[gps_vehicle]["total_hours"] == 4.0
+    assert rows[gps_vehicle]["utilization_rate"] == 50.0
+    assert rows[log_vehicle]["source"] == "logbook" and rows[log_vehicle]["total_hours"] == 2.0
+    assert rows[log_vehicle]["utilization_rate"] == 25.0
+    assert body["fleet_avg_utilization"] > 0

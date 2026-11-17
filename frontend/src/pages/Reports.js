@@ -329,15 +329,30 @@ const Reports = () => {
               <div className="text-center p-4 bg-slate-50 rounded-lg mb-4">
                 <p className="text-sm text-slate-500">Average Fleet Utilization</p>
                 <p className="text-3xl font-bold text-amber-600">{utilization.fleet_avg_utilization}%</p>
+                <p className="text-xs text-slate-500 mt-1">
+                  Hours in use against {utilization.hours_per_day ?? 8} h/day •{' '}
+                  {utilization.vehicles_with_data ?? 0} of {utilization.vehicle_count} vehicles with data
+                  ({utilization.gps_vehicle_count ?? 0} from GPS)
+                </p>
               </div>
-              
+
+              {utilization.vehicle_count > 0 && !utilization.vehicles_with_data && (
+                <p className="text-sm text-slate-500 mb-3">
+                  No usage recorded in this period. Link GPS trackers to vehicles on the Fleet Map,
+                  or record logbook trips with start and end times.
+                </p>
+              )}
+
               <div className="space-y-3 max-h-64 overflow-y-auto">
                 {utilization.vehicles?.map(vehicle => (
                   <div key={vehicle.vehicle_id} className="flex items-center justify-between p-2 bg-slate-50 rounded">
                     <div>
                       <p className="font-medium">{vehicle.registration_number}</p>
                       <p className="text-xs text-slate-500">
-                        {vehicle.trip_count} trips • {vehicle.total_distance_km.toLocaleString()} km
+                        {vehicle.source === 'none'
+                          ? 'No GPS or logbook data'
+                          : `${(vehicle.total_hours || 0).toFixed(1)} h • ${(vehicle.total_distance_km || 0).toLocaleString()} km • ${
+                              vehicle.source === 'gps' ? 'GPS' : `${vehicle.trip_count} logbook trips`}`}
                       </p>
                     </div>
                     <div className="text-right">
