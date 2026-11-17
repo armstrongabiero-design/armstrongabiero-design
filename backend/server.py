@@ -7001,52 +7001,97 @@ async def get_expense_breakdown(country: Optional[str] = None, period_days: int 
     }
 
 
+UTILIZATION_HOURS_PER_DAY = 8  # a vehicle in use 8 hours a day counts as 100%
+
+
+def _logbook_trip_hours(entry: dict) -> float:
+    """Hours of one logbook trip, from its start and end times (0 when they are missing)."""
+    started = tracking_service._parse_iso(entry.get("start_time"))
+    ended = tracking_service._parse_iso(entry.get("end_time"))
+    if not started or not ended or ended <= started:
+        return 0.0
+    return min((ended - started).total_seconds() / 3600, 24.0)
+
+
 @api_router.get("/reports/utilization")
 async def get_utilization_report(country: Optional[str] = None, period_days: int = 30, current_user: dict = Depends(_require_staff)):
-    """Get fleet utilization report"""
-    start_date = (datetime.now(timezone.utc) - timedelta(days=period_days)).isoformat()
+    """Fleet utilization: hours in use against 8 hours a day over the period.
+
+    Vehicles with a linked GPS tracker use the ProTrack moving time cached in
+    `gps_daily_stats`. Others fall back to logbook trips (end time minus start time).
+    """
+    period_days = max(1, min(int(period_days), 366))
+    since = (datetime.now(timezone.utc) - timedelta(days=period_days - 1)).replace(
+        hour=0, minute=0, second=0, microsecond=0
+    ).isoformat()
     country_filter = country_query(current_user, country)
-    
+
     vehicles = await db.vehicles.find(country_filter, {"_id": 0}).to_list(1000)
-    utilization_data = []
-    
-    for vehicle in vehicles:
-        logbook = await db.driver_logbook.find(
-            {"vehicle_id": vehicle['id'], "date": {"$gte": start_date}},
-            {"_id": 0}
+    vehicle_ids = [v["id"] for v in vehicles]
+
+    logbook_by_vehicle: Dict[str, List[dict]] = {}
+    for entry in await db.driver_logbook.find(
+        {"vehicle_id": {"$in": vehicle_ids}, "date": {"$gte": since}},
+        {"_id": 0, "vehicle_id": 1, "distance_km": 1, "start_time": 1, "end_time": 1},
+    ).to_list(20000):
+        logbook_by_vehicle.setdefault(entry["vehicle_id"], []).append(entry)
+
+    imei_by_vehicle = {
+        t["vehicle_id"]: t["imei"]
+        for t in await db.trackers.find(
+            {"vehicle_id": {"$in": vehicle_ids}}, {"_id": 0, "imei": 1, "vehicle_id": 1}
         ).to_list(1000)
-        
-        total_distance = sum((e.get('distance_km') or 0) for e in logbook)
-        total_hours = sum((e.get('total_hours') or 0) for e in logbook)
-        trip_count = len(logbook)
-        
-        # Calculate utilization rate (assuming 8 hours/day max usage)
-        max_hours = period_days * 8
-        utilization_rate = (total_hours / max_hours * 100) if max_hours > 0 else 0
-        
+    }
+    gps = await driving_metrics.cached_gps_totals(db, list(imei_by_vehicle.values()), period_days)
+
+    max_hours = period_days * UTILIZATION_HOURS_PER_DAY
+    utilization_data = []
+    for vehicle in vehicles:
+        logbook = logbook_by_vehicle.get(vehicle["id"], [])
+        gps_row = gps.get(imei_by_vehicle.get(vehicle["id"]))
+
+        if gps_row and gps_row["days_cached"]:
+            source = "gps"
+            total_hours = gps_row["moving_minutes"] / 60
+            total_distance = gps_row["distance_km"]
+            days_used = gps_row["days_driven"]
+        elif logbook:
+            source = "logbook"
+            total_hours = sum(_logbook_trip_hours(e) for e in logbook)
+            total_distance = sum((e.get("distance_km") or 0) for e in logbook)
+            days_used = len({str(e.get("start_time") or "")[:10] for e in logbook} - {""})
+        else:
+            source = "none"
+            total_hours = total_distance = 0
+            days_used = 0
+
         utilization_data.append({
-            "vehicle_id": vehicle['id'],
-            "registration_number": vehicle.get('registration_number'),
-            "country": vehicle.get('country'),
-            "status": vehicle.get('status'),
-            "trip_count": trip_count,
+            "vehicle_id": vehicle["id"],
+            "registration_number": vehicle.get("registration_number"),
+            "country": vehicle.get("country"),
+            "status": vehicle.get("status"),
+            "source": source,
+            "trip_count": len(logbook),
+            "days_used": days_used,
             "total_distance_km": round(total_distance, 2),
             "total_hours": round(total_hours, 2),
-            "utilization_rate": round(utilization_rate, 1)
+            "utilization_rate": round(min(total_hours / max_hours * 100, 100), 1),
         })
-    
-    # Sort by utilization rate descending
-    utilization_data.sort(key=lambda x: x['utilization_rate'], reverse=True)
-    
+
+    utilization_data.sort(key=lambda x: x["utilization_rate"], reverse=True)
+
     return {
         "period_days": period_days,
         "country": country,
+        "hours_per_day": UTILIZATION_HOURS_PER_DAY,
         "vehicle_count": len(vehicles),
+        "vehicles_with_data": sum(1 for v in utilization_data if v["source"] != "none"),
+        "gps_vehicle_count": sum(1 for v in utilization_data if v["source"] == "gps"),
         "vehicles": utilization_data,
         "fleet_avg_utilization": round(
-            sum(v['utilization_rate'] for v in utilization_data) / len(utilization_data) if utilization_data else 0,
-            1
-        )
+            sum(v["utilization_rate"] for v in utilization_data) / len(utilization_data) if utilization_data else 0,
+            1,
+        ),
     }
 
 
